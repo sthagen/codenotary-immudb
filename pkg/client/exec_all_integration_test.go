@@ -29,7 +29,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"log"
 	"math"
-	"math/rand"
+	rand2 "math/rand"
 	"strings"
 	"testing"
 	"time"
@@ -322,14 +322,14 @@ func getRandomExecOps() *schema.ExecAllRequest {
 
 	tb, _ := tn1.MarshalBinary()
 
-	rand.Seed(tn1.UnixNano())
+	rand2.Seed(tn1.UnixNano())
 	chars := []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖ" +
 		"abcdefghijklmnopqrstuvwxyzåäö" +
 		"0123456789")
 	length := 8
 	var b strings.Builder
 	for i := 0; i < length; i++ {
-		b.WriteRune(chars[rand.Intn(len(chars))])
+		b.WriteRune(chars[rand2.Intn(len(chars))])
 	}
 
 	sha256Token := sha256.Sum256([]byte(b.String()))
@@ -368,4 +368,265 @@ func getRandomExecOps() *schema.ExecAllRequest {
 	}
 
 	return aOps
+}
+
+func TestImmuClient_MultiExecAll(t *testing.T) {
+	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
+	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithInsecure()}).WithTokenService(ts))
+	if err != nil {
+		log.Fatal(err)
+	}
+	lr, err := client.Login(context.TODO(), []byte(`immudb`), []byte(`immudb`))
+	if err != nil {
+		log.Fatal(err)
+	}
+	md := metadata.Pairs("authorization", lr.Token)
+	ctx := metadata.NewOutgoingContext(context.Background(), md)
+
+	ur, err := client.UseDatabase(ctx, &schema.Database{Databasename: "defaultdb"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	md = metadata.Pairs("authorization", ur.Token)
+	ctx = metadata.NewOutgoingContext(context.Background(), md)
+
+	setName1 := []byte(`set1`)
+
+	tt := time.Now()
+
+	bOps1 := &schema.ExecAllRequest{
+		Operations: []*schema.Op{
+			{
+				Operation: &schema.Op_Kv{
+					Kv: &schema.KeyValue{
+						Key:   []byte(`key1`),
+						Value: []byte(`key1`),
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+		},
+	}
+	client.ExecAll(ctx, bOps1)
+
+	bOps2 := &schema.ExecAllRequest{
+		Operations: []*schema.Op{
+			{
+				Operation: &schema.Op_Kv{
+					Kv: &schema.KeyValue{
+						Key:   []byte(`key1`),
+						Value: []byte(`key1`),
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+		},
+	}
+	client.ExecAll(ctx, bOps2)
+
+	bOps3 := &schema.ExecAllRequest{
+		Operations: []*schema.Op{
+			{
+				Operation: &schema.Op_Kv{
+					Kv: &schema.KeyValue{
+						Key:   []byte(`key1`),
+						Value: []byte(`key1`),
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+		},
+	}
+	client.ExecAll(ctx, bOps3)
+
+	bOps4 := &schema.ExecAllRequest{
+		Operations: []*schema.Op{
+			{
+				Operation: &schema.Op_Kv{
+					Kv: &schema.KeyValue{
+						Key:   []byte(`key1`),
+						Value: []byte(`key1`),
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+		},
+	}
+	client.ExecAll(ctx, bOps4)
+
+	bOps5 := &schema.ExecAllRequest{
+		Operations: []*schema.Op{
+			{
+				Operation: &schema.Op_Kv{
+					Kv: &schema.KeyValue{
+						Key:   []byte(`key1`),
+						Value: []byte(`key1`),
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setName1,
+						Score:    float64(tt.Nanosecond()),
+						Key:      []byte(`key1`),
+						BoundRef: true,
+					},
+				},
+			},
+		},
+	}
+	client.ExecAll(ctx, bOps5)
+
+	zScanOption1 := &schema.ZScanRequest{
+		Set:       setName1,
+		SeekKey:   []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+		SeekScore: math.MaxFloat64,
+		SeekAtTx:  math.MaxUint64,
+		SinceTx:   math.MaxUint64,
+		Desc:      true,
+		NoWait:    true,
+	}
+
+	list1, err := client.ZScan(ctx, zScanOption1)
+	require.NoError(t, err)
+	require.True(t, len(list1.Entries) > 0)
+
+	client.Disconnect()
 }
