@@ -436,20 +436,22 @@ func getExecAllRequest() *schema.ExecAllRequest {
 		Value: []byte(`blablabla`),
 	}
 
+	prefix := "vcn"
+
 	key := kv.Key
 	val := kv.Value
 
-	inspectSigIDIndex := stripPrefix("vcn.", key)
+	inspectSigIDIndex := stripPrefix(prefix, key)
 
 	t := time.Now()
 	tb, _ := t.MarshalBinary()
 
 	setIdxDR := []byte(IndexDateRangePrefix)
-	setIdxDR = append(setIdxDR, stripPrefix("vcn.", key)...)
+	setIdxDR = append(setIdxDR, stripPrefix(prefix, key)...)
 
 	keyItemDate := make([]byte, 8)
 	binary.BigEndian.PutUint64(keyItemDate, uint64(t.UnixNano()))
-	keyItemDate = bytes.Join([][]byte{[]byte("vcn."), keyItemDate}, nil)
+	keyItemDate = bytes.Join([][]byte{[]byte(prefix), keyItemDate}, nil)
 
 	bOps := &schema.ExecAllRequest{
 		Operations: []*schema.Op{
@@ -511,4 +513,69 @@ func stripPrefix(prefix string, k []byte) []byte {
 	var unwrapped = make([]byte, unwrappedLen)
 	copy(unwrapped[0:], k[prefixLen:])
 	return unwrapped
+}
+
+func TestImmuClient_ExecAllSimple(t *testing.T) {
+	client, err := NewImmuClient(DefaultOptions())
+	if err != nil {
+		log.Fatal(err)
+	}
+	lr, err := client.Login(context.TODO(), []byte(`immudb`), []byte(`immudb`))
+	if err != nil {
+		log.Fatal(err)
+	}
+	md := metadata.Pairs("authorization", lr.Token)
+	ctx := metadata.NewOutgoingContext(context.Background(), md)
+
+	ur, err := client.UseDatabase(ctx, &schema.Database{Databasename: "defaultdb"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	md = metadata.Pairs("authorization", ur.Token)
+	ctx = metadata.NewOutgoingContext(context.Background(), md)
+
+	setName1 := []byte(`set134`)
+
+	zaddOpts1 := &schema.ZAddRequest{
+		Set:      setName1,
+		Score:    float64(1),
+		Key:      []byte(`key1.0`),
+		BoundRef: true,
+	}
+
+	bOps1 := &schema.ExecAllRequest{
+		Operations: []*schema.Op{
+			{
+				Operation: &schema.Op_Kv{
+					Kv: &schema.KeyValue{
+						Key:   []byte(`key1.0`),
+						Value: []byte(`key1.0`),
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: zaddOpts1,
+				},
+			},
+		},
+	}
+	_, err = client.ExecAll(ctx, bOps1)
+	require.NoError(t, err)
+
+	zScanOption1 := &schema.ZScanRequest{
+		Set:       setName1,
+		SeekKey:   []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+		SeekScore: math.MaxFloat64,
+		SeekAtTx:  math.MaxUint64,
+		SinceTx:   math.MaxUint64,
+		Desc:      true,
+		NoWait:    true,
+	}
+
+	list1, err := client.ZScan(ctx, zScanOption1)
+	require.NoError(t, err)
+	require.Len(t, list1.Entries, 3)
+
+	client.Disconnect()
 }

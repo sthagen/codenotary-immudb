@@ -17,8 +17,11 @@ limitations under the License.
 package database
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"log"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -425,6 +428,132 @@ func TestHealth(t *testing.T) {
 	if !h.GetStatus() {
 		t.Fatalf("Health, expected %v, got %v", true, h.GetStatus())
 	}
+}
+
+func TestDb_MultiExecAll(t *testing.T) {
+	db, closer := makeDb()
+	defer closer()
+	bOps1 := getExecAllRequest()
+	_, err := db.ExecAll(bOps1)
+	require.NoError(t, err)
+	time.Sleep(50 * time.Millisecond)
+	bOps2 := getExecAllRequest()
+	_, err = db.ExecAll(bOps2)
+	require.NoError(t, err)
+	time.Sleep(50 * time.Millisecond)
+	bOps3 := getExecAllRequest()
+	_, err = db.ExecAll(bOps3)
+	require.NoError(t, err)
+	time.Sleep(50 * time.Millisecond)
+	bOps4 := getExecAllRequest()
+	_, err = db.ExecAll(bOps4)
+	require.NoError(t, err)
+	time.Sleep(50 * time.Millisecond)
+	bOps5 := getExecAllRequest()
+	_, err = db.ExecAll(bOps5)
+	require.NoError(t, err)
+	time.Sleep(50 * time.Millisecond)
+	zScanOption1 := &schema.ZScanRequest{
+		Set:       []byte(`vcn.signerId.hash`),
+		SeekKey:   []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+		SeekScore: math.MaxFloat64,
+		SeekAtTx:  math.MaxUint64,
+		SinceTx:   math.MaxUint64,
+		Desc:      true,
+		NoWait:    true,
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	list1, err := db.ZScan(zScanOption1)
+	require.NoError(t, err)
+	require.True(t, len(list1.Entries) > 0)
+}
+
+const IndexDateRangePrefix = "_INDEX.ITEM.INSERTION-DATE."
+
+func getExecAllRequest() *schema.ExecAllRequest {
+	kv := &schema.KeyValue{
+		Key:   []byte(`vcn.signerId.hash`),
+		Value: []byte(`blablabla`),
+	}
+
+	prefix := "vcn"
+
+	key := kv.Key
+	val := kv.Value
+
+	inspectSigIDIndex := stripPrefix(prefix, key)
+
+	t := time.Now()
+	tb, _ := t.MarshalBinary()
+
+	setIdxDR := []byte(IndexDateRangePrefix)
+	setIdxDR = append(setIdxDR, stripPrefix(prefix, key)...)
+
+	keyItemDate := make([]byte, 8)
+	binary.BigEndian.PutUint64(keyItemDate, uint64(t.UnixNano()))
+	keyItemDate = bytes.Join([][]byte{[]byte(prefix), keyItemDate}, nil)
+
+	bOps := &schema.ExecAllRequest{
+		Operations: []*schema.Op{
+			{
+				Operation: &schema.Op_Kv{
+					Kv: &schema.KeyValue{
+						Key:   key,
+						Value: val,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_Kv{
+					Kv: &schema.KeyValue{
+						Key:   keyItemDate,
+						Value: tb,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      inspectSigIDIndex,
+						Key:      key,
+						Score:    float64(t.UnixNano()),
+						BoundRef: true,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      setIdxDR,
+						Score:    float64(t.UnixNano()),
+						Key:      key,
+						BoundRef: true,
+					},
+				},
+			},
+			{
+				Operation: &schema.Op_ZAdd{
+					ZAdd: &schema.ZAddRequest{
+						Set:      key,
+						Score:    float64(t.UnixNano()),
+						Key:      key,
+						BoundRef: true,
+					},
+				},
+			},
+		},
+	}
+	return bOps
+}
+
+func stripPrefix(prefix string, k []byte) []byte {
+	kLen := len(k)
+	prefixLen := len(prefix) + 1
+	unwrappedLen := kLen - prefixLen
+	var unwrapped = make([]byte, unwrappedLen)
+	copy(unwrapped[0:], k[prefixLen:])
+	return unwrapped
 }
 
 /*
