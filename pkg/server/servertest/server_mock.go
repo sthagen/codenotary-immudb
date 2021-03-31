@@ -243,3 +243,11 @@ func (s *ServerMock) SetActiveUser(ctx context.Context, req *schema.SetActiveUse
 func (s *ServerMock) getDbIndexFromCtx(ctx context.Context, methodname string) (int64, error) {
 	return s.GetDbIndexFromCtx(ctx, methodname)
 }
+
+func (s *ServerMock) SQLExec(ctx context.Context, req *schema.SQLExecRequest) (*schema.SQLExecResult, error) {
+	return s.srv.SQLExec(ctx, req)
+}
+
+func (s *ServerMock) SQLQuery(ctx context.Context, req *schema.SQLQueryRequest) (*schema.SQLQueryResult, error) {
+	return s.srv.SQLQuery(ctx, req)
+}
