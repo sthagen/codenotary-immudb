@@ -106,7 +106,7 @@ func (s *srv) handleRequest(conn net.Conn) error {
 		conn.Write(ReadyForQuery)
 
 		queryString := make([]byte, 500)
-		conn.Read(queryString)
+		conn.Read(queryString) // select oid from pg_type;
 		println(queryString)
 
 		////##-> dataRowDescription
@@ -126,15 +126,15 @@ func (s *srv) handleRequest(conn net.Conn) error {
 		// If the field can be identified as a column of a specific table, the object ID of the table; otherwise zero.
 		// Int32
 		id := make([]byte, 4)
-		binary.BigEndian.PutUint32(id, uint32(1))
+		binary.BigEndian.PutUint32(id, uint32(0))
 		// If the field can be identified as a column of a specific table, the attribute number of the column; otherwise zero.
 		// Int16
 		attributeNumber := make([]byte, 2)
-		binary.BigEndian.PutUint16(attributeNumber, uint16(1))
+		binary.BigEndian.PutUint16(attributeNumber, uint16(0))
 		// The object ID of the field's data type.
 		// Int32
 		objectId := make([]byte, 4)
-		binary.BigEndian.PutUint32(objectId, uint32(PgTypeMap["oid"]))
+		binary.BigEndian.PutUint32(objectId, uint32(PgTypeMap["text"]))
 		// The data type size (see pg_type.typlen). Note that negative values denote variable-width types.
 		// For a fixed-size type, typlen is the number of bytes in the internal representation of the type. But for a variable-length type, typlen is negative. -1 indicates a “varlena” type (one that has a length word), -2 indicates a null-terminated C string.
 		// Int16
@@ -144,7 +144,8 @@ func (s *srv) handleRequest(conn net.Conn) error {
 		// atttypmod records type-specific data supplied at table creation time (for example, the maximum length of a varchar column). It is passed to type-specific input functions and length coercion functions. The value will generally be -1 for types that do not need atttypmod.
 		// Int32
 		typeModifier := make([]byte, 4)
-		binary.BigEndian.PutUint32(typeModifier, uint32(1))
+		tm := int32(-1)
+		binary.BigEndian.PutUint32(typeModifier, uint32(tm))
 		// The format code being used for the field. Currently will be zero (text) or one (binary). In a RowDescription returned from the statement variant of Describe, the format code is not yet known and will always be zero.
 		// Int16
 		formatCode := make([]byte, 2)
