@@ -8,13 +8,16 @@
     - [ChangePasswordRequest](#immudb.schema.ChangePasswordRequest)
     - [ChangePermissionRequest](#immudb.schema.ChangePermissionRequest)
     - [Chunk](#immudb.schema.Chunk)
+    - [Column](#immudb.schema.Column)
     - [CreateUserRequest](#immudb.schema.CreateUserRequest)
     - [Database](#immudb.schema.Database)
     - [DatabaseListResponse](#immudb.schema.DatabaseListResponse)
+    - [DebugInfo](#immudb.schema.DebugInfo)
     - [DualProof](#immudb.schema.DualProof)
     - [Entries](#immudb.schema.Entries)
     - [Entry](#immudb.schema.Entry)
     - [EntryCount](#immudb.schema.EntryCount)
+    - [ErrorInfo](#immudb.schema.ErrorInfo)
     - [ExecAllRequest](#immudb.schema.ExecAllRequest)
     - [HealthResponse](#immudb.schema.HealthResponse)
     - [HistoryRequest](#immudb.schema.HistoryRequest)
@@ -29,15 +32,26 @@
     - [LoginRequest](#immudb.schema.LoginRequest)
     - [LoginResponse](#immudb.schema.LoginResponse)
     - [MTLSConfig](#immudb.schema.MTLSConfig)
+    - [NamedParam](#immudb.schema.NamedParam)
     - [Op](#immudb.schema.Op)
     - [Permission](#immudb.schema.Permission)
     - [Reference](#immudb.schema.Reference)
     - [ReferenceRequest](#immudb.schema.ReferenceRequest)
+    - [RetryInfo](#immudb.schema.RetryInfo)
+    - [Row](#immudb.schema.Row)
+    - [SQLEntry](#immudb.schema.SQLEntry)
+    - [SQLExecRequest](#immudb.schema.SQLExecRequest)
+    - [SQLExecResult](#immudb.schema.SQLExecResult)
+    - [SQLGetRequest](#immudb.schema.SQLGetRequest)
+    - [SQLQueryRequest](#immudb.schema.SQLQueryRequest)
+    - [SQLQueryResult](#immudb.schema.SQLQueryResult)
+    - [SQLValue](#immudb.schema.SQLValue)
     - [ScanRequest](#immudb.schema.ScanRequest)
     - [Score](#immudb.schema.Score)
     - [SetActiveUserRequest](#immudb.schema.SetActiveUserRequest)
     - [SetRequest](#immudb.schema.SetRequest)
     - [Signature](#immudb.schema.Signature)
+    - [Table](#immudb.schema.Table)
     - [Tx](#immudb.schema.Tx)
     - [TxEntry](#immudb.schema.TxEntry)
     - [TxList](#immudb.schema.TxList)
@@ -45,12 +59,18 @@
     - [TxRequest](#immudb.schema.TxRequest)
     - [TxScanRequest](#immudb.schema.TxScanRequest)
     - [UseDatabaseReply](#immudb.schema.UseDatabaseReply)
+    - [UseSnapshotRequest](#immudb.schema.UseSnapshotRequest)
     - [User](#immudb.schema.User)
     - [UserList](#immudb.schema.UserList)
     - [UserRequest](#immudb.schema.UserRequest)
     - [VerifiableEntry](#immudb.schema.VerifiableEntry)
     - [VerifiableGetRequest](#immudb.schema.VerifiableGetRequest)
     - [VerifiableReferenceRequest](#immudb.schema.VerifiableReferenceRequest)
+    - [VerifiableSQLEntry](#immudb.schema.VerifiableSQLEntry)
+    - [VerifiableSQLEntry.ColIdsByIdEntry](#immudb.schema.VerifiableSQLEntry.ColIdsByIdEntry)
+    - [VerifiableSQLEntry.ColIdsByNameEntry](#immudb.schema.VerifiableSQLEntry.ColIdsByNameEntry)
+    - [VerifiableSQLEntry.ColTypesByIdEntry](#immudb.schema.VerifiableSQLEntry.ColTypesByIdEntry)
+    - [VerifiableSQLGetRequest](#immudb.schema.VerifiableSQLGetRequest)
     - [VerifiableSetRequest](#immudb.schema.VerifiableSetRequest)
     - [VerifiableTx](#immudb.schema.VerifiableTx)
     - [VerifiableTxRequest](#immudb.schema.VerifiableTxRequest)
@@ -59,11 +79,11 @@
     - [ZEntries](#immudb.schema.ZEntries)
     - [ZEntry](#immudb.schema.ZEntry)
     - [ZScanRequest](#immudb.schema.ZScanRequest)
-  
+
     - [PermissionAction](#immudb.schema.PermissionAction)
-  
+
     - [ImmuService](#immudb.schema.ImmuService)
-  
+
 - [Scalar Value Types](#scalar-value-types)
 
 
@@ -140,6 +160,22 @@
 
 
 
+<a name="immudb.schema.Column"></a>
+
+### Column
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| name | [string](#string) |  |  |
+| type | [string](#string) |  |  |
+
+
+
+
+
+
 <a name="immudb.schema.CreateUserRequest"></a>
 
 ### CreateUserRequest
@@ -166,7 +202,7 @@
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| databasename | [string](#string) |  |  |
+| databaseName | [string](#string) |  |  |
 
 
 
@@ -182,6 +218,21 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | databases | [Database](#immudb.schema.Database) | repeated |  |
+
+
+
+
+
+
+<a name="immudb.schema.DebugInfo"></a>
+
+### DebugInfo
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| stack | [string](#string) |  |  |
 
 
 
@@ -251,6 +302,22 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | count | [uint64](#uint64) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.ErrorInfo"></a>
+
+### ErrorInfo
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| code | [string](#string) |  |  |
+| cause | [string](#string) |  |  |
 
 
 
@@ -486,6 +553,22 @@
 
 
 
+<a name="immudb.schema.NamedParam"></a>
+
+### NamedParam
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| name | [string](#string) |  |  |
+| value | [SQLValue](#immudb.schema.SQLValue) |  |  |
+
+
+
+
+
+
 <a name="immudb.schema.Op"></a>
 
 ### Op
@@ -549,6 +632,157 @@
 | atTx | [uint64](#uint64) |  |  |
 | boundRef | [bool](#bool) |  |  |
 | noWait | [bool](#bool) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.RetryInfo"></a>
+
+### RetryInfo
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| retry_delay | [int32](#int32) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.Row"></a>
+
+### Row
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| columns | [string](#string) | repeated |  |
+| values | [SQLValue](#immudb.schema.SQLValue) | repeated |  |
+
+
+
+
+
+
+<a name="immudb.schema.SQLEntry"></a>
+
+### SQLEntry
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| tx | [uint64](#uint64) |  |  |
+| key | [bytes](#bytes) |  |  |
+| value | [bytes](#bytes) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.SQLExecRequest"></a>
+
+### SQLExecRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| sql | [string](#string) |  |  |
+| params | [NamedParam](#immudb.schema.NamedParam) | repeated |  |
+| noWait | [bool](#bool) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.SQLExecResult"></a>
+
+### SQLExecResult
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| ctxs | [TxMetadata](#immudb.schema.TxMetadata) | repeated |  |
+| dtxs | [TxMetadata](#immudb.schema.TxMetadata) | repeated |  |
+
+
+
+
+
+
+<a name="immudb.schema.SQLGetRequest"></a>
+
+### SQLGetRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| table | [string](#string) |  |  |
+| pkValue | [SQLValue](#immudb.schema.SQLValue) |  |  |
+| atTx | [uint64](#uint64) |  |  |
+| sinceTx | [uint64](#uint64) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.SQLQueryRequest"></a>
+
+### SQLQueryRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| sql | [string](#string) |  |  |
+| params | [NamedParam](#immudb.schema.NamedParam) | repeated |  |
+| reuseSnapshot | [bool](#bool) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.SQLQueryResult"></a>
+
+### SQLQueryResult
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| columns | [Column](#immudb.schema.Column) | repeated |  |
+| rows | [Row](#immudb.schema.Row) | repeated |  |
+
+
+
+
+
+
+<a name="immudb.schema.SQLValue"></a>
+
+### SQLValue
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| null | [google.protobuf.NullValue](#google.protobuf.NullValue) |  |  |
+| n | [uint64](#uint64) |  |  |
+| s | [string](#string) |  |  |
+| b | [bool](#bool) |  |  |
+| bs | [bytes](#bytes) |  |  |
 
 
 
@@ -632,6 +866,21 @@
 | ----- | ---- | ----- | ----------- |
 | publicKey | [bytes](#bytes) |  |  |
 | signature | [bytes](#bytes) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.Table"></a>
+
+### Table
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| tableName | [string](#string) |  |  |
 
 
 
@@ -755,6 +1004,22 @@
 
 
 
+<a name="immudb.schema.UseSnapshotRequest"></a>
+
+### UseSnapshotRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| sinceTx | [uint64](#uint64) |  |  |
+| asBeforeTx | [uint64](#uint64) |  |  |
+
+
+
+
+
+
 <a name="immudb.schema.User"></a>
 
 ### User
@@ -846,6 +1111,93 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | referenceRequest | [ReferenceRequest](#immudb.schema.ReferenceRequest) |  |  |
+| proveSinceTx | [uint64](#uint64) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.VerifiableSQLEntry"></a>
+
+### VerifiableSQLEntry
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| sqlEntry | [SQLEntry](#immudb.schema.SQLEntry) |  |  |
+| verifiableTx | [VerifiableTx](#immudb.schema.VerifiableTx) |  |  |
+| inclusionProof | [InclusionProof](#immudb.schema.InclusionProof) |  |  |
+| DatabaseId | [uint64](#uint64) |  |  |
+| TableId | [uint64](#uint64) |  |  |
+| PKName | [string](#string) |  |  |
+| ColIdsById | [VerifiableSQLEntry.ColIdsByIdEntry](#immudb.schema.VerifiableSQLEntry.ColIdsByIdEntry) | repeated |  |
+| ColIdsByName | [VerifiableSQLEntry.ColIdsByNameEntry](#immudb.schema.VerifiableSQLEntry.ColIdsByNameEntry) | repeated |  |
+| ColTypesById | [VerifiableSQLEntry.ColTypesByIdEntry](#immudb.schema.VerifiableSQLEntry.ColTypesByIdEntry) | repeated |  |
+
+
+
+
+
+
+<a name="immudb.schema.VerifiableSQLEntry.ColIdsByIdEntry"></a>
+
+### VerifiableSQLEntry.ColIdsByIdEntry
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [uint64](#uint64) |  |  |
+| value | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.VerifiableSQLEntry.ColIdsByNameEntry"></a>
+
+### VerifiableSQLEntry.ColIdsByNameEntry
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [string](#string) |  |  |
+| value | [uint64](#uint64) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.VerifiableSQLEntry.ColTypesByIdEntry"></a>
+
+### VerifiableSQLEntry.ColTypesByIdEntry
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [uint64](#uint64) |  |  |
+| value | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.VerifiableSQLGetRequest"></a>
+
+### VerifiableSQLGetRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| sqlGetRequest | [SQLGetRequest](#immudb.schema.SQLGetRequest) |  |  |
 | proveSinceTx | [uint64](#uint64) |  |  |
 
 
@@ -996,7 +1348,7 @@
 
 
 
- 
+
 
 
 <a name="immudb.schema.PermissionAction"></a>
@@ -1010,9 +1362,9 @@
 | REVOKE | 1 |  |
 
 
- 
 
- 
+
+
 
 
 <a name="immudb.schema.ImmuService"></a>
@@ -1064,8 +1416,14 @@ IMPORTANT: All get and safeget functions return base64-encoded keys and values, 
 | streamZScan | [ZScanRequest](#immudb.schema.ZScanRequest) | [Chunk](#immudb.schema.Chunk) stream |  |
 | streamHistory | [HistoryRequest](#immudb.schema.HistoryRequest) | [Chunk](#immudb.schema.Chunk) stream |  |
 | streamExecAll | [Chunk](#immudb.schema.Chunk) stream | [TxMetadata](#immudb.schema.TxMetadata) |  |
+| UseSnapshot | [UseSnapshotRequest](#immudb.schema.UseSnapshotRequest) | [.google.protobuf.Empty](#google.protobuf.Empty) | SQL |
+| SQLExec | [SQLExecRequest](#immudb.schema.SQLExecRequest) | [SQLExecResult](#immudb.schema.SQLExecResult) |  |
+| SQLQuery | [SQLQueryRequest](#immudb.schema.SQLQueryRequest) | [SQLQueryResult](#immudb.schema.SQLQueryResult) |  |
+| ListTables | [.google.protobuf.Empty](#google.protobuf.Empty) | [SQLQueryResult](#immudb.schema.SQLQueryResult) |  |
+| DescribeTable | [Table](#immudb.schema.Table) | [SQLQueryResult](#immudb.schema.SQLQueryResult) |  |
+| VerifiableSQLGet | [VerifiableSQLGetRequest](#immudb.schema.VerifiableSQLGetRequest) | [VerifiableSQLEntry](#immudb.schema.VerifiableSQLEntry) |  |
 
- 
+
 
 
 
@@ -1088,4 +1446,3 @@ IMPORTANT: All get and safeget functions return base64-encoded keys and values, 
 | <a name="bool" /> bool |  | bool | boolean | boolean | bool | bool | boolean | TrueClass/FalseClass |
 | <a name="string" /> string | A string must always contain UTF-8 encoded or 7-bit ASCII text. | string | String | str/unicode | string | string | string | String (UTF-8) |
 | <a name="bytes" /> bytes | May contain any arbitrary sequence of bytes. | string | ByteString | str | []byte | ByteString | string | String (ASCII-8BIT) |
-

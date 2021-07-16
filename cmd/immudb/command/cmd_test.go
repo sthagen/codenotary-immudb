@@ -35,7 +35,6 @@ func DefaultTestOptions() (o *server.Options) {
 	o.Pidfile = "tmp/immudbtest/immudbtest.pid"
 	o.Logfile = "immudbtest.log"
 	o.Dir = "tmp/immudbtest/data"
-	o.MTLs = false
 	return o
 }
 
@@ -55,12 +54,12 @@ func TestImmudbCommandFlagParser(t *testing.T) {
 		},
 	}
 	cl := Commandline{}
-	cl.setupFlags(cmd, server.DefaultOptions(), server.DefaultMTLsOptions())
+	cl.setupFlags(cmd, server.DefaultOptions())
 
 	err = viper.BindPFlags(cmd.Flags())
 	assert.Nil(t, err)
 
-	setupDefaults(server.DefaultOptions(), server.DefaultMTLsOptions())
+	setupDefaults(server.DefaultOptions())
 
 	_, err = executeCommand(cmd, "--logfile="+o.Logfile)
 	assert.NoError(t, err)
@@ -91,12 +90,12 @@ func TestImmudbCommandFlagParserPriority(t *testing.T) {
 			return nil
 		},
 	}
-	cl.setupFlags(cmd, server.DefaultOptions(), server.DefaultMTLsOptions())
+	cl.setupFlags(cmd, server.DefaultOptions())
 
 	err = viper.BindPFlags(cmd.Flags())
 	assert.Nil(t, err)
 
-	setupDefaults(server.DefaultOptions(), server.DefaultMTLsOptions())
+	setupDefaults(server.DefaultOptions())
 
 	// 4. config file
 	_, err = executeCommand(cmd)
@@ -175,6 +174,9 @@ func TestImmudbMtls(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.Flags().StringVar(&config, "config", "", "test")
 	viper.Set("mtls", true)
+	viper.Set("pkey", "../../../test/mtls_certs/ca.key.pem")
+	viper.Set("certificate", "../../../test/mtls_certs/ca.cert.pem")
+	viper.Set("clientcas", "../../../test/mtls_certs/ca-chain.cert.pem")
 
 	cl := Commandline{}
 

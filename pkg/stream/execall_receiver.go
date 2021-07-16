@@ -19,28 +19,29 @@ package stream
 import (
 	"bytes"
 	"github.com/codenotary/immudb/pkg/api/schema"
+	"github.com/codenotary/immudb/pkg/errors"
 	"github.com/golang/protobuf/proto"
 )
 
 type execAllStreamReceiver struct {
 	s                MsgReceiver
 	kvStreamReceiver KvStreamReceiver
-	StreamChunkSize  int
+	BufferSize       int
 }
 
 // NewExecAllStreamReceiver returns a new execAllStreamReceiver
-func NewExecAllStreamReceiver(s MsgReceiver, chunkSize int) ExecAllStreamReceiver {
+func NewExecAllStreamReceiver(s MsgReceiver, bs int) ExecAllStreamReceiver {
 	return &execAllStreamReceiver{
 		s:                s,
-		kvStreamReceiver: NewKvStreamReceiver(s, chunkSize),
-		StreamChunkSize:  chunkSize,
+		kvStreamReceiver: NewKvStreamReceiver(s, bs),
+		BufferSize:       bs,
 	}
 }
 
 // Next returns the following exec all operation found on the wire. If no more operations are presents on stream it returns io.EOF
 func (eas *execAllStreamReceiver) Next() (IsOp_Operation, error) {
 	for {
-		t, err := ReadValue(eas.s, eas.StreamChunkSize)
+		t, err := ReadValue(eas.s, eas.BufferSize)
 		if err != nil {
 			return nil, err
 		}
@@ -63,16 +64,16 @@ func (eas *execAllStreamReceiver) Next() (IsOp_Operation, error) {
 			}, nil
 		case TOp_ZAdd:
 			zr := &schema.ZAddRequest{}
-			zaddm, err := ReadValue(eas.s, eas.StreamChunkSize)
+			zaddm, err := ReadValue(eas.s, eas.BufferSize)
 			err = proto.Unmarshal(zaddm, zr)
 			if err != nil {
-				return nil, ErrUnableToReassembleExecAllMessage
+				return nil, errors.New(ErrUnableToReassembleExecAllMessage)
 			}
 			return &Op_ZAdd{
 				ZAdd: zr,
 			}, nil
 		case TOp_Ref:
-			return nil, ErrRefOptNotImplemented
+			return nil, errors.New(ErrRefOptNotImplemented)
 		}
 	}
 }

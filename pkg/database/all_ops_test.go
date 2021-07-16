@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codenotary/immudb/embedded/sql"
 	"github.com/codenotary/immudb/embedded/store"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/stretchr/testify/require"
@@ -77,9 +78,9 @@ func TestConcurrentCompactIndex(t *testing.T) {
 	done := make(chan struct{})
 	ack := make(chan struct{})
 
-	cleanUpFreq := 1 * time.Second
-	cleanUpTimeout := 10 * time.Second
-	execAllTimeout := 1 * time.Second
+	cleanUpFreq := 2 * time.Second
+	cleanUpTimeout := 2 * time.Second
+	execAllTimeout := 3 * time.Second
 
 	go func(ticker *time.Ticker, done <-chan struct{}, ack chan<- struct{}) {
 		for {
@@ -92,7 +93,7 @@ func TestConcurrentCompactIndex(t *testing.T) {
 			case <-ticker.C:
 				{
 					err := compactIndex(db, cleanUpTimeout)
-					if err != nil {
+					if err != nil && err != sql.ErrAlreadyClosed {
 						panic(err)
 					}
 				}
@@ -100,7 +101,7 @@ func TestConcurrentCompactIndex(t *testing.T) {
 		}
 	}(time.NewTicker(cleanUpFreq), done, ack)
 
-	txCount := 100
+	txCount := 10
 	txSize := 32
 
 	for i := 0; i < txCount; i++ {
@@ -125,6 +126,8 @@ func TestConcurrentCompactIndex(t *testing.T) {
 		require.NoError(t, err)
 
 	}
+
+	time.Sleep(4 * time.Second)
 
 	done <- struct{}{}
 	<-ack

@@ -22,7 +22,8 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
+	"fmt"
+	"github.com/codenotary/immudb/pkg/client/errors"
 	"io"
 	"io/ioutil"
 	"os"
@@ -142,16 +143,13 @@ type ImmuClient interface {
 	StreamHistory(ctx context.Context, req *schema.HistoryRequest) (*schema.Entries, error)
 	StreamExecAll(ctx context.Context, req *stream.ExecAllRequest) (*schema.TxMetadata, error)
 
-	// DEPRECATED: Please use CurrentState
-	CurrentRoot(ctx context.Context) (*schema.ImmutableState, error)
-	// DEPRECATED: Please use VerifiedSet
-	SafeSet(ctx context.Context, key []byte, value []byte) (*schema.TxMetadata, error)
-	// DEPRECATED: Please use VerifiedGet
-	SafeGet(ctx context.Context, key []byte, opts ...grpc.CallOption) (*schema.Entry, error)
-	// DEPRECATED: Please use VerifiedZAdd
-	SafeZAdd(ctx context.Context, set []byte, score float64, key []byte) (*schema.TxMetadata, error)
-	// DEPRECATED: Please use VerifiedSetReference
-	SafeReference(ctx context.Context, key []byte, referencedKey []byte) (*schema.TxMetadata, error)
+	SQLExec(ctx context.Context, sql string, params map[string]interface{}) (*schema.SQLExecResult, error)
+	UseSnapshot(ctx context.Context, sinceTx, asBeforeTx uint64) error
+	SQLQuery(ctx context.Context, sql string, params map[string]interface{}, renewSnapshot bool) (*schema.SQLQueryResult, error)
+	ListTables(ctx context.Context) (*schema.SQLQueryResult, error)
+	DescribeTable(ctx context.Context, tableName string) (*schema.SQLQueryResult, error)
+
+	VerifyRow(ctx context.Context, row *schema.Row, table string, pkVal *schema.SQLValue) error
 }
 
 const DefaultDB = "defaultdb"
@@ -203,7 +201,7 @@ func NewImmuClient(options *Options) (c ImmuClient, err error) {
 	}
 
 	if options.StreamChunkSize < stream.MinChunkSize {
-		return nil, stream.ErrChunkTooSmall
+		return nil, errors.New(stream.ErrChunkTooSmall).WithCode(errors.CodInvalidParameterValue)
 	}
 
 	c.WithOptions(options)
@@ -330,7 +328,7 @@ func (c *immuClient) Disconnect() error {
 	start := time.Now()
 
 	if !c.IsConnected() {
-		return ErrNotConnected
+		return errors.FromError(ErrNotConnected)
 	}
 
 	if err := c.clientConn.Close(); err != nil {
@@ -391,7 +389,7 @@ func (c *immuClient) CreateUser(ctx context.Context, user []byte, pass []byte, p
 	start := time.Now()
 
 	if !c.IsConnected() {
-		return ErrNotConnected
+		return errors.FromError(ErrNotConnected)
 	}
 
 	_, err := c.ServiceClient.CreateUser(ctx, &schema.CreateUserRequest{
@@ -411,7 +409,7 @@ func (c *immuClient) ChangePassword(ctx context.Context, user []byte, oldPass []
 	start := time.Now()
 
 	if !c.IsConnected() {
-		return ErrNotConnected
+		return errors.FromError(ErrNotConnected)
 	}
 
 	_, err := c.ServiceClient.ChangePassword(ctx, &schema.ChangePasswordRequest{
@@ -429,7 +427,7 @@ func (c *immuClient) UpdateAuthConfig(ctx context.Context, kind auth.Kind) error
 	start := time.Now()
 
 	if !c.IsConnected() {
-		return ErrNotConnected
+		return errors.FromError(ErrNotConnected)
 	}
 
 	_, err := c.ServiceClient.UpdateAuthConfig(ctx, &schema.AuthConfig{
@@ -445,7 +443,7 @@ func (c *immuClient) UpdateMTLSConfig(ctx context.Context, enabled bool) error {
 	start := time.Now()
 
 	if !c.IsConnected() {
-		return ErrNotConnected
+		return errors.FromError(ErrNotConnected)
 	}
 
 	_, err := c.ServiceClient.UpdateMTLSConfig(ctx, &schema.MTLSConfig{
@@ -462,7 +460,7 @@ func (c *immuClient) Login(ctx context.Context, user []byte, pass []byte) (*sche
 	start := time.Now()
 
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	result, err := c.ServiceClient.Login(ctx, &schema.LoginRequest{
@@ -472,7 +470,7 @@ func (c *immuClient) Login(ctx context.Context, user []byte, pass []byte) (*sche
 
 	c.Logger.Debugf("login finished in %s", time.Since(start))
 
-	return result, err
+	return result, errors.FromError(err)
 }
 
 // Logout ...
@@ -480,24 +478,32 @@ func (c *immuClient) Logout(ctx context.Context) error {
 	start := time.Now()
 
 	if !c.IsConnected() {
-		return ErrNotConnected
+		return errors.FromError(ErrNotConnected)
 	}
 
-	if err := c.Tkns.DeleteToken(); err != nil {
+	if _, err := c.ServiceClient.Logout(ctx, new(empty.Empty)); err != nil {
 		return err
 	}
 
-	_, err := c.ServiceClient.Logout(ctx, new(empty.Empty))
+	tokenFileExists, err := c.Tkns.IsTokenPresent()
+	if err != nil {
+		return fmt.Errorf("error checking if token file exists: %v", err)
+	}
+	if tokenFileExists {
+		if err := c.Tkns.DeleteToken(); err != nil {
+			return fmt.Errorf("error deleting token file during logout: %v", err)
+		}
+	}
 
 	c.Logger.Debugf("logout finished in %s", time.Since(start))
 
-	return err
+	return nil
 }
 
 // CurrentState returns current database state
 func (c *immuClient) CurrentState(ctx context.Context) (*schema.ImmutableState, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -509,7 +515,7 @@ func (c *immuClient) CurrentState(ctx context.Context) (*schema.ImmutableState, 
 // Get ...
 func (c *immuClient) Get(ctx context.Context, key []byte) (*schema.Entry, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -555,7 +561,7 @@ func (c *immuClient) verifiedGet(ctx context.Context, kReq *schema.KeyRequest) (
 	defer c.StateService.CacheUnlock()
 
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	state, err := c.StateService.GetState(ctx, c.Options.CurrentDatabase)
@@ -657,7 +663,7 @@ func (c *immuClient) verifiedGet(ctx context.Context, kReq *schema.KeyRequest) (
 // GetSince ...
 func (c *immuClient) GetSince(ctx context.Context, key []byte, tx uint64) (*schema.Entry, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -669,7 +675,7 @@ func (c *immuClient) GetSince(ctx context.Context, key []byte, tx uint64) (*sche
 // GetAt ...
 func (c *immuClient) GetAt(ctx context.Context, key []byte, tx uint64) (*schema.Entry, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -681,7 +687,7 @@ func (c *immuClient) GetAt(ctx context.Context, key []byte, tx uint64) (*schema.
 // Scan ...
 func (c *immuClient) Scan(ctx context.Context, req *schema.ScanRequest) (*schema.Entries, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	return c.ServiceClient.Scan(ctx, req)
@@ -690,7 +696,7 @@ func (c *immuClient) Scan(ctx context.Context, req *schema.ScanRequest) (*schema
 // ZScan ...
 func (c *immuClient) ZScan(ctx context.Context, req *schema.ZScanRequest) (*schema.ZEntries, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	return c.ServiceClient.ZScan(ctx, req)
@@ -699,7 +705,7 @@ func (c *immuClient) ZScan(ctx context.Context, req *schema.ZScanRequest) (*sche
 // Count ...
 func (c *immuClient) Count(ctx context.Context, prefix []byte) (*schema.EntryCount, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 	return c.ServiceClient.Count(ctx, &schema.KeyPrefix{Prefix: prefix})
 }
@@ -707,7 +713,7 @@ func (c *immuClient) Count(ctx context.Context, prefix []byte) (*schema.EntryCou
 // CountAll ...
 func (c *immuClient) CountAll(ctx context.Context) (*schema.EntryCount, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 	return c.ServiceClient.CountAll(ctx, new(empty.Empty))
 }
@@ -715,7 +721,7 @@ func (c *immuClient) CountAll(ctx context.Context) (*schema.EntryCount, error) {
 // Set ...
 func (c *immuClient) Set(ctx context.Context, key []byte, value []byte) (*schema.TxMetadata, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -742,7 +748,7 @@ func (c *immuClient) VerifiedSet(ctx context.Context, key []byte, value []byte) 
 	defer c.StateService.CacheUnlock()
 
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -838,7 +844,7 @@ func (c *immuClient) VerifiedSet(ctx context.Context, key []byte, value []byte) 
 
 func (c *immuClient) SetAll(ctx context.Context, req *schema.SetRequest) (*schema.TxMetadata, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	txmd, err := c.ServiceClient.Set(ctx, req)
@@ -870,7 +876,7 @@ func (c *immuClient) ExecAll(ctx context.Context, req *schema.ExecAllRequest) (*
 // GetAll ...
 func (c *immuClient) GetAll(ctx context.Context, keys [][]byte) (*schema.Entries, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -886,7 +892,7 @@ func (c *immuClient) GetAll(ctx context.Context, keys [][]byte) (*schema.Entries
 // TxByID ...
 func (c *immuClient) TxByID(ctx context.Context, tx uint64) (*schema.Tx, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -914,7 +920,7 @@ func (c *immuClient) VerifiedTxByID(ctx context.Context, tx uint64) (*schema.Tx,
 	defer c.StateService.CacheUnlock()
 
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -993,7 +999,7 @@ func (c *immuClient) VerifiedTxByID(ctx context.Context, tx uint64) (*schema.Tx,
 // TxScan ...
 func (c *immuClient) TxScan(ctx context.Context, req *schema.TxScanRequest) (*schema.TxList, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	return c.ServiceClient.TxScan(ctx, req)
@@ -1002,7 +1008,7 @@ func (c *immuClient) TxScan(ctx context.Context, req *schema.TxScanRequest) (*sc
 // History ...
 func (c *immuClient) History(ctx context.Context, req *schema.HistoryRequest) (sl *schema.Entries, err error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -1019,7 +1025,7 @@ func (c *immuClient) SetReference(ctx context.Context, key []byte, referencedKey
 // SetReferenceAt ...
 func (c *immuClient) SetReferenceAt(ctx context.Context, key []byte, referencedKey []byte, atTx uint64) (*schema.TxMetadata, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -1056,7 +1062,7 @@ func (c *immuClient) VerifiedSetReferenceAt(ctx context.Context, key []byte, ref
 	defer c.StateService.CacheUnlock()
 
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -1161,7 +1167,7 @@ func (c *immuClient) ZAdd(ctx context.Context, set []byte, score float64, key []
 // ZAddAt ...
 func (c *immuClient) ZAddAt(ctx context.Context, set []byte, score float64, key []byte, atTx uint64) (*schema.TxMetadata, error) {
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -1199,7 +1205,7 @@ func (c *immuClient) VerifiedZAddAt(ctx context.Context, set []byte, score float
 	defer c.StateService.CacheUnlock()
 
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	start := time.Now()
@@ -1356,12 +1362,12 @@ func (c *immuClient) UseDatabase(ctx context.Context, db *schema.Database) (*sch
 	start := time.Now()
 
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	result, err := c.ServiceClient.UseDatabase(ctx, db)
 
-	c.Options.CurrentDatabase = db.Databasename
+	c.Options.CurrentDatabase = db.DatabaseName
 
 	c.Logger.Debugf("UseDatabase finished in %s", time.Since(start))
 
@@ -1372,7 +1378,7 @@ func (c *immuClient) CleanIndex(ctx context.Context, req *empty.Empty) error {
 	start := time.Now()
 
 	if !c.IsConnected() {
-		return ErrNotConnected
+		return errors.FromError(ErrNotConnected)
 	}
 
 	_, err := c.ServiceClient.CleanIndex(ctx, req)
@@ -1421,7 +1427,7 @@ func (c *immuClient) DatabaseList(ctx context.Context) (*schema.DatabaseListResp
 	start := time.Now()
 
 	if !c.IsConnected() {
-		return nil, ErrNotConnected
+		return nil, errors.FromError(ErrNotConnected)
 	}
 
 	result, err := c.ServiceClient.DatabaseList(ctx, &empty.Empty{})

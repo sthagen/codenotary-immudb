@@ -17,6 +17,7 @@ package multiapp
 
 import (
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -127,8 +128,8 @@ func TestMultiAppClosedAndDeletedFiles(t *testing.T) {
 	_, n, err := a.Append([]byte{0, 1, 2, 3, 4, 5, 6, 7})
 	require.NoError(t, err)
 
-	err = a.appendables.Apply(func(k interface{}, v interface{}) error {
-		return v.(*singleapp.AppendableFile).Close()
+	err = a.appendables.Apply(func(k int64, v appendable.Appendable) error {
+		return v.Close()
 	})
 	require.NoError(t, err)
 
@@ -154,8 +155,8 @@ func TestMultiAppClosedFiles(t *testing.T) {
 	_, _, err = a.Append([]byte{0, 1, 2})
 	require.NoError(t, err)
 
-	err = a.appendables.Apply(func(k interface{}, v interface{}) error {
-		return v.(*singleapp.AppendableFile).Close()
+	err = a.appendables.Apply(func(k int64, v appendable.Appendable) error {
+		return v.Close()
 	})
 	require.NoError(t, err)
 
@@ -285,4 +286,40 @@ func TestMultiAppCompression(t *testing.T) {
 
 	err = a.Close()
 	require.NoError(t, err)
+}
+
+func TestMultiAppAppendableForCurrentChunk(t *testing.T) {
+	a, err := Open("testdata", DefaultOptions().WithFileSize(10))
+	defer os.RemoveAll("testdata")
+	require.NoError(t, err)
+
+	testData := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+
+	off, n, err := a.Append(testData)
+	require.NoError(t, err)
+	require.EqualValues(t, 0, off)
+	require.EqualValues(t, n, 12)
+
+	app, err := a.appendableFor(11)
+	require.NoError(t, err)
+	require.Equal(t, a.currApp, app)
+}
+
+func TestMultiappOpenIncorrectPath(t *testing.T) {
+	require.NoError(t, ioutil.WriteFile("testfile", []byte{}, 0777))
+	defer os.Remove("testfile")
+
+	a, err := Open("testfile", DefaultOptions())
+	require.Error(t, err)
+	require.Nil(t, a)
+}
+
+func TestMultiappOpenFolderWithBogusFiles(t *testing.T) {
+	require.NoError(t, os.MkdirAll("test_bogus_dir", 0777))
+	defer os.RemoveAll("test_bogus_dir")
+	require.NoError(t, ioutil.WriteFile("test_bogus_dir/bogus_file", []byte{}, 0777))
+
+	a, err := Open("test_bogus_dir", DefaultOptions())
+	require.Error(t, err)
+	require.Nil(t, a)
 }

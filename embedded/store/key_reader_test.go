@@ -19,9 +19,7 @@ import (
 	"encoding/binary"
 	"os"
 	"testing"
-	"time"
 
-	"github.com/codenotary/immudb/embedded/tbtree"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,44 +36,105 @@ func TestImmudbStoreReader(t *testing.T) {
 		kvs := make([]*KV, eCount)
 
 		for j := 0; j < eCount; j++ {
-			k := make([]byte, 8)
-			binary.BigEndian.PutUint64(k, uint64(j))
+			var k [8]byte
+			binary.BigEndian.PutUint64(k[:], uint64(j))
 
-			v := make([]byte, 8)
-			binary.BigEndian.PutUint64(v, uint64(i))
+			var v [8]byte
+			binary.BigEndian.PutUint64(v[:], uint64(i))
 
-			kvs[j] = &KV{Key: k, Value: v}
+			kvs[j] = &KV{Key: k[:], Value: v[:]}
 		}
 
-		_, err := immuStore.Commit(kvs, false)
+		_, err := immuStore.Commit(kvs, true)
 		require.NoError(t, err)
 	}
-
-	time.Sleep(1 * time.Second)
 
 	snap, err := immuStore.Snapshot()
 	require.NoError(t, err)
 
-	_, err = immuStore.NewKeyReader(nil, nil)
+	_, err = snap.NewKeyReader(nil)
 	require.Equal(t, ErrIllegalArguments, err)
 
-	_, err = immuStore.NewKeyReader(snap, nil)
-	require.Equal(t, ErrIllegalArguments, err)
-
-	spec := &tbtree.ReaderSpec{}
-	reader, err := immuStore.NewKeyReader(snap, spec)
+	reader, err := snap.NewKeyReader(&KeyReaderSpec{})
 	require.NoError(t, err)
 
 	defer reader.Close()
 
-	for {
-		_, v, _, _, err := reader.Read()
-		if err != nil {
-			require.Equal(t, ErrNoMoreEntries, err)
-			break
+	for j := 0; j < eCount; j++ {
+		var k [8]byte
+		binary.BigEndian.PutUint64(k[:], uint64(j))
+
+		var v [8]byte
+		binary.BigEndian.PutUint64(v[:], uint64(txCount-1))
+
+		rk, vref, _, _, err := reader.Read()
+		require.NoError(t, err)
+		require.Equal(t, k[:], rk)
+
+		rv, err := vref.Resolve()
+		require.NoError(t, err)
+		require.Equal(t, v[:], rv)
+	}
+
+	_, _, _, _, err = reader.Read()
+	require.Equal(t, ErrNoMoreEntries, err)
+}
+
+func TestImmudbStoreReaderAsBefore(t *testing.T) {
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(4)
+	immuStore, err := Open("data_store_reader_as_before", opts)
+	require.NoError(t, err)
+	defer os.RemoveAll("data_store_reader_as_before")
+
+	txCount := 100
+	eCount := 100
+
+	for i := 0; i < txCount; i++ {
+		kvs := make([]*KV, eCount)
+
+		for j := 0; j < eCount; j++ {
+			var k [8]byte
+			binary.BigEndian.PutUint64(k[:], uint64(j))
+
+			var v [8]byte
+			binary.BigEndian.PutUint64(v[:], uint64(i))
+
+			kvs[j] = &KV{Key: k[:], Value: v[:]}
 		}
 
-		_, err = v.Resolve()
+		_, err := immuStore.Commit(kvs, true)
+		require.NoError(t, err)
+	}
+
+	snap, err := immuStore.Snapshot()
+	require.NoError(t, err)
+
+	reader, err := snap.NewKeyReader(&KeyReaderSpec{})
+	require.NoError(t, err)
+
+	defer reader.Close()
+
+	for i := 0; i < txCount; i++ {
+		for j := 0; j < eCount; j++ {
+			var k [8]byte
+			binary.BigEndian.PutUint64(k[:], uint64(j))
+
+			var v [8]byte
+			binary.BigEndian.PutUint64(v[:], uint64(i))
+
+			rk, vref, _, err := reader.ReadAsBefore(uint64(i + 2))
+			require.NoError(t, err)
+			require.Equal(t, k[:], rk)
+
+			rv, err := vref.Resolve()
+			require.NoError(t, err)
+			require.Equal(t, v[:], rv)
+		}
+
+		_, _, _, _, err = reader.Read()
+		require.Equal(t, ErrNoMoreEntries, err)
+
+		err = reader.Reset()
 		require.NoError(t, err)
 	}
 }

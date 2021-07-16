@@ -44,26 +44,31 @@ Environment variables:
   IMMUDB_MAX_RECV_MSG_SIZE=4194304
   IMMUDB_DETACHED=false
   IMMUDB_CONSISTENCY_CHECK=true
-  IMMUDB_PKEY=./tools/mtls/3_application/private/localhost.key.pem
-  IMMUDB_CERTIFICATE=./tools/mtls/3_application/certs/localhost.cert.pem
-  IMMUDB_CLIENTCAS=./tools/mtls/2_intermediate/certs/ca-chain.cert.pem
+  IMMUDB_PKEY=
+  IMMUDB_CERTIFICATE=
+  IMMUDB_CLIENTCAS=
   IMMUDB_DEVMODE=true
   IMMUDB_MAINTENANCE=false
   IMMUDB_ADMIN_PASSWORD=immudb
   IMMUDB_SIGNING_KEY=
-  IMMUDB_SYNCED=false`,
+  IMMUDB_SYNCED=true
+  IMMUDB_TOKEN_EXPIRY_TIME=1440
+  IMMUDB_PGSQL_SERVER=true
+  IMMUDB_PGSQL_SERVER_PORT=5432
+  LOG_LEVEL={debug|info|warning|error}
+`,
 		DisableAutoGenTag: true,
 		RunE:              cl.Immudb(immudbServer),
 		PersistentPreRunE: cl.ConfigChain(nil),
 	}
 
-	cl.setupFlags(cmd, server.DefaultOptions(), server.DefaultMTLsOptions())
+	cl.setupFlags(cmd, server.DefaultOptions())
 
 	if err := viper.BindPFlags(cmd.Flags()); err != nil {
 		return nil, err
 	}
 
-	setupDefaults(server.DefaultOptions(), server.DefaultMTLsOptions())
+	setupDefaults(server.DefaultOptions())
 
 	return cmd, nil
 }

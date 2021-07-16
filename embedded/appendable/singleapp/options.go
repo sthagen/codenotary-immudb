@@ -46,7 +46,7 @@ func DefaultOptions() *Options {
 	}
 }
 
-func validOptions(opts *Options) bool {
+func (opts *Options) Valid() bool {
 	return opts != nil
 }
 
@@ -68,6 +68,14 @@ func (opts *Options) WithFileMode(fileMode os.FileMode) *Options {
 func (opts *Options) WithCompressionFormat(compressionFormat int) *Options {
 	opts.compressionFormat = compressionFormat
 	return opts
+}
+
+func (opts *Options) GetCompressionFormat() int {
+	return opts.compressionFormat
+}
+
+func (opts *Options) GetCompressionLevel() int {
+	return opts.compressionLevel
 }
 
 func (opts *Options) WithCompresionLevel(compressionLevel int) *Options {

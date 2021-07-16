@@ -17,11 +17,13 @@ limitations under the License.
 package server
 
 import (
+	"crypto/tls"
 	"fmt"
-	"github.com/codenotary/immudb/pkg/stream"
 	"net"
 	"strconv"
 	"strings"
+
+	"github.com/codenotary/immudb/pkg/stream"
 
 	"github.com/codenotary/immudb/embedded/store"
 	"github.com/codenotary/immudb/pkg/auth"
@@ -32,61 +34,78 @@ const DefaultdbName = "defaultdb"
 
 // Options server options list
 type Options struct {
-	Dir                 string
-	Network             string
-	Address             string
-	Port                int
-	MetricsPort         int
-	Config              string
-	Pidfile             string
-	Logfile             string
-	MTLs                bool
-	MTLsOptions         *MTLsOptions
-	auth                bool
-	MaxRecvMsgSize      int
-	NoHistograms        bool
-	Detached            bool
-	CorruptionCheck     bool
-	MetricsServer       bool
-	DevMode             bool
-	AdminPassword       string `json:"-"`
-	systemAdminDbName   string
-	defaultDbName       string
-	listener            net.Listener
-	usingCustomListener bool
-	maintenance         bool
-	SigningKey          string
-	StoreOptions        *store.Options
-	StreamChunkSize     int
+	Dir                  string
+	Network              string
+	Address              string
+	Port                 int
+	MetricsPort          int
+	Config               string
+	Pidfile              string
+	Logfile              string
+	TLSConfig            *tls.Config
+	auth                 bool
+	MaxRecvMsgSize       int
+	NoHistograms         bool
+	Detached             bool
+	MetricsServer        bool
+	WebServer            bool
+	WebServerPort        int
+	DevMode              bool
+	AdminPassword        string `json:"-"`
+	systemAdminDbName    string
+	defaultDbName        string
+	listener             net.Listener
+	usingCustomListener  bool
+	maintenance          bool
+	SigningKey           string
+	StoreOptions         *store.Options
+	RemoteStorageOptions *RemoteStorageOptions
+	StreamChunkSize      int
+	TokenExpiryTimeMin   int
+	PgsqlServer          bool
+	PgsqlServerPort      int
+}
+
+type RemoteStorageOptions struct {
+	S3Storage     bool
+	S3Endpoint    string
+	S3AccessKeyID string
+	S3SecretKey   string `json:"-"`
+	S3BucketName  string
+	S3PathPrefix  string
 }
 
 // DefaultOptions returns default server options
 func DefaultOptions() *Options {
 	return &Options{
-		Dir:                 "./data",
-		Network:             "tcp",
-		Address:             "0.0.0.0",
-		Port:                3322,
-		MetricsPort:         9497,
-		Config:              "configs/immudb.toml",
-		Pidfile:             "",
-		Logfile:             "",
-		MTLs:                false,
-		MTLsOptions:         &MTLsOptions{},
-		auth:                true,
-		MaxRecvMsgSize:      1024 * 1024 * 32, // 32Mb
-		NoHistograms:        false,
-		Detached:            false,
-		CorruptionCheck:     true,
-		MetricsServer:       true,
-		DevMode:             false,
-		AdminPassword:       auth.SysAdminPassword,
-		systemAdminDbName:   SystemdbName,
-		defaultDbName:       DefaultdbName,
-		usingCustomListener: false,
-		maintenance:         false,
-		StoreOptions:        DefaultStoreOptions(),
-		StreamChunkSize:     stream.DefaultChunkSize,
+		Dir:                  "./data",
+		Network:              "tcp",
+		Address:              "0.0.0.0",
+		Port:                 3322,
+		MetricsPort:          9497,
+		WebServerPort:        8080,
+		Config:               "configs/immudb.toml",
+		Pidfile:              "",
+		Logfile:              "",
+		TLSConfig:            &tls.Config{},
+		auth:                 true,
+		MaxRecvMsgSize:       1024 * 1024 * 32, // 32Mb
+		NoHistograms:         false,
+		Detached:             false,
+		MetricsServer:        true,
+		WebServer:            true,
+		DevMode:              false,
+		AdminPassword:        auth.SysAdminPassword,
+		systemAdminDbName:    SystemdbName,
+		defaultDbName:        DefaultdbName,
+		usingCustomListener:  false,
+		maintenance:          false,
+		StoreOptions:         DefaultStoreOptions(),
+		RemoteStorageOptions: DefaultRemoteStorageOptions(),
+		StreamChunkSize:      stream.DefaultChunkSize,
+		TokenExpiryTimeMin:   1440,
+		PgsqlServer:          false,
+		PgsqlServerPort:      5432,
 	}
 }
 
@@ -97,6 +116,12 @@ func DefaultStoreOptions() *store.Options {
 		WithMaxLinearProofLen(0).
 		WithMaxConcurrency(10).
 		WithMaxValueLen(32 << 20)
+}
+
+func DefaultRemoteStorageOptions() *RemoteStorageOptions {
+	return &RemoteStorageOptions{
+		S3Storage: false,
+	}
 }
 
 // WithDir sets dir
@@ -143,15 +168,9 @@ func (o *Options) WithLogfile(logfile string) *Options {
 	return o
 }
 
-// WithMTLs sets mtls
-func (o *Options) WithMTLs(MTLs bool) *Options {
-	o.MTLs = MTLs
-	return o
-}
-
-// WithMTLsOptions sets WithMTLsOptions
-func (o *Options) WithMTLsOptions(MTLsOptions *MTLsOptions) *Options {
-	o.MTLsOptions = MTLsOptions
+// WithTLS sets tls config
+func (o *Options) WithTLS(tls *tls.Config) *Options {
+	o.TLSConfig = tls
 	return o
 }
 
@@ -186,12 +205,6 @@ func (o *Options) WithDetached(detached bool) *Options {
 	return o
 }
 
-// WithCorruptionCheck enable corruption check
-func (o *Options) WithCorruptionCheck(corruptionCheck bool) *Options {
-	o.CorruptionCheck = corruptionCheck
-	return o
-}
-
 func (o *Options) WithStoreOptions(storeOpts *store.Options) *Options {
 	o.StoreOptions = storeOpts
 	return o
@@ -207,13 +220,18 @@ func (o *Options) MetricsBind() string {
 	return o.Address + ":" + strconv.Itoa(o.MetricsPort)
 }
 
+// WebBind return bind address for the Web API/console
+func (o *Options) WebBind() string {
+	return o.Address + ":" + strconv.Itoa(o.WebServerPort)
+}
+
 // String print options
 func (o *Options) String() string {
 	rightPad := func(k string, v interface{}) string {
 		return fmt.Sprintf("%-17s: %v", k, v)
 	}
 	opts := make([]string, 0, 17)
-  opts = append(opts, "================ Config ================")
+	opts = append(opts, "================ Config ================")
 	opts = append(opts, rightPad("Data dir", o.Dir))
 	opts = append(opts, rightPad("Address", fmt.Sprintf("%s:%d", o.Address, o.Port)))
 	if o.MetricsServer {
@@ -228,13 +246,18 @@ func (o *Options) String() string {
 	if o.Logfile != "" {
 		opts = append(opts, rightPad("Log file", o.Logfile))
 	}
-  opts = append(opts, rightPad("MTLS enabled", o.MTLs))
 	opts = append(opts, rightPad("Max recv msg size", o.MaxRecvMsgSize))
 	opts = append(opts, rightPad("Auth enabled", o.auth))
 	opts = append(opts, rightPad("Dev mode", o.DevMode))
 	opts = append(opts, rightPad("Default database", o.defaultDbName))
 	opts = append(opts, rightPad("Maintenance mode", o.maintenance))
 	opts = append(opts, rightPad("Synced mode", o.StoreOptions.Synced))
+	if o.RemoteStorageOptions.S3Storage {
+		opts = append(opts, "S3 storage")
+		opts = append(opts, rightPad("   endpoint", o.RemoteStorageOptions.S3Endpoint))
+		opts = append(opts, rightPad("   bucket name", o.RemoteStorageOptions.S3BucketName))
+		opts = append(opts, rightPad("   prefix", o.RemoteStorageOptions.S3PathPrefix))
+	}
 	opts = append(opts, "----------------------------------------")
 	opts = append(opts, "Superadmin default credentials")
 	opts = append(opts, rightPad("   Username", auth.SysAdminUsername))
@@ -246,6 +269,20 @@ func (o *Options) String() string {
 // WithMetricsServer ...
 func (o *Options) WithMetricsServer(metricsServer bool) *Options {
 	o.MetricsServer = metricsServer
+	return o
+}
+
+// WithWebServer ...
+func (o *Options) WithWebServer(webServer bool) *Options {
+	o.WebServer = webServer
+	return o
+}
+
+// WithWebServerPort ...
+func (o *Options) WithWebServerPort(port int) *Options {
+	if port > 0 {
+		o.WebServerPort = port
+	}
 	return o
 }
 
@@ -299,4 +336,59 @@ func (o *Options) WithSigningKey(signingKey string) *Options {
 func (o *Options) WithStreamChunkSize(streamChunkSize int) *Options {
 	o.StreamChunkSize = streamChunkSize
 	return o
+}
+
+// WithTokenExpiryTime set authentication token expiration time in minutes
+func (o *Options) WithTokenExpiryTime(tokenExpiryTimeMin int) *Options {
+	o.TokenExpiryTimeMin = tokenExpiryTimeMin
+	return o
+}
+
+// PgsqlServerPort enable or disable pgsql server
+func (o *Options) WithPgsqlServer(enable bool) *Options {
+	o.PgsqlServer = enable
+	return o
+}
+
+// PgsqlServerPort sets pgdsql server port
+func (o *Options) WithPgsqlServerPort(port int) *Options {
+	o.PgsqlServerPort = port
+	return o
+}
+
+func (o *Options) WithRemoteStorageOptions(remoteStorageOptions *RemoteStorageOptions) *Options {
+	o.RemoteStorageOptions = remoteStorageOptions
+	return o
+}
+
+// RemoteStorageOptions
+
+func (opts *RemoteStorageOptions) WithS3Storage(S3Storage bool) *RemoteStorageOptions {
+	opts.S3Storage = S3Storage
+	return opts
+}
+
+func (opts *RemoteStorageOptions) WithS3Endpoint(s3Endpoint string) *RemoteStorageOptions {
+	opts.S3Endpoint = s3Endpoint
+	return opts
+}
+
+func (opts *RemoteStorageOptions) WithS3AccessKeyID(s3AccessKeyID string) *RemoteStorageOptions {
+	opts.S3AccessKeyID = s3AccessKeyID
+	return opts
+}
+
+func (opts *RemoteStorageOptions) WithS3SecretKey(s3SecretKey string) *RemoteStorageOptions {
+	opts.S3SecretKey = s3SecretKey
+	return opts
+}
+
+func (opts *RemoteStorageOptions) WithS3BucketName(s3BucketName string) *RemoteStorageOptions {
+	opts.S3BucketName = s3BucketName
+	return opts
+}
+
+func (opts *RemoteStorageOptions) WithS3PathPrefix(s3PathPrefix string) *RemoteStorageOptions {
+	opts.S3PathPrefix = s3PathPrefix
+	return opts
 }

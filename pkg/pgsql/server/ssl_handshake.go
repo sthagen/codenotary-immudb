@@ -17,34 +17,18 @@ limitations under the License.
 package server
 
 import (
-	"sync"
-
-	"github.com/codenotary/immudb/pkg/database"
+	"crypto/tls"
 )
 
-type databaseList struct {
-	databases []database.DB
-	sync.RWMutex
-}
-
-//NewDatabaseList constructs a new database list
-func NewDatabaseList() DatabaseList {
-	return &databaseList{
-		databases: make([]database.DB, 0),
+func (s *session) handshake() error {
+	if s.tlsConfig == nil || len(s.tlsConfig.Certificates) == 0 {
+		return ErrSSLNotSupported
 	}
-}
-func (d *databaseList) Append(database database.DB) {
-	d.Lock()
-	defer d.Unlock()
-	d.databases = append(d.databases, database)
-}
-func (d *databaseList) GetByIndex(index int64) database.DB {
-	d.RLock()
-	defer d.RUnlock()
-	return d.databases[index]
-}
-func (d *databaseList) Length() int {
-	d.RLock()
-	defer d.RUnlock()
-	return len(d.databases)
+	tlsConn := tls.Server(s.mr.Connection(), s.tlsConfig)
+	err := tlsConn.Handshake()
+	if err != nil {
+		return err
+	}
+	s.mr.UpgradeConnection(tlsConn)
+	return nil
 }

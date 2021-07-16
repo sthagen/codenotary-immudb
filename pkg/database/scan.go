@@ -13,12 +13,10 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
 package database
 
 import (
 	"github.com/codenotary/immudb/embedded/store"
-	"github.com/codenotary/immudb/embedded/tbtree"
 	"github.com/codenotary/immudb/pkg/api/schema"
 )
 
@@ -42,7 +40,7 @@ func (d *db) Scan(req *schema.ScanRequest) (*schema.Entries, error) {
 	}
 
 	if !req.NoWait {
-		err := d.st.WaitForIndexingUpto(waitUntilTx)
+		err := d.st.WaitForIndexingUpto(waitUntilTx, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -69,16 +67,12 @@ func (d *db) Scan(req *schema.ScanRequest) (*schema.Entries, error) {
 		seekKey = EncodeKey(req.SeekKey)
 	}
 
-	r, err := d.st.NewKeyReader(
-		snap,
-		&tbtree.ReaderSpec{
+	r, err := snap.NewKeyReader(
+		&store.KeyReaderSpec{
 			SeekKey:   seekKey,
 			Prefix:    EncodeKey(req.Prefix),
 			DescOrder: req.Desc,
 		})
-	if err == store.ErrNoMoreEntries {
-		return &schema.Entries{}, nil
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +80,7 @@ func (d *db) Scan(req *schema.ScanRequest) (*schema.Entries, error) {
 
 	for {
 		key, _, tx, _, err := r.Read()
-		if err == tbtree.ErrNoMoreEntries {
+		if err == store.ErrNoMoreEntries {
 			break
 		}
 		if err != nil {

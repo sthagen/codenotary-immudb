@@ -42,14 +42,6 @@ func (e *executable) Stop() {
 }
 
 func (e *executable) Run() {
-	go func() {
-		e.a.metrics.port = e.a.opts.PrometheusPort
-		e.a.metrics.address = e.a.opts.PrometheusHost
-		err := e.a.metrics.startServer()
-		if err != nil {
-			fmt.Println(err.Error())
-		}
-	}()
 	fmt.Println(time.Duration(e.a.cycleFrequency) * time.Second)
 	e.a.ImmuAudit.Run(time.Duration(e.a.cycleFrequency)*time.Second, false, e.stop, e.stop)
 }

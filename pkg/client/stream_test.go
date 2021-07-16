@@ -1,3 +1,4 @@
+// +build streams
 /*
 Copyright 2021 CodeNotary, Inc. All rights reserved.
 
@@ -21,8 +22,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"errors"
+	"github.com/codenotary/immudb/pkg/client/errors"
+
 	"fmt"
+	"io"
+	"os"
+	"testing"
+
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/server"
 	"github.com/codenotary/immudb/pkg/server/servertest"
@@ -33,20 +39,17 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
-	"io"
-	"os"
-	"testing"
 )
 
 func TestImmuClient_SetGetStream(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
@@ -92,11 +95,11 @@ func TestImmuClient_Set32MBStream(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
@@ -131,11 +134,11 @@ func TestImmuClient_SetMaxValueExceeded(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
@@ -156,18 +159,19 @@ func TestImmuClient_SetMaxValueExceeded(t *testing.T) {
 	}
 
 	_, err = client.StreamSet(ctx, kvs)
-	require.Equal(t, stream.ErrMaxValueLenExceeded, err)
+	require.Equal(t, stream.ErrMaxValueLenExceeded, err.Error())
+	require.Equal(t, errors.CodDataException, err.(errors.ImmuError).Code())
 }
 
 func TestImmuClient_SetMaxTxValuesExceeded(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
@@ -198,18 +202,19 @@ func TestImmuClient_SetMaxTxValuesExceeded(t *testing.T) {
 	}
 
 	_, err = client.StreamSet(ctx, kvs)
-	require.Equal(t, stream.ErrMaxTxValuesLenExceeded, err)
+	require.Equal(t, stream.ErrMaxTxValuesLenExceeded, err.(errors.ImmuError).Error())
+	require.Equal(t, errors.CodDataException, err.(errors.ImmuError).Code())
 }
 
 func TestImmuClient_SetGetSmallMessage(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
@@ -254,11 +259,11 @@ func TestImmuClient_SetMultipleKeys(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
@@ -317,11 +322,11 @@ func TestImmuClient_SetMultipleLargeEntries(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
@@ -376,11 +381,11 @@ func TestImmuClient_SetMultipleKeysLoop(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
@@ -423,11 +428,11 @@ func TestImmuClient_StreamScan(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
@@ -471,11 +476,11 @@ func TestImmuClient_SetEmptyReader(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
@@ -508,7 +513,8 @@ func TestImmuClient_SetEmptyReader(t *testing.T) {
 	}
 	kvs := []*stream.KeyValue{kv1, kv2}
 	meta, err := client.StreamSet(ctx, kvs)
-	require.Equal(t, stream.ErrReaderIsEmpty, err)
+	require.Equal(t, stream.ErrReaderIsEmpty, err.Error())
+	require.Equal(t, errors.CodInvalidParameterValue, err.(errors.ImmuError).Code())
 	require.Nil(t, meta)
 
 	client.Disconnect()
@@ -518,11 +524,11 @@ func TestImmuClient_SetSizeTooLarge(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
@@ -545,7 +551,7 @@ func TestImmuClient_SetSizeTooLarge(t *testing.T) {
 
 	kvs := []*stream.KeyValue{kv1}
 	meta, err := client.StreamSet(ctx, kvs)
-	require.Equal(t, stream.ErrNotEnoughDataOnStream, err)
+	require.Equal(t, stream.ErrNotEnoughDataOnStream, err.Error())
 	require.Nil(t, meta)
 
 	client.Disconnect()
@@ -555,11 +561,11 @@ func TestImmuClient_SetSizeTooLargeOnABigMessage(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
@@ -577,7 +583,7 @@ func TestImmuClient_SetSizeTooLargeOnABigMessage(t *testing.T) {
 	kvs1[0].Value.Size = 22_000_000
 
 	meta, err := client.StreamSet(ctx, kvs1)
-	require.Equal(t, stream.ErrNotEnoughDataOnStream, err)
+	require.Equal(t, stream.ErrNotEnoughDataOnStream, err.Error())
 	require.Nil(t, meta)
 
 	f1, _ := streamtest.GenerateDummyFile("myFile1", 10_000_000)
@@ -591,7 +597,7 @@ func TestImmuClient_SetSizeTooLargeOnABigMessage(t *testing.T) {
 	kvs2[1].Value.Size = 12_000_000
 
 	meta, err = client.StreamSet(ctx, kvs2)
-	require.Equal(t, stream.ErrNotEnoughDataOnStream, err)
+	require.Equal(t, stream.ErrNotEnoughDataOnStream, err.Error())
 	require.Nil(t, meta)
 
 	client.Disconnect()
@@ -601,11 +607,11 @@ func TestImmuClient_ExecAll(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
@@ -720,7 +726,7 @@ func TestImmuClient_Errors(t *testing.T) {
 	}
 	for _, f := range fs {
 		fn, err := f()
-		require.Equal(t, ErrNotConnected, err, fn)
+		require.Equal(t, ErrNotConnected.Error(), err.Error(), fn)
 	}
 }
 
@@ -728,15 +734,14 @@ func TestImmuClient_StreamWithSignature(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true).WithSigningKey("./../../test/signer/ec1.key")
 	bs := servertest.NewBufconnServer(options)
 
+	defer os.RemoveAll(options.Dir)
+	defer os.Remove(".state-")
+
 	err := bs.Start()
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts).WithServerSigningPubKey("./../../test/signer/ec1.pub"))
@@ -770,15 +775,14 @@ func TestImmuClient_StreamWithSignatureErrors(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true).WithSigningKey("./../../test/signer/ec1.key")
 	bs := servertest.NewBufconnServer(options)
 
+	defer os.RemoveAll(options.Dir)
+	defer os.Remove(".state-")
+
 	err := bs.Start()
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts).WithServerSigningPubKey("./../../test/signer/ec3.pub"))
@@ -812,15 +816,14 @@ func TestImmuClient_StreamWithSignatureErrorsMissingServerKey(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
+	defer os.RemoveAll(options.Dir)
+	defer os.Remove(".state-")
+
 	err := bs.Start()
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts).WithServerSigningPubKey("./../../test/signer/ec3.pub"))
@@ -855,15 +858,14 @@ func TestImmuClient_StreamWithSignatureErrorsWrongClientKey(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true).WithSigningKey("./../../test/signer/ec3.key")
 	bs := servertest.NewBufconnServer(options)
 
+	defer os.RemoveAll(options.Dir)
+	defer os.Remove(".state-")
+
 	err := bs.Start()
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts).WithServerSigningPubKey("./../../test/signer/ec3.pub"))
@@ -926,15 +928,14 @@ func TestImmuClient_StreamerServiceErrors(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
+	defer os.Remove(".state-")
+	defer os.RemoveAll(options.Dir)
+
 	err := bs.Start()
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	defer bs.Stop()
-
-	defer os.Remove(".state-")
-	defer os.RemoveAll(options.Dir)
 
 	sfm := DefaultServiceFactoryMock()
 
@@ -1045,14 +1046,14 @@ func TestImmuClient_StreamerServiceHistoryErrors(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
+	defer os.RemoveAll(options.Dir)
+	defer os.Remove(".state-")
+
 	err := bs.Start()
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	defer bs.Stop()
-
-	defer os.Remove(".state-")
 
 	sfm := DefaultServiceFactoryMock()
 	sfm.NewMsgReceiverF = func(str stream.ImmuServiceReceiver_Stream) stream.MsgReceiver {
@@ -1104,11 +1105,11 @@ func TestImmuClient_ChunkToChunkGetStream(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)

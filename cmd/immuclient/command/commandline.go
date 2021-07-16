@@ -66,6 +66,12 @@ func (cl *commandline) Register(rootCmd *cobra.Command) *cobra.Command {
 	cl.auditmode(rootCmd)
 	cl.interactiveCli(rootCmd)
 	cl.use(rootCmd)
+
+	cl.sqlExec(rootCmd)
+	cl.sqlQuery(rootCmd)
+	cl.listTables(rootCmd)
+	cl.describeTable(rootCmd)
+
 	return rootCmd
 }
 

@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"sync"
 )
 
 var ErrNoMoreEntries = errors.New("no more entries")
@@ -36,9 +37,13 @@ type Snapshot struct {
 	readers     map[int]io.Closer
 	maxReaderID int
 	closed      bool
+	mutex       sync.Mutex
 }
 
 func (s *Snapshot) Get(key []byte) (value []byte, ts uint64, hc uint64, err error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	if s.closed {
 		return nil, 0, 0, ErrAlreadyClosed
 	}
@@ -51,6 +56,9 @@ func (s *Snapshot) Get(key []byte) (value []byte, ts uint64, hc uint64, err erro
 }
 
 func (s *Snapshot) History(key []byte, offset uint64, descOrder bool, limit int) (tss []uint64, err error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	if s.closed {
 		return nil, ErrAlreadyClosed
 	}
@@ -67,10 +75,16 @@ func (s *Snapshot) History(key []byte, offset uint64, descOrder bool, limit int)
 }
 
 func (s *Snapshot) Ts() uint64 {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	return s.root.ts()
 }
 
 func (s *Snapshot) NewHistoryReader(spec *HistoryReaderSpec) (*HistoryReader, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	if s.closed {
 		return nil, ErrAlreadyClosed
 	}
@@ -87,6 +101,9 @@ func (s *Snapshot) NewHistoryReader(spec *HistoryReaderSpec) (*HistoryReader, er
 }
 
 func (s *Snapshot) NewReader(spec *ReaderSpec) (r *Reader, err error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	if s.closed {
 		return nil, ErrAlreadyClosed
 	}
@@ -115,14 +132,6 @@ func (s *Snapshot) NewReader(spec *ReaderSpec) (r *Reader, err error) {
 		}
 	}
 
-	path, startingLeaf, startingOffset, err := s.root.findLeafNode(seekKey, nil, nil, spec.DescOrder)
-	if err == ErrKeyNotFound {
-		return nil, ErrNoMoreEntries
-	}
-	if err != nil {
-		return nil, err
-	}
-
 	r = &Reader{
 		snapshot:      s,
 		id:            s.maxReaderID,
@@ -130,9 +139,6 @@ func (s *Snapshot) NewReader(spec *ReaderSpec) (r *Reader, err error) {
 		prefix:        spec.Prefix,
 		inclusiveSeek: inclusiveSeek,
 		descOrder:     spec.DescOrder,
-		path:          path,
-		leafNode:      startingLeaf,
-		offset:        startingOffset,
 		closed:        false,
 	}
 
@@ -143,11 +149,17 @@ func (s *Snapshot) NewReader(spec *ReaderSpec) (r *Reader, err error) {
 }
 
 func (s *Snapshot) closedReader(id int) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	delete(s.readers, id)
 	return nil
 }
 
 func (s *Snapshot) Close() error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	if s.closed {
 		return ErrAlreadyClosed
 	}
@@ -167,6 +179,9 @@ func (s *Snapshot) Close() error {
 }
 
 func (s *Snapshot) WriteTo(nw, hw io.Writer, writeOpts *WriteOpts) (nOff int64, wN, wH int64, err error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	return s.root.writeTo(nw, hw, writeOpts)
 }
 

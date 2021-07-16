@@ -78,6 +78,8 @@ type defaultAuditor struct {
 
 	slugifyRegExp *regexp.Regexp
 	updateMetrics func(string, string, bool, bool, bool, *schema.ImmutableState, *schema.ImmutableState)
+
+	monitoringHTTPAddr *string
 }
 
 // DefaultAuditor creates initializes a default auditor implementation
@@ -94,7 +96,8 @@ func DefaultAuditor(
 	uuidProvider state.UUIDProvider,
 	history cache.HistoryCache,
 	updateMetrics func(string, string, bool, bool, bool, *schema.ImmutableState, *schema.ImmutableState),
-	log logger.Logger) (Auditor, error) {
+	log logger.Logger,
+	monitoringHTTPAddr *string) (Auditor, error) {
 
 	password, err := auth.DecodeBase64Password(passwordBase64)
 	if err != nil {
@@ -126,6 +129,7 @@ func DefaultAuditor(
 		uuidProvider,
 		slugifyRegExp,
 		updateMetrics,
+		monitoringHTTPAddr,
 	}, nil
 }
 
@@ -141,6 +145,25 @@ func (a *defaultAuditor) Run(
 	if singleRun {
 		err = a.audit()
 	} else {
+		// start monitoring HTTP server
+		var monitoringServer *http.Server
+		if a.monitoringHTTPAddr != nil {
+			a.logger.Infof("auditor monitoring HTTP server starting on %s ...", *a.monitoringHTTPAddr)
+			go func() {
+				monitoringServer = StartHTTPServerForMonitoring(
+					*a.monitoringHTTPAddr,
+					func(httpServer *http.Server) error { return httpServer.ListenAndServe() },
+					a.logger,
+					a.serviceClient)
+			}()
+		}
+		defer func() {
+			if monitoringServer != nil {
+				a.logger.Debugf("auditor monitoring HTTP server stopped")
+				monitoringServer.Close()
+			}
+		}()
+
 		err = repeat(interval, stopc, a.audit)
 		if err != nil {
 			return err
@@ -199,13 +222,13 @@ func (a *defaultAuditor) audit() error {
 		for _, db := range dbs.Databases {
 			dbMustBeAudited := len(a.auditDatabases) <= 0
 			for _, dbPrefix := range a.auditDatabases {
-				if strings.HasPrefix(db.Databasename, dbPrefix) {
+				if strings.HasPrefix(db.DatabaseName, dbPrefix) {
 					dbMustBeAudited = true
 					break
 				}
 			}
 			if dbMustBeAudited {
-				a.databases = append(a.databases, db.Databasename)
+				a.databases = append(a.databases, db.DatabaseName)
 			}
 		}
 
@@ -225,7 +248,7 @@ func (a *defaultAuditor) audit() error {
 
 	dbName := a.databases[a.databaseIndex]
 	resp, err := a.serviceClient.UseDatabase(ctx, &schema.Database{
-		Databasename: dbName,
+		DatabaseName: dbName,
 	})
 	if err != nil {
 		a.logger.Errorf("error selecting database %s: %v", dbName, err)

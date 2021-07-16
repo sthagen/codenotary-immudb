@@ -18,13 +18,14 @@ package servertest
 
 import (
 	"context"
+	"log"
+	"net"
+	"sync"
+
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/auth"
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	"google.golang.org/grpc"
-	"log"
-	"net"
-	"sync"
 
 	"github.com/codenotary/immudb/pkg/server"
 	"google.golang.org/grpc/test/bufconn"
@@ -36,6 +37,7 @@ type BuffDialer func(context.Context, string) (net.Conn, error)
 
 type bufconnServer struct {
 	m          sync.Mutex
+	pgsqlwg    sync.WaitGroup
 	Lis        *bufconn.Listener
 	Server     *ServerMock
 	Options    *server.Options
@@ -60,34 +62,59 @@ func NewBufconnServer(options *server.Options) *bufconnServer {
 
 func (bs *bufconnServer) Start() error {
 	bs.m.Lock()
-
+	defer bs.m.Unlock()
 	server := server.DefaultServer().WithOptions(bs.Options).(*server.ImmuServer)
 
 	bs.Dialer = func(ctx context.Context, s string) (net.Conn, error) {
 		return bs.Lis.Dial()
 	}
 
-	bs.Server = &ServerMock{srv: server}
+	bs.Server = &ServerMock{Srv: server}
+
+	bs.pgsqlwg.Add(1)
 
 	if err := bs.Server.Initialize(); err != nil {
 		return err
 	}
+	// in order to know the port of pgsql listener (auto assigned by os thanks 0 value) we need to wait
+	bs.pgsqlwg.Done()
 
 	schema.RegisterImmuServiceServer(bs.GrpcServer, bs.Server)
 
 	go func() {
 		if err := bs.GrpcServer.Serve(bs.Lis); err != nil {
-			log.Fatal(err)
+			log.Println(err)
 		}
-		<-bs.quit
 	}()
+
+	if bs.Options.PgsqlServer {
+		go func() {
+			if err := bs.Server.Srv.PgsqlSrv.Serve(); err != nil {
+				log.Println(err)
+			}
+		}()
+	}
 
 	return nil
 }
 
 func (bs *bufconnServer) Stop() error {
-	defer func() { bs.quit <- struct{}{} }()
+	bs.m.Lock()
 	defer bs.m.Unlock()
+	if err := bs.Server.Srv.CloseDatabases(); err != nil {
+		return err
+	}
+	if err := bs.Server.Srv.PgsqlSrv.Stop(); err != nil {
+		return err
+	}
+
 	bs.GrpcServer.Stop()
-	return bs.Server.srv.CloseDatabases()
+
+	return nil
+}
+
+func (bs *bufconnServer) WaitForPgsqlListener() {
+	bs.m.Lock()
+	defer bs.m.Unlock()
+	bs.pgsqlwg.Wait()
 }

@@ -1,7 +1,7 @@
 FROM golang:1.13-stretch as build
 WORKDIR /src
 COPY . .
-RUN GOOS=linux GOARCH=amd64 make immuadmin-static immudb-static
+RUN GOOS=linux GOARCH=amd64 WEBCONSOLE=1 make immuadmin-static immudb-static
 FROM ubuntu:18.04
 MAINTAINER CodeNotary, Inc. <info@codenotary.io>
 
@@ -21,9 +21,6 @@ ENV IMMUDB_HOME="/usr/share/immudb" \
     IMMUDB_MTLS="false" \
     IMMUDB_AUTH="true" \
     IMMUDB_DETACHED="false" \
-    IMMUDB_PKEY="/usr/share/immudb/mtls/3_application/private/key.pem" \
-    IMMUDB_CERTIFICATE="/usr/share/immudb/mtls/3_application/certs/server.pem" \
-    IMMUDB_CLIENTCAS="/usr/share/immudb/mtls/2_intermediate/certs/ca-chain.pem" \
     IMMUDB_DEVMODE="true" \
     IMMUDB_MAINTENANCE="false" \
     IMMUDB_ADMIN_PASSWORD="immudb" \

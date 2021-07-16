@@ -23,121 +23,66 @@ import (
 	"github.com/spf13/viper"
 )
 
-func parseOptions() (options *server.Options, err error) {
-	dir, err := c.ResolvePath(viper.GetString("dir"), true)
-	if err != nil {
-		return options, err
-	}
-	port := viper.GetInt("port")
-	address := viper.GetString("address")
-	if err != nil {
-		return options, err
-	}
-	pidfile, err := c.ResolvePath(viper.GetString("pidfile"), true)
-	if err != nil {
-		return options, err
-	}
-	logfile, err := c.ResolvePath(viper.GetString("logfile"), true)
-	if err != nil {
-		return options, err
-	}
-	mtls := viper.GetBool("mtls")
-	auth := viper.GetBool("auth")
-	maxRecvMsgSize := viper.GetInt("max-recv-msg-size")
-	noHistograms := viper.GetBool("no-histograms")
-	detached := viper.GetBool("detached")
-	consistencyCheck := viper.GetBool("consistency-check")
-	certificate, err := c.ResolvePath(viper.GetString("certificate"), true)
-	if err != nil {
-		return options, err
-	}
-	pkey, err := c.ResolvePath(viper.GetString("pkey"), true)
-	if err != nil {
-		return options, err
-	}
-	clientcas, err := c.ResolvePath(viper.GetString("clientcas"), true)
-	if err != nil {
-		return options, err
-	}
-
-	devMode := viper.GetBool("devmode")
-	adminPassword := viper.GetString("admin-password")
-	maintenance := viper.GetBool("maintenance")
-	signingKey := viper.GetString("signingKey")
-	synced := viper.GetBool("synced")
-
-	storeOpts := server.DefaultStoreOptions().WithSynced(synced)
-
-	options = server.
-		DefaultOptions().
-		WithDir(dir).
-		WithPort(port).
-		WithAddress(address).
-		WithPidfile(pidfile).
-		WithLogfile(logfile).
-		WithMTLs(mtls).
-		WithAuth(auth).
-		WithMaxRecvMsgSize(maxRecvMsgSize).
-		WithNoHistograms(noHistograms).
-		WithDetached(detached).
-		WithCorruptionCheck(consistencyCheck).
-		WithDevMode(devMode).
-		WithAdminPassword(adminPassword).
-		WithMaintenance(maintenance).
-		WithSigningKey(signingKey).
-		WithStoreOptions(storeOpts)
-
-	if mtls {
-		// todo https://golang.org/src/crypto/x509/root_linux.go
-		options.MTLsOptions = server.DefaultMTLsOptions().
-			WithCertificate(certificate).
-			WithPkey(pkey).
-			WithClientCAs(clientcas)
-	}
-
-	return options, nil
-}
-
-func (cl *Commandline) setupFlags(cmd *cobra.Command, options *server.Options, mtlsOptions *server.MTLsOptions) {
+func (cl *Commandline) setupFlags(cmd *cobra.Command, options *server.Options) {
 	cmd.Flags().String("dir", options.Dir, "data folder")
 	cmd.Flags().IntP("port", "p", options.Port, "port number")
 	cmd.Flags().StringP("address", "a", options.Address, "bind address")
 	cmd.PersistentFlags().StringVar(&cl.config.CfgFn, "config", "", "config file (default path are configs or $HOME. Default filename is immudb.toml)")
 	cmd.Flags().String("pidfile", options.Pidfile, "pid path with filename. E.g. /var/run/immudb.pid")
 	cmd.Flags().String("logfile", options.Logfile, "log path with filename. E.g. /tmp/immudb/immudb.log")
-	cmd.Flags().BoolP("mtls", "m", options.MTLs, "enable mutual tls")
-	cmd.Flags().BoolP("auth", "s", options.MTLs, "enable auth")
+	cmd.Flags().BoolP("mtls", "m", false, "enable mutual tls")
+	cmd.Flags().BoolP("auth", "s", false, "enable auth")
 	cmd.Flags().Int("max-recv-msg-size", options.MaxRecvMsgSize, "max message size in bytes the server can receive")
-	cmd.Flags().Bool("no-histograms", options.MTLs, "disable collection of histogram metrics like query durations")
-	cmd.Flags().Bool("consistency-check", options.CorruptionCheck, "enable consistency check monitor routine. To disable: --consistency-check=false")
+	cmd.Flags().Bool("no-histograms", false, "disable collection of histogram metrics like query durations")
 	cmd.Flags().BoolP(c.DetachedFlag, c.DetachedShortFlag, options.Detached, "run immudb in background")
-	cmd.Flags().String("certificate", mtlsOptions.Certificate, "server certificate file path")
-	cmd.Flags().String("pkey", mtlsOptions.Pkey, "server private key path")
-	cmd.Flags().String("clientcas", mtlsOptions.ClientCAs, "clients certificates list. Aka certificate authority")
+	cmd.Flags().String("certificate", "", "server certificate file path")
+	cmd.Flags().String("pkey", "", "server private key path")
+	cmd.Flags().String("clientcas", "", "clients certificates list. Aka certificate authority")
 	cmd.Flags().Bool("devmode", options.DevMode, "enable dev mode: accept remote connections without auth")
 	cmd.Flags().String("admin-password", options.AdminPassword, "admin password (default is 'immudb') as plain-text or base64 encoded (must be prefixed with 'enc:' if it is encoded)")
 	cmd.Flags().Bool("maintenance", options.GetMaintenance(), "override the authentication flag")
 	cmd.Flags().String("signingKey", options.SigningKey, "signature private key path. If a valid one is provided, it enables the cryptographic signature of the root. E.g. \"./../test/signer/ec3.key\"")
-	cmd.Flags().Bool("synced", false, "synced mode prevents data lost under unexpected crashes but affects performance")
+	cmd.Flags().Bool("synced", true, "synced mode prevents data lost under unexpected crashes but affects performance")
+	cmd.Flags().Int("token-expiry-time", options.TokenExpiryTimeMin, "client authentication token expiration time. Minutes")
+	cmd.Flags().Bool("web-server", options.WebServer, "enable or disable web/console server")
+	cmd.Flags().Int("web-server-port", options.WebServerPort, "web/console server port")
+	cmd.Flags().Bool("pgsql-server", true, "enable or disable pgsql server")
+	cmd.Flags().Int("pgsql-server-port", 5432, "pgsql server port")
+	cmd.Flags().Bool("s3-storage", false, "enable or disable s3 storage")
+	cmd.Flags().String("s3-endpoint", "", "s3 endpoint")
+	cmd.Flags().String("s3-access-key-id", "", "s3 access key id")
+	cmd.Flags().String("s3-secret-key", "", "s3 secret access key")
+	cmd.Flags().String("s3-bucket-name", "", "s3 bucket name")
+	cmd.Flags().String("s3-path-prefix", "", "s3 path prefix (multiple immudb instances can share the same bucket if they have different prefixes)")
 }
 
-func setupDefaults(options *server.Options, mtlsOptions *server.MTLsOptions) {
+func setupDefaults(options *server.Options) {
 	viper.SetDefault("dir", options.Dir)
 	viper.SetDefault("port", options.Port)
 	viper.SetDefault("address", options.Address)
 	viper.SetDefault("pidfile", options.Pidfile)
 	viper.SetDefault("logfile", options.Logfile)
-	viper.SetDefault("mtls", options.MTLs)
+	viper.SetDefault("mtls", false)
 	viper.SetDefault("auth", options.GetAuth())
 	viper.SetDefault("max-recv-msg-size", options.MaxRecvMsgSize)
 	viper.SetDefault("no-histograms", options.NoHistograms)
-	viper.SetDefault("consistency-check", options.CorruptionCheck)
 	viper.SetDefault("detached", options.Detached)
-	viper.SetDefault("certificate", mtlsOptions.Certificate)
-	viper.SetDefault("pkey", mtlsOptions.Pkey)
-	viper.SetDefault("clientcas", mtlsOptions.ClientCAs)
+	viper.SetDefault("certificate", "")
+	viper.SetDefault("pkey", "")
+	viper.SetDefault("clientcas", "")
 	viper.SetDefault("devmode", options.DevMode)
 	viper.SetDefault("admin-password", options.AdminPassword)
 	viper.SetDefault("maintenance", options.GetMaintenance())
-	viper.SetDefault("synced", false)
+	viper.SetDefault("synced", true)
+	viper.SetDefault("token-expiry-time", options.TokenExpiryTimeMin)
+	viper.SetDefault("web-server", options.WebServer)
+	viper.SetDefault("web-server-port", options.WebServerPort)
+	viper.SetDefault("pgsql-server", true)
+	viper.SetDefault("pgsql-server-port", 5432)
+	viper.SetDefault("s3-storage", false)
+	viper.SetDefault("s3-endpoint", "")
+	viper.SetDefault("s3-access-key-id", "")
+	viper.SetDefault("s3-secret-key", "")
+	viper.SetDefault("s3-bucket-name", "")
+	viper.SetDefault("s3-path-prefix", "")
 }

@@ -17,13 +17,16 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/codenotary/immudb/pkg/fs"
+	immuErrors "github.com/codenotary/immudb/pkg/client/errors"
 	"log"
 	"os"
 	"path"
 	"testing"
 	"time"
+
+	"github.com/codenotary/immudb/pkg/fs"
 
 	"github.com/codenotary/immudb/embedded/store"
 	"github.com/codenotary/immudb/pkg/database"
@@ -231,11 +234,11 @@ func TestImmuClient(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true).WithSigningKey("./../../test/signer/ec1.key")
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	opts := DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts)
@@ -275,11 +278,11 @@ func TestImmuClientTampering(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true).WithSigningKey("./../../test/signer/ec1.key")
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	opts := DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts)
@@ -425,11 +428,11 @@ func TestDatabasesSwitching(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -444,12 +447,12 @@ func TestDatabasesSwitching(t *testing.T) {
 	ctx := metadata.NewOutgoingContext(context.Background(), md)
 
 	err = client.CreateDatabase(ctx, &schema.Database{
-		Databasename: "db1",
+		DatabaseName: "db1",
 	})
 	require.NoError(t, err)
 
 	resp, err := client.UseDatabase(ctx, &schema.Database{
-		Databasename: "db1",
+		DatabaseName: "db1",
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, resp.Token)
@@ -458,12 +461,12 @@ func TestDatabasesSwitching(t *testing.T) {
 	require.NoError(t, err)
 
 	err = client.CreateDatabase(ctx, &schema.Database{
-		Databasename: "db2",
+		DatabaseName: "db2",
 	})
 	require.NoError(t, err)
 
 	resp2, err := client.UseDatabase(ctx, &schema.Database{
-		Databasename: "db2",
+		DatabaseName: "db2",
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, resp2.Token)
@@ -483,11 +486,11 @@ func TestImmuClientDisconnect(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true).WithSigningKey("./../../test/signer/ec1.key")
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	opts := DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts)
@@ -507,127 +510,112 @@ func TestImmuClientDisconnect(t *testing.T) {
 
 	require.False(t, client.IsConnected())
 
-	require.Equal(t, ErrNotConnected, client.CreateUser(ctx, []byte("user"), []byte("passwd"), 1, "db"))
-	require.Equal(t, ErrNotConnected, client.ChangePassword(ctx, []byte("user"), []byte("oldPasswd"), []byte("newPasswd")))
-	require.Equal(t, ErrNotConnected, client.UpdateAuthConfig(ctx, auth.KindPassword))
-	require.Equal(t, ErrNotConnected, client.UpdateMTLSConfig(ctx, false))
-	require.Equal(t, ErrNotConnected, client.CleanIndex(ctx, &emptypb.Empty{}))
+	require.True(t, errors.Is(client.CreateUser(ctx, []byte("user"), []byte("passwd"), 1, "db"), ErrNotConnected))
+	require.True(t, errors.Is(client.ChangePassword(ctx, []byte("user"), []byte("oldPasswd"), []byte("newPasswd")), ErrNotConnected))
+	require.True(t, errors.Is(client.UpdateAuthConfig(ctx, auth.KindPassword), ErrNotConnected))
+	require.True(t, errors.Is(client.UpdateMTLSConfig(ctx, false), ErrNotConnected))
+	require.True(t, errors.Is(client.CleanIndex(ctx, &emptypb.Empty{}), ErrNotConnected))
 
 	_, err = client.Login(context.TODO(), []byte("user"), []byte("passwd"))
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err.(immuErrors.ImmuError), ErrNotConnected))
 
-	require.Equal(t, ErrNotConnected, client.Logout(context.TODO()))
+	require.True(t, errors.Is(client.Logout(context.TODO()), ErrNotConnected))
 
 	_, err = client.Get(context.TODO(), []byte("key"))
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.CurrentState(context.TODO())
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.VerifiedGet(context.TODO(), []byte("key"))
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.GetAll(context.TODO(), [][]byte{[]byte(`aaa`), []byte(`bbb`)})
-	require.Error(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.Scan(context.TODO(), &schema.ScanRequest{
 		Prefix: []byte("key"),
 	})
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.ZScan(context.TODO(), &schema.ZScanRequest{Set: []byte("key")})
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.Count(context.TODO(), []byte("key"))
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.CountAll(context.TODO())
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.Set(context.TODO(), []byte("key"), []byte("value"))
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.VerifiedSet(context.TODO(), []byte("key"), []byte("value"))
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.Set(context.TODO(), nil, nil)
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.TxByID(context.TODO(), 1)
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.VerifiedTxByID(context.TODO(), 1)
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.TxScan(context.TODO(), nil)
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.History(context.TODO(), &schema.HistoryRequest{
 		Key: []byte("key"),
 	})
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.SetReference(context.TODO(), []byte("ref"), []byte("key"))
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.VerifiedSetReference(context.TODO(), []byte("ref"), []byte("key"))
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.ZAdd(context.TODO(), []byte("set"), 1, []byte("key"))
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.VerifiedZAdd(context.TODO(), []byte("set"), 1, []byte("key"))
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	//_, err = client.Dump(context.TODO(), nil)
 	//require.Equal(t, ErrNotConnected, err)
 
 	_, err = client.GetSince(context.TODO(), []byte("key"), 0)
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	_, err = client.GetAt(context.TODO(), []byte("key"), 0)
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
-	require.Equal(t, ErrNotConnected, client.HealthCheck(context.TODO()))
+	require.True(t, errors.Is(client.HealthCheck(context.TODO()), ErrNotConnected))
 
-	require.Equal(t, ErrNotConnected, client.CreateDatabase(context.TODO(), nil))
+	require.True(t, errors.Is(client.CreateDatabase(context.TODO(), nil), ErrNotConnected))
 
 	_, err = client.UseDatabase(context.TODO(), nil)
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
 	err = client.ChangePermission(context.TODO(), schema.PermissionAction_REVOKE, "userName", "testDBName", auth.PermissionRW)
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 
-	require.Equal(t, ErrNotConnected, client.SetActiveUser(context.TODO(), nil))
+	require.True(t, errors.Is(client.SetActiveUser(context.TODO(), nil), ErrNotConnected))
 
 	_, err = client.DatabaseList(context.TODO())
-	require.Equal(t, ErrNotConnected, err)
-
-	_, err = client.CurrentRoot(context.TODO())
-	require.Equal(t, ErrNotConnected, err)
-
-	_, err = client.SafeSet(context.TODO(), []byte("key"), []byte("value"))
-	require.Equal(t, ErrNotConnected, err)
-
-	_, err = client.SafeGet(context.TODO(), []byte("key"))
-	require.Equal(t, ErrNotConnected, err)
-
-	_, err = client.SafeZAdd(context.TODO(), []byte("set"), 1, []byte("key"))
-	require.Equal(t, ErrNotConnected, err)
-
-	_, err = client.SafeReference(context.TODO(), []byte("ref"), []byte("key"))
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 }
 
 func TestImmuClientDisconnectNotConn(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -645,11 +633,11 @@ func TestWaitForHealthCheck(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -686,7 +674,7 @@ func TestUserManagement(t *testing.T) {
 		userPassword    = "1Password!*"
 		userNewPassword = "2Password!*"
 		testDBName      = "test"
-		testDB          = &schema.Database{Databasename: testDBName}
+		testDB          = &schema.Database{DatabaseName: testDBName}
 		err             error
 		usrList         *schema.UserList
 		immudbUser      *schema.User
@@ -696,11 +684,11 @@ func TestUserManagement(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true).WithConfig("../../configs/immudb.toml")
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -790,11 +778,11 @@ func TestDatabaseManagement(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -808,7 +796,7 @@ func TestDatabaseManagement(t *testing.T) {
 	md := metadata.Pairs("authorization", lr.Token)
 	ctx := metadata.NewOutgoingContext(context.Background(), md)
 
-	err1 := client.CreateDatabase(ctx, &schema.Database{Databasename: "test"})
+	err1 := client.CreateDatabase(ctx, &schema.Database{DatabaseName: "test"})
 	require.Nil(t, err1)
 
 	resp2, err2 := client.DatabaseList(ctx)
@@ -823,11 +811,11 @@ func TestImmuClient_History(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -862,11 +850,11 @@ func TestImmuClient_SetAll(t *testing.T) {
 	options.StoreOptions.WithIndexOptions(options.StoreOptions.IndexOpts.WithCompactionThld(0))
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -910,18 +898,18 @@ func TestImmuClient_SetAll(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = client.SetAll(ctx, setRequest)
-	require.Equal(t, ErrNotConnected, err)
+	require.True(t, errors.Is(err, ErrNotConnected))
 }
 
 func TestImmuClient_GetAll(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -957,11 +945,11 @@ func TestImmuClient_ExecAllOpsOptions(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -1000,11 +988,11 @@ func TestImmuClient_Scan(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -1034,11 +1022,11 @@ func TestImmuClient_TxScan(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -1088,39 +1076,73 @@ func TestImmuClient_Logout(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
 
-	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
-	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
-	if err != nil {
-		log.Fatal(err)
-	}
-	lr, err := client.Login(context.TODO(), []byte(`immudb`), []byte(`immudb`))
-	if err != nil {
-		log.Fatal(err)
-	}
-	md := metadata.Pairs("authorization", lr.Token)
-	ctx := metadata.NewOutgoingContext(context.Background(), md)
+	bs.Start()
+	defer bs.Stop()
 
-	err = client.Logout(ctx)
+	ts1 := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
+	ts2 := &TokenServiceMock{
+		TokenService: ts1,
+		GetTokenF:    ts1.GetToken,
+		SetTokenF:    ts1.SetToken,
+		DeleteTokenF: ts1.DeleteToken,
+		IsTokenPresentF: func() (bool, error) {
+			return false, errors.New("some IsTokenPresent error")
+		},
+	}
+	ts3 := *ts2
+	ts3.DeleteTokenF = func() error {
+		return errors.New("some DeleteToken error")
+	}
+	ts3.IsTokenPresentF = func() (bool, error) {
+		return true, nil
+	}
+	tokenServices := []TokenService{ts1, ts2, &ts3}
+	expectations := []func(error){
+		func(err error) { require.Nil(t, err) },
+		func(err error) {
+			require.NotNil(t, err)
+			require.Contains(t, err.Error(), "some IsTokenPresent error")
+		},
+		func(err error) {
+			require.NotNil(t, err)
+			require.Contains(t, err.Error(), "some DeleteToken error")
+		},
+	}
 
-	require.Nil(t, err)
-	client.Disconnect()
+	for i, expect := range expectations {
+		clientOpts := DefaultOptions().
+			WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).
+			WithTokenService(tokenServices[i])
+		client, err := NewImmuClient(clientOpts)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		lr, err := client.Login(context.TODO(), []byte(`immudb`), []byte(`immudb`))
+		if err != nil {
+			log.Fatal(err)
+		}
+		md := metadata.Pairs("authorization", lr.Token)
+		ctx := metadata.NewOutgoingContext(context.Background(), md)
+
+		err = client.Logout(ctx)
+		expect(err)
+		client.Disconnect()
+	}
 }
 
 func TestImmuClient_GetServiceClient(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -1143,11 +1165,11 @@ func TestImmuClient_CurrentRoot(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -1174,11 +1196,11 @@ func TestImmuClient_Count(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -1200,11 +1222,11 @@ func TestImmuClient_CountAll(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -1334,11 +1356,11 @@ func TestEnforcedLogoutAfterPasswordChange(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))
@@ -1357,7 +1379,7 @@ func TestEnforcedLogoutAfterPasswordChange(t *testing.T) {
 		userPassword    = "1Password!*"
 		userNewPassword = "2Password!*"
 		testDBName      = "test"
-		testDB          = &schema.Database{Databasename: testDBName}
+		testDB          = &schema.Database{DatabaseName: testDBName}
 		testUserContext = context.TODO()
 	)
 	// step 1: create test database
@@ -1411,15 +1433,14 @@ func TestImmuClient_CurrentStateVerifiedSignature(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true).WithSigningKey("./../../test/signer/ec1.key")
 	bs := servertest.NewBufconnServer(options)
 
+	defer os.RemoveAll(options.Dir)
+	defer os.Remove(".state-")
+
 	err := bs.Start()
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts).WithServerSigningPubKey("./../../test/signer/ec1.pub"))
@@ -1442,11 +1463,11 @@ func TestImmuClient_VerifiedGetAt(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true).WithSigningKey("./../../test/signer/ec1.key")
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	opts := DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts)
@@ -1488,11 +1509,11 @@ func TestImmuClient_VerifiedGetSince(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true)
 	bs := servertest.NewBufconnServer(options)
 
-	bs.Start()
-	defer bs.Stop()
-
 	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	bs.Start()
+	defer bs.Stop()
 
 	ts := NewTokenService().WithTokenFileName("testTokenFile").WithHds(DefaultHomedirServiceMock())
 	client, err := NewImmuClient(DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).WithTokenService(ts))

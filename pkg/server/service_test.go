@@ -17,6 +17,7 @@ limitations under the License.
 package server
 
 import (
+	"github.com/stretchr/testify/require"
 	"os"
 	"testing"
 	"time"
@@ -31,11 +32,12 @@ func TestService(t *testing.T) {
 	defer func() {
 		os.RemoveAll(datadir)
 	}()
-	options := DefaultOptions().WithAuth(true).WithCorruptionCheck(true).WithDir(datadir).WithListener(l).WithPort(22222).WithMetricsServer(false)
+	options := DefaultOptions().WithAuth(true).WithDir(datadir).WithListener(l).WithPort(22222).WithMetricsServer(false)
 
 	server := DefaultServer().WithOptions(options).(*ImmuServer)
 
-	server.Initialize()
+	err := server.Initialize()
+	require.NoError(t, err)
 	srvc := &Service{
 		ImmuServerIf: server,
 	}

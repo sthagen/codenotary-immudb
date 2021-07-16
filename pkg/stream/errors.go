@@ -18,16 +18,26 @@ package stream
 
 import (
 	"fmt"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"github.com/codenotary/immudb/pkg/errors"
 )
 
-var ErrMaxValueLenExceeded = status.Error(codes.FailedPrecondition, "internal store max value length exceeded")
-var ErrMaxTxValuesLenExceeded = status.Error(codes.FailedPrecondition, "max transaction values length exceeded")
-var ErrNotEnoughDataOnStream = status.Error(codes.InvalidArgument, "not enough data to build the expected message. check value length declaration")
-var ErrMessageLengthIsZero = status.Error(codes.InvalidArgument, "message trailer length is declared equal to zero")
-var ErrReaderIsEmpty = status.Error(codes.InvalidArgument, "reader contains no data")
-var ErrChunkTooSmall = status.Error(codes.InvalidArgument, fmt.Sprintf("minimum chunk size is %d", MinChunkSize))
-var ErrMissingExpectedData = status.Error(codes.Internal, fmt.Sprintf("expected data on stream is missing"))
-var ErrRefOptNotImplemented = status.Error(codes.Unimplemented, fmt.Sprintf("reference operation is not implemented"))
-var ErrUnableToReassembleExecAllMessage = status.Error(codes.Internal, fmt.Sprintf("unable to reassemble ZAdd message on a streamExecAll"))
+var ErrMaxValueLenExceeded = "internal store max value length exceeded"
+var ErrMaxTxValuesLenExceeded = "max transaction values length exceeded"
+var ErrNotEnoughDataOnStream = "not enough data to build the expected message. check value length declaration"
+var ErrMessageLengthIsZero = "message trailer length is declared equal to zero"
+var ErrReaderIsEmpty = "reader contains no data"
+var ErrChunkTooSmall = fmt.Sprintf("minimum chunk size is %d", MinChunkSize)
+var ErrMissingExpectedData = "expected data on stream is missing"
+var ErrRefOptNotImplemented = "reference operation is not implemented"
+var ErrUnableToReassembleExecAllMessage = "unable to reassemble ZAdd message on a streamExecAll"
+
+func init() {
+	errors.CodeMap[ErrMaxValueLenExceeded] = errors.CodDataException
+	errors.CodeMap[ErrMaxTxValuesLenExceeded] = errors.CodDataException
+	errors.CodeMap[ErrNotEnoughDataOnStream] = errors.CodInvalidParameterValue
+	errors.CodeMap[ErrMessageLengthIsZero] = errors.CodInvalidParameterValue
+	errors.CodeMap[ErrReaderIsEmpty] = errors.CodInvalidParameterValue
+	errors.CodeMap[ErrMissingExpectedData] = errors.CodInternalError
+	errors.CodeMap[ErrRefOptNotImplemented] = errors.CodUndefinedFunction
+	errors.CodeMap[ErrUnableToReassembleExecAllMessage] = errors.CodInternalError
+}

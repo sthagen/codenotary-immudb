@@ -14,17 +14,32 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package server
+package bmessages
 
 import (
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
-func TestMtlsOptions(t *testing.T) {
-	op := DefaultMTLsOptions().WithPkey("key").WithClientCAs("CA").WithCertificate("cert")
-	if op.Certificate != "cert" ||
-		op.ClientCAs != "CA" ||
-		op.Pkey != "key" {
-		t.Errorf("MtlsOptions mismatch")
-	}
+func TestErrorResponse(t *testing.T) {
+	er := ErrorResponse(Severity("severity"),
+		Code("test"),
+		Message("test"),
+		Hint("test"),
+		SeverityNotLoc("test"),
+		Detail("test"),
+		Position("test"),
+		InternalPosition("test"),
+		InternalQuery("test"),
+		Where("test"),
+		SchemaName("test"),
+		TableName("test"),
+		ColumnName("test"),
+		DataTypeName("test"),
+		ConstraintName("test"),
+		File("test"),
+		Line("test"),
+		Routine("test"),
+	)
+	require.NotNil(t, er)
 }

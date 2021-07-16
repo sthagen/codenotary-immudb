@@ -17,10 +17,14 @@ limitations under the License.
 package server
 
 import (
-	"github.com/codenotary/immudb/pkg/stream"
+	"crypto/tls"
 	"testing"
 
+	"github.com/codenotary/immudb/embedded/store"
 	"github.com/codenotary/immudb/pkg/auth"
+	"github.com/codenotary/immudb/pkg/stream"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestOptions(t *testing.T) {
@@ -29,10 +33,8 @@ func TestOptions(t *testing.T) {
 		op.GetMaintenance() != false ||
 		op.GetDefaultDbName() != DefaultdbName ||
 		op.GetSystemAdminDbName() != SystemdbName ||
-		op.CorruptionCheck != true ||
 		op.Detached != false ||
 		op.DevMode != false ||
-		op.MTLs != false ||
 		op.MetricsServer != true ||
 		op.NoHistograms != false ||
 		op.AdminPassword != auth.SysAdminPassword ||
@@ -43,19 +45,34 @@ func TestOptions(t *testing.T) {
 		op.Config != "configs/immudb.toml" ||
 		op.Pidfile != "" ||
 		op.StreamChunkSize != stream.DefaultChunkSize ||
-		op.Logfile != "" {
+		op.Logfile != "" ||
+		op.WebServer != true ||
+		op.WebServerPort != 8080 ||
+		op.WebBind() != "0.0.0.0:8080" ||
+		op.MetricsBind() != "0.0.0.0:9497" ||
+		op.PgsqlServer ||
+		op.PgsqlServerPort != 5432 {
 		t.Errorf("database default options mismatch")
 	}
 }
 
 func TestSetOptions(t *testing.T) {
+	storeOptions := store.DefaultOptions()
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{}}
 	op := DefaultOptions().WithDir("immudb_dir").WithNetwork("udp").
 		WithAddress("localhost").WithPort(2048).
-		WithPidfile("immu.pid").WithMTLs(true).WithAuth(false).
+		WithPidfile("immu.pid").WithAuth(false).
 		WithMaxRecvMsgSize(4096).
 		WithDetached(true).WithNoHistograms(true).WithMetricsServer(false).
 		WithDevMode(true).WithLogfile("logfile").WithAdminPassword("admin").
-		WithStreamChunkSize(4096)
+		WithStreamChunkSize(4096).
+		WithWebServerPort(8081).
+		WithTokenExpiryTime(52).
+		WithWebServer(false).
+		WithStoreOptions(storeOptions).
+		WithTLS(tlsConfig).
+		WithPgsqlServer(true).
+		WithPgsqlServerPort(123456)
 
 	if op.GetAuth() != false ||
 		op.Dir != "immudb_dir" ||
@@ -64,7 +81,6 @@ func TestSetOptions(t *testing.T) {
 		op.Port != 2048 ||
 		op.Config != "configs/immudb.toml" ||
 		op.Pidfile != "immu.pid" ||
-		op.MTLs != true ||
 		op.GetAuth() != false ||
 		op.MaxRecvMsgSize != 4096 ||
 		op.Detached != true ||
@@ -74,7 +90,90 @@ func TestSetOptions(t *testing.T) {
 		op.Logfile != "logfile" ||
 		op.AdminPassword != "admin" ||
 		op.StreamChunkSize != 4096 ||
-		op.Bind() != "localhost:2048" {
+		op.WebServerPort != 8081 ||
+		op.Bind() != "localhost:2048" ||
+		op.WebBind() != "localhost:8081" ||
+		op.WebServer != false ||
+		op.StoreOptions != storeOptions ||
+		op.TLSConfig != tlsConfig ||
+		op.TokenExpiryTimeMin != 52 ||
+		!op.PgsqlServer ||
+		op.PgsqlServerPort != 123456 {
 		t.Errorf("database default options mismatch")
 	}
+}
+
+func TestOptionsMaintenance(t *testing.T) {
+	op := DefaultOptions().
+		WithAuth(true).
+		WithMaintenance(true)
+
+	if op.GetAuth() != false {
+		t.Errorf("Auth should be disabled in maintenance mode")
+	}
+}
+
+func TestOptionsString(t *testing.T) {
+	expected := `================ Config ================
+Data dir         : ./data
+Address          : 0.0.0.0:3322
+Metrics address  : 0.0.0.0:9497/metrics
+Config file      : configs/immudb.toml
+PID file         : immu.pid
+Log file         : immu.log
+Max recv msg size: 33554432
+Auth enabled     : true
+Dev mode         : false
+Default database : defaultdb
+Maintenance mode : false
+Synced mode      : true
+----------------------------------------
+Superadmin default credentials
+   Username      : immudb
+   Password      : immudb
+========================================`
+
+	op := DefaultOptions().
+		WithPidfile("immu.pid").
+		WithLogfile("immu.log")
+
+	assert.Equal(t, expected, op.String())
+}
+
+func TestOptionsStringWithS3(t *testing.T) {
+	expected := `================ Config ================
+Data dir         : ./data
+Address          : 0.0.0.0:3322
+Metrics address  : 0.0.0.0:9497/metrics
+Config file      : configs/immudb.toml
+PID file         : immu.pid
+Log file         : immu.log
+Max recv msg size: 33554432
+Auth enabled     : true
+Dev mode         : false
+Default database : defaultdb
+Maintenance mode : false
+Synced mode      : true
+S3 storage
+   endpoint      : s3-endpoint
+   bucket name   : s3-bucket-name
+   prefix        : s3-path-prefix
+----------------------------------------
+Superadmin default credentials
+   Username      : immudb
+   Password      : immudb
+========================================`
+
+	op := DefaultOptions().
+		WithPidfile("immu.pid").
+		WithLogfile("immu.log").
+		WithRemoteStorageOptions(
+			DefaultRemoteStorageOptions().
+				WithS3Storage(true).
+				WithS3Endpoint("s3-endpoint").
+				WithS3BucketName("s3-bucket-name").
+				WithS3PathPrefix("s3-path-prefix"),
+		)
+
+	assert.Equal(t, expected, op.String())
 }

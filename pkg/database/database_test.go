@@ -48,11 +48,20 @@ var kvs = []*schema.KeyValue{
 }
 
 func makeDb() (DB, func()) {
-	dbName := "EdithPiaf" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	options := DefaultOption().WithDbName(dbName).WithCorruptionChecker(false)
+	rootPath := "data_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+
+	catalogOptions := DefaultOption().WithDbRootPath(rootPath).WithDbName("catalog").WithCorruptionChecker(false)
+	catalogOptions.storeOpts.WithIndexOptions(catalogOptions.storeOpts.IndexOpts.WithCompactionThld(0))
+
+	catalogDB, err := NewDb(catalogOptions, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
+	if err != nil {
+		log.Fatalf("Error creating Db instance %s", err)
+	}
+
+	options := DefaultOption().WithDbRootPath(rootPath).WithDbName("db").WithCorruptionChecker(false)
 	options.storeOpts.WithIndexOptions(options.storeOpts.IndexOpts.WithCompactionThld(0))
 
-	db, err := NewDb(options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	db, err := NewDb(options, catalogDB, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		log.Fatalf("Error creating Db instance %s", err)
 	}
@@ -61,7 +70,11 @@ func makeDb() (DB, func()) {
 		if err := db.Close(); err != nil {
 			log.Fatal(err)
 		}
-		if err := os.RemoveAll(options.dbRootPath); err != nil {
+		if err := catalogDB.Close(); err != nil {
+			log.Fatalf("error closing catalog: %v", err)
+		}
+
+		if err := os.RemoveAll(rootPath); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -69,7 +82,7 @@ func makeDb() (DB, func()) {
 
 func TestDefaultDbCreation(t *testing.T) {
 	options := DefaultOption()
-	db, err := NewDb(options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	db, err := NewDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		t.Fatalf("Error creating Db instance %s", err)
 	}
@@ -84,7 +97,7 @@ func TestDefaultDbCreation(t *testing.T) {
 
 	n, err := db.Size()
 	require.NoError(t, err)
-	require.Equal(t, uint64(0), n)
+	require.Equal(t, uint64(1), n)
 
 	_, err = db.Count(nil)
 	require.Error(t, err)
@@ -113,7 +126,7 @@ func TestDbCreationInAlreadyExistentDirectories(t *testing.T) {
 	err = os.MkdirAll(filepath.Join(options.GetDbRootPath(), options.GetDbName()), os.ModePerm)
 	require.NoError(t, err)
 
-	_, err = NewDb(options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	_, err = NewDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.Error(t, err)
 }
 
@@ -121,13 +134,13 @@ func TestDbCreationInInvalidDirectory(t *testing.T) {
 	options := DefaultOption().WithDbRootPath("/?").WithDbName("EdithPiaf")
 	defer os.RemoveAll(options.GetDbRootPath())
 
-	_, err := NewDb(options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	_, err := NewDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.Error(t, err)
 }
 
 func TestDbCreation(t *testing.T) {
 	options := DefaultOption().WithDbName("EdithPiaf").WithDbRootPath("Paris")
-	db, err := NewDb(options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	db, err := NewDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		t.Fatalf("Error creating Db instance %s", err)
 	}
@@ -151,13 +164,13 @@ func TestDbCreation(t *testing.T) {
 
 func TestOpenWithMissingDBDirectories(t *testing.T) {
 	options := DefaultOption().WithDbRootPath("Paris")
-	_, err := OpenDb(options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	_, err := OpenDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.Error(t, err)
 }
 
 func TestOpenDb(t *testing.T) {
 	options := DefaultOption().WithDbName("EdithPiaf").WithDbRootPath("Paris")
-	db, err := NewDb(options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	db, err := NewDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		t.Fatalf("Error creating Db instance %s", err)
 	}
@@ -167,7 +180,7 @@ func TestOpenDb(t *testing.T) {
 		t.Fatalf("Error closing store %s", err)
 	}
 
-	db, err = OpenDb(options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	db, err = OpenDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		t.Fatalf("Error opening database %s", err)
 	}

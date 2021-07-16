@@ -196,23 +196,28 @@ func Open(path string, opts *Options) (*TBtree, error) {
 		WithFileMode(opts.fileMode).
 		WithMetadata(metadata.Bytes())
 
+	appFactory := opts.appFactory
+	if appFactory == nil {
+		appFactory = func(rootPath, subPath string, opts *multiapp.Options) (appendable.Appendable, error) {
+			path := filepath.Join(rootPath, subPath)
+			return multiapp.Open(path, opts)
+		}
+	}
+
 	appendableOpts.WithFileExt("n")
-	nLogPath := filepath.Join(path, "nodes")
-	nLog, err := multiapp.Open(nLogPath, appendableOpts)
+	nLog, err := appFactory(path, "nodes", appendableOpts)
 	if err != nil {
 		return nil, err
 	}
 
 	appendableOpts.WithFileExt("hx")
-	hLogPath := filepath.Join(path, "history")
-	hLog, err := multiapp.Open(hLogPath, appendableOpts)
+	hLog, err := appFactory(path, "history", appendableOpts)
 	if err != nil {
 		return nil, err
 	}
 
 	appendableOpts.WithFileExt("ri")
-	cLogPath := filepath.Join(path, "commit")
-	cLog, err := multiapp.Open(cLogPath, appendableOpts)
+	cLog, err := appFactory(path, "commit", appendableOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -597,6 +602,31 @@ func (t *TBtree) History(key []byte, offset uint64, descOrder bool, limit int) (
 	return t.root.history(key, offset, descOrder, limit)
 }
 
+func (t *TBtree) ExistKeyWith(prefix []byte, neq []byte, smaller bool) (bool, error) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	if t.closed {
+		return false, ErrAlreadyClosed
+	}
+
+	_, leaf, off, err := t.root.findLeafNode(prefix, nil, neq, smaller)
+	if err == ErrKeyNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	v := leaf.values[off]
+
+	if len(prefix) > len(v.key) {
+		return false, nil
+	}
+
+	return bytes.Equal(prefix, v.key[:len(prefix)]), nil
+}
+
 func (t *TBtree) Sync() error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -651,7 +681,7 @@ func (t *TBtree) flushTree() (wN int64, wH int64, err error) {
 	t.log.Infof("Flushing index '%s'...", t.path)
 
 	if !t.root.mutated() {
-		t.log.Infof("Flushing not needed at '%s'...", t.path)
+		t.log.Infof("Flushing not needed at '%s'", t.path)
 		return 0, 0, nil
 	}
 
@@ -737,6 +767,11 @@ func (t *TBtree) CompactIndex() (uint64, error) {
 	if t.compacting {
 		t.mutex.Unlock()
 		return 0, ErrCompactAlreadyInProgress
+	}
+
+	if len(t.snapshots) > 0 {
+		t.mutex.Unlock()
+		return 0, ErrSnapshotsNotClosed
 	}
 
 	snapCount, err := t.storedSnapshotsCount()
@@ -975,6 +1010,10 @@ func (t *TBtree) SnapshotSince(ts uint64) (*Snapshot, error) {
 
 	if len(t.snapshots) == t.maxActiveSnapshots {
 		return nil, ErrorToManyActiveSnapshots
+	}
+
+	if t.compacting {
+		return nil, ErrCompactAlreadyInProgress
 	}
 
 	if t.lastSnapRoot == nil || t.lastSnapRoot.ts() < ts ||
@@ -1754,4 +1793,47 @@ func (l *leafNode) updateTs() {
 
 func (lv *leafValue) size() int {
 	return 16 + len(lv.key) + len(lv.value)
+}
+
+func (lv *leafValue) asBefore(hLog appendable.Appendable, beforeTs uint64) (uint64, error) {
+	if lv.ts < beforeTs {
+		return lv.ts, nil
+	}
+
+	for _, ts := range lv.tss {
+		if ts < beforeTs {
+			return ts, nil
+		}
+	}
+
+	hOff := lv.hOff
+
+	for i := uint64(0); i < lv.hCount; i++ {
+		r := appendable.NewReaderFrom(hLog, hOff, DefaultMaxNodeSize)
+
+		hc, err := r.ReadUint32()
+		if err != nil {
+			return 0, err
+		}
+
+		for i := 0; i < int(hc); i++ {
+			ts, err := r.ReadUint64()
+			if err != nil {
+				return 0, err
+			}
+
+			if ts < beforeTs {
+				return ts, nil
+			}
+		}
+
+		prevOff, err := r.ReadUint64()
+		if err != nil {
+			return 0, err
+		}
+
+		hOff = int64(prevOff)
+	}
+
+	return 0, ErrKeyNotFound
 }

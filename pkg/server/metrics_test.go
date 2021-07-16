@@ -18,33 +18,37 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/peer"
 )
 
 func TestStartMetrics(t *testing.T) {
 	server := StartMetrics(
+		100*time.Millisecond,
 		"0.0.0.0:9999",
 		&mockLogger{},
 		func() float64 { return 0 },
-		func() float64 { return 0 },
-		func() float64 { return 0 })
+		func() map[string]float64 { return make(map[string]float64) },
+		func() map[string]float64 { return make(map[string]float64) },
+	)
+	time.Sleep(200 * time.Millisecond)
 	defer server.Close()
 
 	assert.IsType(t, &http.Server{}, server)
-
 }
 
 func TestMetricsCollection_UpdateClientMetrics(t *testing.T) {
 	mc := MetricsCollection{
-		RecordsCounter: prometheus.NewCounterFunc(prometheus.CounterOpts{}, func() float64 {
-			return 0
-		}),
 		UptimeCounter: prometheus.NewCounterFunc(prometheus.CounterOpts{}, func() float64 {
 			return 0
 		}),
@@ -80,4 +84,85 @@ func TestMetricsCollection_UpdateClientMetrics(t *testing.T) {
 	mc.UpdateClientMetrics(ctx)
 
 	assert.IsType(t, MetricsCollection{}, mc)
+}
+
+func TestMetricsCollection_UpdateDBMetrics(t *testing.T) {
+	mc := MetricsCollection{
+		DBSizeGauges: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: metricsNamespace,
+				Name:      "db_size_bytes",
+				Help:      "Database size in bytes.",
+			},
+			[]string{"db"},
+		),
+		DBEntriesGauges: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: metricsNamespace,
+				Name:      "number_of_stored_entries",
+				Help:      "Number of key-value entries currently stored by the database.",
+			},
+			[]string{"db"},
+		),
+	}
+
+	// update before injecting the funcs, to catch the fast-exit execution path
+	mc.UpdateDBMetrics()
+
+	mc.computeDBSizes = func() map[string]float64 {
+		return map[string]float64{"db1": 111, "db2": 222}
+	}
+	mc.computeDBEntries = func() map[string]float64 {
+		return map[string]float64{"db1": 10, "db2": 20}
+	}
+
+	// update after injecting the funcs, to catch the normal execution path
+	mc.UpdateDBMetrics()
+
+	assert.IsType(t, MetricsCollection{}, mc)
+}
+
+func TestImmudbHealthHandlerFunc(t *testing.T) {
+	req, err := http.NewRequest("GET", "/initz", nil)
+	require.NoError(t, err)
+	rr := httptest.NewRecorder()
+	handler := corsHandlerFunc(ImmudbHealthHandlerFunc())
+	handler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestImmudbVersionHandlerFunc(t *testing.T) {
+	// test OPTIONS /version
+	req, err := http.NewRequest("OPTIONS", "/version", nil)
+	require.NoError(t, err)
+	rr := httptest.NewRecorder()
+	handler := corsHandlerFunc(ImmudbVersionHandlerFunc)
+	handler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusNoContent, rr.Code)
+
+	// test GET /version
+	Version = VersionResponse{
+		Component: "immudb",
+		Version:   "1.2.3",
+		BuildTime: time.Now().Format(time.RFC3339),
+		BuiltBy:   "SomeBuilder",
+		Static:    true,
+	}
+	req, err = http.NewRequest("GET", "/version", nil)
+	require.NoError(t, err)
+	rr = httptest.NewRecorder()
+	handler = corsHandlerFunc(ImmudbVersionHandlerFunc)
+	handler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	expectedBody, _ := json.Marshal(&Version)
+	require.Equal(t, string(expectedBody)+"\n", rr.Body.String())
+}
+
+func TestCORSHandler(t *testing.T) {
+	rr := httptest.NewRecorder()
+	req, err := http.NewRequest("GET", "/metrics", nil)
+	require.NoError(t, err)
+	handler := corsHandler(promhttp.Handler())
+	handler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
 }

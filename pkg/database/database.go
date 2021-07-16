@@ -13,10 +13,10 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package database
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -24,8 +24,8 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/codenotary/immudb/embedded/sql"
 	"github.com/codenotary/immudb/embedded/store"
-	"github.com/codenotary/immudb/embedded/tbtree"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/logger"
@@ -38,7 +38,7 @@ const MaxKeyScanLimit = 1000
 var ErrMaxKeyResolutionLimitReached = errors.New("max key resolution limit reached. It may be due to cyclic references")
 var ErrMaxKeyScanLimitExceeded = errors.New("max key scan limit exceeded")
 var ErrIllegalArguments = store.ErrIllegalArguments
-var ErrIllegalState = tbtree.ErrIllegalState
+var ErrIllegalState = store.ErrIllegalState
 
 type DB interface {
 	Health(e *empty.Empty) (*schema.HealthResponse, error)
@@ -65,26 +65,43 @@ type DB interface {
 	Close() error
 	GetOptions() *DbOptions
 	CompactIndex() error
+	VerifiableSQLGet(req *schema.VerifiableSQLGetRequest) (*schema.VerifiableSQLEntry, error)
+	SQLExec(req *schema.SQLExecRequest) (*schema.SQLExecResult, error)
+	SQLExecPrepared(stmts []sql.SQLStmt, namedParams []*schema.NamedParam, waitForIndexing bool) (*schema.SQLExecResult, error)
+	InferParameters(sql string) (map[string]sql.SQLValueType, error)
+	InferParametersPrepared(stmt sql.SQLStmt) (map[string]sql.SQLValueType, error)
+	UseSnapshot(req *schema.UseSnapshotRequest) error
+	SQLQuery(req *schema.SQLQueryRequest) (*schema.SQLQueryResult, error)
+	SQLQueryPrepared(stmt *sql.SelectStmt, namedParams []*schema.NamedParam, renewSnapshot bool) (*schema.SQLQueryResult, error)
+	SQLQueryRowReader(stmt *sql.SelectStmt, renewSnapshot bool) (sql.RowReader, error)
+	ListTables() (*schema.SQLQueryResult, error)
+	DescribeTable(table string) (*schema.SQLQueryResult, error)
+	GetName() string
 }
 
 //IDB database instance
 type db struct {
 	st *store.ImmuStore
 
+	sqlEngine *sql.Engine
+
 	tx1, tx2 *store.Tx
 	mutex    sync.RWMutex
 
 	Logger  logger.Logger
 	options *DbOptions
+
+	name string
 }
 
 // OpenDb Opens an existing Database from disk
-func OpenDb(op *DbOptions, log logger.Logger) (DB, error) {
+func OpenDb(op *DbOptions, catalogDB DB, log logger.Logger) (DB, error) {
 	var err error
 
-	db := &db{
+	dbi := &db{
 		Logger:  log,
 		options: op,
+		name:    op.dbName,
 	}
 
 	dbDir := filepath.Join(op.GetDbRootPath(), op.GetDbName())
@@ -94,24 +111,55 @@ func OpenDb(op *DbOptions, log logger.Logger) (DB, error) {
 		return nil, fmt.Errorf("Missing database directories")
 	}
 
-	db.st, err = store.Open(dbDir, op.GetStoreOptions().WithLog(log))
+	dbi.st, err = store.Open(dbDir, op.GetStoreOptions().WithLog(log))
 	if err != nil {
-		return nil, logErr(db.Logger, "Unable to open store: %s", err)
+		return nil, logErr(dbi.Logger, "Unable to open store: %s", err)
 	}
 
-	db.tx1 = db.st.NewTx()
-	db.tx2 = db.st.NewTx()
+	dbi.tx1 = dbi.st.NewTx()
+	dbi.tx2 = dbi.st.NewTx()
 
-	return db, nil
+	var catalogStore *store.ImmuStore
+
+	if catalogDB == nil {
+		catalogStore = dbi.st
+	} else {
+		catalogStore = catalogDB.(*db).st
+	}
+
+	dbi.sqlEngine, err = sql.NewEngine(catalogStore, dbi.st, []byte{SQLPrefix})
+	if err != nil {
+		return nil, logErr(dbi.Logger, "Unable to open store: %s", err)
+	}
+
+	err = dbi.sqlEngine.UseDatabase(dbi.options.dbName)
+	if err == sql.ErrDatabaseDoesNotExist {
+		// Database registration may be needed when opening a database created with an older version of immudb (older than v1.0.0)
+
+		log.Infof("Registering database '%s' in the catalog...", dbDir)
+		_, _, err = dbi.sqlEngine.ExecPreparedStmts([]sql.SQLStmt{&sql.CreateDatabaseStmt{DB: dbi.options.dbName}}, nil, true)
+		if err != nil {
+			return nil, logErr(dbi.Logger, "Unable to open store: %s", err)
+		}
+		log.Infof("Database '%s' successfully registered", dbDir)
+
+		err = dbi.sqlEngine.UseDatabase(dbi.options.dbName)
+	}
+	if err != nil {
+		return nil, logErr(dbi.Logger, "Unable to open store: %s", err)
+	}
+
+	return dbi, nil
 }
 
 // NewDb Creates a new Database along with it's directories and files
-func NewDb(op *DbOptions, log logger.Logger) (DB, error) {
+func NewDb(op *DbOptions, catalogDB DB, log logger.Logger) (DB, error) {
 	var err error
 
-	db := &db{
+	dbi := &db{
 		Logger:  log,
 		options: op,
+		name:    op.dbName,
 	}
 
 	dbDir := filepath.Join(op.GetDbRootPath(), op.GetDbName())
@@ -121,33 +169,59 @@ func NewDb(op *DbOptions, log logger.Logger) (DB, error) {
 	}
 
 	if err = os.MkdirAll(dbDir, os.ModePerm); err != nil {
-		return nil, logErr(db.Logger, "Unable to create data folder: %s", err)
+		return nil, logErr(dbi.Logger, "Unable to create data folder: %s", err)
 	}
 
-	db.st, err = store.Open(dbDir, op.GetStoreOptions().WithLog(log))
+	dbi.st, err = store.Open(dbDir, op.GetStoreOptions().WithLog(log))
 	if err != nil {
-		return nil, logErr(db.Logger, "Unable to open store: %s", err)
+		return nil, logErr(dbi.Logger, "Unable to open store: %s", err)
 	}
 
-	db.tx1 = db.st.NewTx()
-	db.tx2 = db.st.NewTx()
+	dbi.tx1 = dbi.st.NewTx()
+	dbi.tx2 = dbi.st.NewTx()
 
-	return db, nil
+	var catalogStore *store.ImmuStore
+
+	if catalogDB == nil {
+		catalogStore = dbi.st
+	} else {
+		catalogStore = catalogDB.(*db).st
+	}
+
+	dbi.sqlEngine, err = sql.NewEngine(catalogStore, dbi.st, []byte{SQLPrefix})
+	if err != nil {
+		return nil, logErr(dbi.Logger, "Unable to open store: %s", err)
+	}
+
+	_, _, err = dbi.sqlEngine.ExecPreparedStmts([]sql.SQLStmt{&sql.CreateDatabaseStmt{DB: dbi.options.dbName}}, nil, true)
+	if err != nil {
+		return nil, logErr(dbi.Logger, "Unable to open store: %s", err)
+	}
+
+	err = dbi.sqlEngine.UseDatabase(dbi.options.dbName)
+	if err != nil {
+		return nil, logErr(dbi.Logger, "Unable to open store: %s", err)
+	}
+
+	return dbi, nil
 }
 
 // CompactIndex ...
 func (d *db) CompactIndex() error {
-	d.Logger.Infof("Compacting index '%s'...", d.options.dbName)
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
 
-	err := d.st.CompactIndex()
-
-	if err == nil {
-		d.Logger.Infof("Index '%s' sucessfully compacted", d.options.dbName)
-	} else {
-		d.Logger.Warningf("Compaction of index '%s' returned: %v", d.options.dbName, err)
+	err := d.sqlEngine.CloseSnapshot()
+	if err != nil {
+		return err
 	}
 
-	return err
+	err = d.st.CompactIndex()
+	if err != nil {
+		return err
+	}
+
+	return d.sqlEngine.RenewSnapshot()
 }
 
 // Set ...
@@ -191,7 +265,7 @@ func (d *db) Get(req *schema.KeyRequest) (*schema.Entry, error) {
 		return nil, ErrIllegalArguments
 	}
 
-	err := d.st.WaitForIndexingUpto(req.SinceTx)
+	err := d.st.WaitForIndexingUpto(req.SinceTx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -202,34 +276,16 @@ func (d *db) Get(req *schema.KeyRequest) (*schema.Entry, error) {
 	return d.getAt(EncodeKey(req.Key), req.AtTx, 0, d.st, d.tx1)
 }
 
-type KeyIndex interface {
-	Get(key []byte) (value []byte, tx uint64, hc uint64, err error)
+func (d *db) get(key []byte, index store.KeyIndex, tx *store.Tx) (*schema.Entry, error) {
+	return d.getAt(key, 0, 0, index, tx)
 }
 
-func (d *db) get(key []byte, keyIndex KeyIndex, tx *store.Tx) (*schema.Entry, error) {
-	return d.getAt(key, 0, 0, keyIndex, tx)
-}
-
-func (d *db) getAt(key []byte, atTx uint64, resolved int, keyIndex KeyIndex, tx *store.Tx) (entry *schema.Entry, err error) {
+func (d *db) getAt(key []byte, atTx uint64, resolved int, index store.KeyIndex, tx *store.Tx) (entry *schema.Entry, err error) {
 	var ktx uint64
 	var val []byte
 
 	if atTx == 0 {
-		wv, wtx, _, err := keyIndex.Get(key)
-		if err != nil {
-			return nil, err
-		}
-
-		valLen := binary.BigEndian.Uint32(wv)
-		vOff := binary.BigEndian.Uint64(wv[4:])
-
-		var hVal [sha256.Size]byte
-		copy(hVal[:], wv[4+8:])
-
-		ktx = wtx
-
-		val = make([]byte, valLen)
-		_, err = d.st.ReadValueAt(val, int64(vOff), hVal)
+		val, ktx, _, err = index.Get(key)
 		if err != nil {
 			return nil, err
 		}
@@ -251,7 +307,7 @@ func (d *db) getAt(key []byte, atTx uint64, resolved int, keyIndex KeyIndex, tx 
 		refKey := make([]byte, len(val)-1-8)
 		copy(refKey, val[1+8:])
 
-		entry, err := d.getAt(refKey, atTx, resolved+1, keyIndex, tx)
+		entry, err := d.getAt(refKey, atTx, resolved+1, index, tx)
 		if err != nil {
 			return nil, err
 		}
@@ -430,7 +486,7 @@ func (d *db) VerifiableGet(req *schema.VerifiableGetRequest) (*schema.Verifiable
 
 //GetAll ...
 func (d *db) GetAll(req *schema.KeyListRequest) (*schema.Entries, error) {
-	err := d.st.WaitForIndexingUpto(req.SinceTx)
+	err := d.st.WaitForIndexingUpto(req.SinceTx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -606,7 +662,7 @@ func (d *db) History(req *schema.HistoryRequest) (*schema.Entries, error) {
 		return nil, ErrMaxKeyScanLimitExceeded
 	}
 
-	err := d.st.WaitForIndexingUpto(req.SinceTx)
+	err := d.st.WaitForIndexingUpto(req.SinceTx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -620,7 +676,7 @@ func (d *db) History(req *schema.HistoryRequest) (*schema.Entries, error) {
 	key := EncodeKey(req.Key)
 
 	txs, err := d.st.History(key, req.Offset, req.Desc, limit)
-	if err != nil && err != tbtree.ErrOffsetOutOfRange {
+	if err != nil && err != store.ErrOffsetOutOfRange {
 		return nil, err
 	}
 
@@ -650,7 +706,17 @@ func (d *db) Close() error {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
+	err := d.sqlEngine.Close()
+	if err != nil {
+		return err
+	}
+
 	return d.st.Close()
+}
+
+// GetName ...
+func (d *db) GetName() string {
+	return d.name
 }
 
 //GetOptions ...

@@ -22,11 +22,11 @@ import (
 )
 
 func TestInvalidOptions(t *testing.T) {
-	require.False(t, validOptions(nil))
+	require.False(t, (*Options)(nil).Valid())
 }
 
 func TestDefaultOptions(t *testing.T) {
-	require.True(t, validOptions(DefaultOptions()))
+	require.True(t, DefaultOptions().Valid())
 }
 
 func TestValidOptions(t *testing.T) {
@@ -35,13 +35,15 @@ func TestValidOptions(t *testing.T) {
 	require.Equal(t, DefaultFileMode, opts.WithFileMode(DefaultFileMode).fileMode)
 	require.Equal(t, []byte{}, opts.WithMetadata([]byte{}).metadata)
 	require.Equal(t, DefaultCompressionFormat, opts.WithCompressionFormat(DefaultCompressionFormat).compressionFormat)
+	require.Equal(t, DefaultCompressionFormat, opts.WithCompressionFormat(DefaultCompressionFormat).GetCompressionFormat())
 	require.Equal(t, DefaultCompressionLevel, opts.WithCompresionLevel(DefaultCompressionLevel).compressionLevel)
+	require.Equal(t, DefaultCompressionLevel, opts.WithCompresionLevel(DefaultCompressionLevel).GetCompressionLevel())
 
 	require.True(t, opts.WithSynced(true).synced)
 
 	require.False(t, opts.WithReadOnly(false).readOnly)
-	require.True(t, validOptions(opts))
+	require.True(t, opts.Valid())
 
 	require.True(t, opts.WithReadOnly(true).readOnly)
-	require.True(t, validOptions(opts))
+	require.True(t, opts.Valid())
 }
