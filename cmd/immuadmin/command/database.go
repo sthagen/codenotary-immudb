@@ -34,6 +34,7 @@ func (cl *commandline) database(cmd *cobra.Command) {
 		PersistentPostRun: cl.disconnect,
 		ValidArgs:         []string{"list", "create", "use", "clean"},
 	}
+
 	ccd := &cobra.Command{
 		Use:               "list",
 		Short:             "List all databases",
@@ -63,6 +64,7 @@ func (cl *commandline) database(cmd *cobra.Command) {
 		},
 		Args: cobra.ExactArgs(0),
 	}
+
 	cc := &cobra.Command{
 		Use:               "create",
 		Short:             "Create a new database",
@@ -70,16 +72,76 @@ func (cl *commandline) database(cmd *cobra.Command) {
 		PersistentPostRun: cl.disconnect,
 		Example:           "create {database_name}",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := cl.immuClient.CreateDatabase(cl.context, &schema.Database{
-				DatabaseName: args[0],
+			isReplica, err := cmd.Flags().GetBool("replica")
+			if err != nil {
+				return err
+			}
+
+			if isReplica {
+				c.PrintfColorW(cmd.OutOrStdout(), c.Yellow, "Replication is a work-in-progress feature. Not ready for production use\n")
+			}
+
+			excludeCommitTime, err := cmd.Flags().GetBool("exclude-commit-time")
+			if err != nil {
+				return err
+			}
+
+			if err := cl.immuClient.CreateDatabase(cl.context, &schema.DatabaseSettings{
+				DatabaseName:      args[0],
+				Replica:           isReplica,
+				ExcludeCommitTime: excludeCommitTime,
 			}); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "database successfully created\n")
+
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"database '%s' {replica: %v, exclude-commit-time: %v} successfully updated\n", args[0], isReplica, excludeCommitTime)
 			return nil
 		},
 		Args: cobra.ExactArgs(1),
 	}
+	cc.Flags().BoolP("replica", "r", false, "set database as a replica")
+	cc.Flags().Bool("exclude-commit-time", false,
+		"do not include server-side timestamps in commit checksums, useful when reproducibility is a desired feature")
+
+	cu := &cobra.Command{
+		Use:               "update",
+		Short:             "Update database",
+		PersistentPreRunE: cl.ConfigChain(cl.connect),
+		PersistentPostRun: cl.disconnect,
+		Example:           "update {database_name}",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			isReplica, err := cmd.Flags().GetBool("replica")
+			if err != nil {
+				return err
+			}
+
+			if isReplica {
+				c.PrintfColorW(cmd.OutOrStdout(), c.Yellow, "Replication is a work-in-progress feature. Not ready for production use\n")
+			}
+
+			excludeCommitTime, err := cmd.Flags().GetBool("exclude-commit-time")
+			if err != nil {
+				return err
+			}
+
+			if err := cl.immuClient.UpdateDatabase(cl.context, &schema.DatabaseSettings{
+				DatabaseName:      args[0],
+				Replica:           isReplica,
+				ExcludeCommitTime: excludeCommitTime,
+			}); err != nil {
+				return err
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"database '%s' {replica: %v, exclude-commit-time: %v} successfully updated\n", args[0], isReplica, excludeCommitTime)
+			return nil
+		},
+		Args: cobra.ExactArgs(1),
+	}
+	cu.Flags().BoolP("replica", "r", false, "set database as a replica")
+	cu.Flags().Bool("exclude-commit-time", false,
+		"do not include server-side timestamps in commit checksums, useful when reproducibility is a desired feature")
 
 	ccu := &cobra.Command{
 		Use:               "use command",
@@ -110,14 +172,14 @@ func (cl *commandline) database(cmd *cobra.Command) {
 	}
 
 	ccc := &cobra.Command{
-		Use:               "clean command",
-		Short:             "Clean database index",
-		Example:           "clean",
+		Use:               "compact command",
+		Short:             "Compact database index",
+		Example:           "compact",
 		PersistentPreRunE: cl.ConfigChain(cl.connect),
 		PersistentPostRun: cl.disconnect,
 		ValidArgs:         []string{"databasename"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			err := cl.immuClient.CleanIndex(cl.context, &emptypb.Empty{})
+			err := cl.immuClient.CompactIndex(cl.context, &emptypb.Empty{})
 			if err != nil {
 				cl.quit(err)
 			}
@@ -125,7 +187,7 @@ func (cl *commandline) database(cmd *cobra.Command) {
 				return err
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Database index successfully cleaned\n")
+			fmt.Fprintf(cmd.OutOrStdout(), "Database index successfully compacted\n")
 			return nil
 		},
 		Args: cobra.ExactArgs(0),
@@ -135,5 +197,6 @@ func (cl *commandline) database(cmd *cobra.Command) {
 	ccmd.AddCommand(ccu)
 	ccmd.AddCommand(ccd)
 	ccmd.AddCommand(cc)
+	ccmd.AddCommand(cu)
 	cmd.AddCommand(ccmd)
 }

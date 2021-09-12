@@ -31,8 +31,13 @@ type groupedRowReader struct {
 }
 
 func (e *Engine) newGroupedRowReader(rowReader RowReader, selectors []Selector, groupBy []*ColSelector) (*groupedRowReader, error) {
-	if rowReader == nil || len(selectors) == 0 {
+	if rowReader == nil || len(selectors) == 0 || len(groupBy) > 1 {
 		return nil, ErrIllegalArguments
+	}
+
+	if len(groupBy) == 1 &&
+		rowReader.OrderBy().Selector() != EncodeSelector(groupBy[0].resolve(rowReader.ImplicitDB(), rowReader.ImplicitTable())) {
+		return nil, ErrLimitedGroupBy
 	}
 
 	return &groupedRowReader{
@@ -49,6 +54,10 @@ func (gr *groupedRowReader) ImplicitDB() string {
 
 func (gr *groupedRowReader) ImplicitTable() string {
 	return gr.rowReader.ImplicitTable()
+}
+
+func (gr *groupedRowReader) OrderBy() *ColDescriptor {
+	return gr.rowReader.OrderBy()
 }
 
 func (gr *groupedRowReader) Columns() ([]*ColDescriptor, error) {
@@ -80,10 +89,18 @@ func (gr *groupedRowReader) colsBySelector() (map[string]*ColDescriptor, error) 
 			continue
 		}
 
-		encSel := EncodeSelector(aggFn, db, table, col)
+		des := &ColDescriptor{
+			AggFn:    aggFn,
+			Database: db,
+			Table:    table,
+			Column:   col,
+			Type:     IntegerType,
+		}
+
+		encSel := des.Selector()
 
 		if aggFn == COUNT {
-			colDescriptors[encSel] = &ColDescriptor{Selector: encSel, Type: IntegerType}
+			colDescriptors[encSel] = des
 			continue
 		}
 
@@ -96,7 +113,7 @@ func (gr *groupedRowReader) colsBySelector() (map[string]*ColDescriptor, error) 
 			colDescriptors[encSel] = colDesc
 		} else {
 			// SUM, AVG
-			colDescriptors[encSel] = &ColDescriptor{Selector: encSel, Type: IntegerType}
+			colDescriptors[encSel] = des
 		}
 	}
 

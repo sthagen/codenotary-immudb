@@ -20,7 +20,6 @@ import (
 	"crypto/tls"
 	"testing"
 
-	"github.com/codenotary/immudb/embedded/store"
 	"github.com/codenotary/immudb/pkg/auth"
 	"github.com/codenotary/immudb/pkg/stream"
 
@@ -57,7 +56,6 @@ func TestOptions(t *testing.T) {
 }
 
 func TestSetOptions(t *testing.T) {
-	storeOptions := store.DefaultOptions()
 	tlsConfig := &tls.Config{Certificates: []tls.Certificate{}}
 	op := DefaultOptions().WithDir("immudb_dir").WithNetwork("udp").
 		WithAddress("localhost").WithPort(2048).
@@ -69,7 +67,6 @@ func TestSetOptions(t *testing.T) {
 		WithWebServerPort(8081).
 		WithTokenExpiryTime(52).
 		WithWebServer(false).
-		WithStoreOptions(storeOptions).
 		WithTLS(tlsConfig).
 		WithPgsqlServer(true).
 		WithPgsqlServerPort(123456)
@@ -94,22 +91,11 @@ func TestSetOptions(t *testing.T) {
 		op.Bind() != "localhost:2048" ||
 		op.WebBind() != "localhost:8081" ||
 		op.WebServer != false ||
-		op.StoreOptions != storeOptions ||
 		op.TLSConfig != tlsConfig ||
 		op.TokenExpiryTimeMin != 52 ||
 		!op.PgsqlServer ||
 		op.PgsqlServerPort != 123456 {
 		t.Errorf("database default options mismatch")
-	}
-}
-
-func TestOptionsMaintenance(t *testing.T) {
-	op := DefaultOptions().
-		WithAuth(true).
-		WithMaintenance(true)
-
-	if op.GetAuth() != false {
-		t.Errorf("Auth should be disabled in maintenance mode")
 	}
 }
 

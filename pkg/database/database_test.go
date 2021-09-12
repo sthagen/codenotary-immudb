@@ -27,9 +27,9 @@ import (
 
 	"github.com/codenotary/immudb/embedded/store"
 	"github.com/codenotary/immudb/pkg/api/schema"
+	"github.com/codenotary/immudb/pkg/fs"
 	"github.com/codenotary/immudb/pkg/logger"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 var kvs = []*schema.KeyValue{
@@ -50,18 +50,14 @@ var kvs = []*schema.KeyValue{
 func makeDb() (DB, func()) {
 	rootPath := "data_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 
-	catalogOptions := DefaultOption().WithDbRootPath(rootPath).WithDbName("catalog").WithCorruptionChecker(false)
-	catalogOptions.storeOpts.WithIndexOptions(catalogOptions.storeOpts.IndexOpts.WithCompactionThld(0))
-
-	catalogDB, err := NewDb(catalogOptions, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
-	if err != nil {
-		log.Fatalf("Error creating Db instance %s", err)
-	}
-
-	options := DefaultOption().WithDbRootPath(rootPath).WithDbName("db").WithCorruptionChecker(false)
+	options := DefaultOption().WithDBRootPath(rootPath).WithDBName("db").WithCorruptionChecker(false)
 	options.storeOpts.WithIndexOptions(options.storeOpts.IndexOpts.WithCompactionThld(0))
 
-	db, err := NewDb(options, catalogDB, logger.NewSimpleLogger("immudb ", os.Stderr))
+	return makeDbWith(options)
+}
+
+func makeDbWith(opts *Options) (DB, func()) {
+	db, err := NewDB(opts, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		log.Fatalf("Error creating Db instance %s", err)
 	}
@@ -70,11 +66,8 @@ func makeDb() (DB, func()) {
 		if err := db.Close(); err != nil {
 			log.Fatal(err)
 		}
-		if err := catalogDB.Close(); err != nil {
-			log.Fatalf("error closing catalog: %v", err)
-		}
 
-		if err := os.RemoveAll(rootPath); err != nil {
+		if err := os.RemoveAll(db.GetOptions().dbRootPath); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -82,7 +75,7 @@ func makeDb() (DB, func()) {
 
 func TestDefaultDbCreation(t *testing.T) {
 	options := DefaultOption()
-	db, err := NewDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
+	db, err := NewDB(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		t.Fatalf("Error creating Db instance %s", err)
 	}
@@ -92,7 +85,7 @@ func TestDefaultDbCreation(t *testing.T) {
 	defer func() {
 		db.Close()
 		time.Sleep(1 * time.Second)
-		os.RemoveAll(options.GetDbRootPath())
+		os.RemoveAll(options.GetDBRootPath())
 	}()
 
 	n, err := db.Size()
@@ -105,42 +98,42 @@ func TestDefaultDbCreation(t *testing.T) {
 	_, err = db.CountAll()
 	require.Error(t, err)
 
-	dbPath := path.Join(options.GetDbRootPath(), options.GetDbName())
+	dbPath := path.Join(options.GetDBRootPath(), options.GetDBName())
 	if _, err = os.Stat(dbPath); os.IsNotExist(err) {
 		t.Fatalf("Db dir not created")
 	}
 
-	_, err = os.Stat(path.Join(options.GetDbRootPath()))
+	_, err = os.Stat(path.Join(options.GetDBRootPath()))
 	if os.IsNotExist(err) {
 		t.Fatalf("Data dir not created")
 	}
 }
 
 func TestDbCreationInAlreadyExistentDirectories(t *testing.T) {
-	options := DefaultOption().WithDbRootPath("Paris").WithDbName("EdithPiaf")
-	defer os.RemoveAll(options.GetDbRootPath())
+	options := DefaultOption().WithDBRootPath("Paris").WithDBName("EdithPiaf")
+	defer os.RemoveAll(options.GetDBRootPath())
 
-	err := os.MkdirAll(options.GetDbRootPath(), os.ModePerm)
+	err := os.MkdirAll(options.GetDBRootPath(), os.ModePerm)
 	require.NoError(t, err)
 
-	err = os.MkdirAll(filepath.Join(options.GetDbRootPath(), options.GetDbName()), os.ModePerm)
+	err = os.MkdirAll(filepath.Join(options.GetDBRootPath(), options.GetDBName()), os.ModePerm)
 	require.NoError(t, err)
 
-	_, err = NewDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
+	_, err = NewDB(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.Error(t, err)
 }
 
 func TestDbCreationInInvalidDirectory(t *testing.T) {
-	options := DefaultOption().WithDbRootPath("/?").WithDbName("EdithPiaf")
-	defer os.RemoveAll(options.GetDbRootPath())
+	options := DefaultOption().WithDBRootPath("/?").WithDBName("EdithPiaf")
+	defer os.RemoveAll(options.GetDBRootPath())
 
-	_, err := NewDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
+	_, err := NewDB(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.Error(t, err)
 }
 
 func TestDbCreation(t *testing.T) {
-	options := DefaultOption().WithDbName("EdithPiaf").WithDbRootPath("Paris")
-	db, err := NewDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
+	options := DefaultOption().WithDBName("EdithPiaf").WithDBRootPath("Paris")
+	db, err := NewDB(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		t.Fatalf("Error creating Db instance %s", err)
 	}
@@ -148,29 +141,29 @@ func TestDbCreation(t *testing.T) {
 	defer func() {
 		db.Close()
 		time.Sleep(1 * time.Second)
-		os.RemoveAll(options.GetDbRootPath())
+		os.RemoveAll(options.GetDBRootPath())
 	}()
 
-	dbPath := path.Join(options.GetDbRootPath(), options.GetDbName())
+	dbPath := path.Join(options.GetDBRootPath(), options.GetDBName())
 	if _, err = os.Stat(dbPath); os.IsNotExist(err) {
 		t.Fatalf("Db dir not created")
 	}
 
-	_, err = os.Stat(options.GetDbRootPath())
+	_, err = os.Stat(options.GetDBRootPath())
 	if os.IsNotExist(err) {
 		t.Fatalf("Data dir not created")
 	}
 }
 
 func TestOpenWithMissingDBDirectories(t *testing.T) {
-	options := DefaultOption().WithDbRootPath("Paris")
-	_, err := OpenDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
+	options := DefaultOption().WithDBRootPath("Paris")
+	_, err := OpenDB(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.Error(t, err)
 }
 
-func TestOpenDb(t *testing.T) {
-	options := DefaultOption().WithDbName("EdithPiaf").WithDbRootPath("Paris")
-	db, err := NewDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
+func TestOpenDB(t *testing.T) {
+	options := DefaultOption().WithDBName("EdithPiaf").WithDBRootPath("Paris")
+	db, err := NewDB(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		t.Fatalf("Error creating Db instance %s", err)
 	}
@@ -180,14 +173,35 @@ func TestOpenDb(t *testing.T) {
 		t.Fatalf("Error closing store %s", err)
 	}
 
-	db, err = OpenDb(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
+	db, err = OpenDB(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		t.Fatalf("Error opening database %s", err)
 	}
 
 	db.Close()
 	time.Sleep(1 * time.Second)
-	os.RemoveAll(options.GetDbRootPath())
+	os.RemoveAll(options.GetDBRootPath())
+}
+
+func TestOpenV1_0_1_DB(t *testing.T) {
+	copier := fs.NewStandardCopier()
+	require.NoError(t, copier.CopyDir("../../test/data_v1.0.1", "data_v1.0.1"))
+
+	defer os.RemoveAll("data_v1.0.1")
+
+	sysOpts := DefaultOption().WithDBName("systemdb").WithDBRootPath("./data_v1.0.1")
+	sysDB, err := OpenDB(sysOpts, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
+	require.NoError(t, err)
+
+	dbOpts := DefaultOption().WithDBName("defaultdb").WithDBRootPath("./data_v1.0.1")
+	db, err := OpenDB(dbOpts, sysDB, logger.NewSimpleLogger("immudb ", os.Stderr))
+	require.NoError(t, err)
+
+	err = db.Close()
+	require.NoError(t, err)
+
+	err = sysDB.Close()
+	require.NoError(t, err)
 }
 
 func TestDbSynchronousSet(t *testing.T) {
@@ -221,12 +235,12 @@ func TestDbSetGet(t *testing.T) {
 	for i, kv := range kvs {
 		txMetadata, err := db.Set(&schema.SetRequest{KVs: []*schema.KeyValue{kv}})
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), txMetadata.Id)
+		require.Equal(t, uint64(i+2), txMetadata.Id)
 
 		if i == 0 {
 			alh := schema.TxMetadataFrom(txMetadata).Alh()
 			copy(trustedAlh[:], alh[:])
-			trustedIndex = 1
+			trustedIndex = 2
 		}
 
 		keyReq := &schema.KeyRequest{Key: kv.Key, SinceTx: txMetadata.Id}
@@ -296,13 +310,13 @@ func TestCurrentState(t *testing.T) {
 	for ind, val := range kvs {
 		txMetadata, err := db.Set(&schema.SetRequest{KVs: []*schema.KeyValue{{Key: val.Key, Value: val.Value}}})
 		require.NoError(t, err)
-		require.Equal(t, uint64(ind+1), txMetadata.Id)
+		require.Equal(t, uint64(ind+2), txMetadata.Id)
 
 		time.Sleep(1 * time.Second)
 
 		state, err := db.CurrentState()
 		require.NoError(t, err)
-		require.Equal(t, uint64(ind+1), state.TxId)
+		require.Equal(t, uint64(ind+2), state.TxId)
 	}
 }
 
@@ -377,7 +391,7 @@ func TestSafeSetGet(t *testing.T) {
 			},
 		})
 		require.NoError(t, err)
-		require.Equal(t, uint64(ind+1), vit.Entry.Tx)
+		require.Equal(t, uint64(ind+2), vit.Entry.Tx)
 	}
 }
 
@@ -402,7 +416,7 @@ func TestSetGetAll(t *testing.T) {
 
 	txMetadata, err := db.Set(&schema.SetRequest{KVs: kvs})
 	require.NoError(t, err)
-	require.Equal(t, uint64(1), txMetadata.Id)
+	require.Equal(t, uint64(2), txMetadata.Id)
 
 	err = db.CompactIndex()
 	require.NoError(t, err)
@@ -432,7 +446,7 @@ func TestTxByID(t *testing.T) {
 	for ind, val := range kvs {
 		txMetadata, err := db.Set(&schema.SetRequest{KVs: []*schema.KeyValue{{Key: val.Key, Value: val.Value}}})
 		require.NoError(t, err)
-		require.Equal(t, uint64(ind+1), txMetadata.Id)
+		require.Equal(t, uint64(ind+2), txMetadata.Id)
 	}
 
 	_, err = db.TxByID(&schema.TxRequest{Tx: uint64(1)})
@@ -485,10 +499,10 @@ func TestTxScan(t *testing.T) {
 		InitialTx: 1,
 	})
 	require.NoError(t, err)
-	require.Len(t, txList.Txs, len(kvs))
+	require.Len(t, txList.Txs, len(kvs)+1)
 
 	for i := 0; i < len(kvs); i++ {
-		require.Equal(t, kvs[i].Key, TrimPrefix(txList.Txs[i].Entries[0].Key))
+		require.Equal(t, kvs[i].Key, TrimPrefix(txList.Txs[i+1].Entries[0].Key))
 	}
 }
 
@@ -535,18 +549,6 @@ func TestHistory(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Empty(t, inc.Entries)
-}
-
-func TestHealth(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
-	h, err := db.Health(&emptypb.Empty{})
-	if err != nil {
-		t.Fatalf("health error %s", err)
-	}
-	if !h.GetStatus() {
-		t.Fatalf("Health, expected %v, got %v", true, h.GetStatus())
-	}
 }
 
 /*

@@ -81,8 +81,6 @@ const tsSize = 8
 const szSize = 4
 const offsetSize = 8
 
-const linkedLeafSize = txIDSize + tsSize + txIDSize + 3*sha256.Size
-
 const Version = 1
 
 const (
@@ -128,6 +126,8 @@ type ImmuStore struct {
 
 	maxTxSize int
 
+	timeFunc TimeFunc
+
 	_txs     *list.List // pre-allocated txs
 	_txsLock sync.Mutex
 
@@ -144,7 +144,7 @@ type ImmuStore struct {
 	indexer *indexer
 
 	closed bool
-	done   chan (struct{})
+	blDone chan (struct{})
 
 	mutex sync.Mutex
 
@@ -156,10 +156,18 @@ type refVLog struct {
 	unlockedRef *list.Element // unlockedRef == nil <-> vLog is locked
 }
 
+type KVConstraint int
+
+const (
+	NoConstraint KVConstraint = iota
+	MustExist    KVConstraint = iota + 1
+	MustNotExist KVConstraint = iota + 1
+)
+
 type KV struct {
-	Key    []byte
-	Value  []byte
-	Unique bool
+	Key        []byte
+	Value      []byte
+	Constraint KVConstraint
 }
 
 func (kv *KV) Digest() [sha256.Size]byte {
@@ -180,12 +188,12 @@ func Open(path string, opts *Options) (*ImmuStore, error) {
 
 	finfo, err := os.Stat(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			err = os.Mkdir(path, opts.FileMode)
-			if err != nil {
-				return nil, err
-			}
-		} else {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+
+		err := os.Mkdir(path, opts.FileMode)
+		if err != nil {
 			return nil, err
 		}
 	} else if !finfo.IsDir() {
@@ -219,7 +227,7 @@ func Open(path string, opts *Options) (*ImmuStore, error) {
 	appendableOpts.WithMaxOpenedFiles(opts.TxLogMaxOpenedFiles)
 	txLog, err := appFactory(path, "tx", appendableOpts)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unable to open transaction log: %w", err)
 	}
 
 	appendableOpts.WithFileExt("txi")
@@ -227,7 +235,8 @@ func Open(path string, opts *Options) (*ImmuStore, error) {
 	appendableOpts.WithMaxOpenedFiles(opts.CommitLogMaxOpenedFiles)
 	cLog, err := appFactory(path, "commit", appendableOpts)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unable to open commit log: %w", err)
+
 	}
 
 	vLogs := make([]appendable.Appendable, opts.MaxIOConcurrency)
@@ -256,31 +265,37 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 
 	fileSize, ok := metadata.GetInt(metaFileSize)
 	if !ok {
-		return nil, ErrCorruptedCLog
+		return nil, fmt.Errorf("corrupted commit log metadata (filesize): %w", ErrCorruptedCLog)
 	}
 
 	maxTxEntries, ok := metadata.GetInt(metaMaxTxEntries)
 	if !ok {
-		return nil, ErrCorruptedCLog
+		return nil, fmt.Errorf("corrupted commit log metadata (max tx entries): %w", ErrCorruptedCLog)
 	}
 
 	maxKeyLen, ok := metadata.GetInt(metaMaxKeyLen)
 	if !ok {
-		return nil, ErrCorruptedCLog
+		return nil, fmt.Errorf("corrupted commit log metadata (max key len): %w", ErrCorruptedCLog)
 	}
 
 	maxValueLen, ok := metadata.GetInt(metaMaxValueLen)
 	if !ok {
-		return nil, ErrCorruptedCLog
+		return nil, fmt.Errorf("corrupted commit log metadata (max value len): %w", ErrCorruptedCLog)
+
 	}
 
 	cLogSize, err := cLog.Size()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("corrupted commit log: could not get size: %w", err)
 	}
 
-	if cLogSize%cLogEntrySize > 0 {
-		return nil, ErrCorruptedCLog
+	rem := cLogSize % cLogEntrySize
+	if rem > 0 {
+		cLogSize -= rem
+		err = cLog.SetOffset(cLogSize)
+		if err != nil {
+			return nil, fmt.Errorf("corrupted commit log: could not set offset: %w", err)
+		}
 	}
 
 	var committedTxLogSize int64
@@ -293,21 +308,21 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		b := make([]byte, cLogEntrySize)
 		_, err := cLog.ReadAt(b, cLogSize-cLogEntrySize)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("corrupted commit log: could not read the last commit: %w", err)
 		}
 		committedTxOffset = int64(binary.BigEndian.Uint64(b))
 		committedTxSize = int(binary.BigEndian.Uint32(b[txIDSize:]))
 		committedTxLogSize = committedTxOffset + int64(committedTxSize)
 		committedTxID = uint64(cLogSize) / cLogEntrySize
-	}
 
-	txLogFileSize, err := txLog.Size()
-	if err != nil {
-		return nil, err
-	}
+		txLogFileSize, err := txLog.Size()
+		if err != nil {
+			return nil, fmt.Errorf("corrupted transaction log: could not get size: %w", err)
+		}
 
-	if txLogFileSize < committedTxLogSize {
-		return nil, ErrorCorruptedTxData
+		if txLogFileSize < committedTxLogSize {
+			return nil, fmt.Errorf("corrupted transaction log: size is too small: %w", ErrorCorruptedTxData)
+		}
 	}
 
 	maxTxSize := maxTxSize(maxTxEntries, maxKeyLen)
@@ -329,7 +344,7 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		tx := txs.Front().Value.(*Tx)
 		err = tx.readFrom(txReader)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("corrupted transaction log: could not read the last transaction: %w", err)
 		}
 
 		committedAlh = tx.Alh
@@ -359,7 +374,7 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 
 	aht, err := ahtree.Open(ahtPath, ahtOpts)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not open aht: %w", err)
 	}
 
 	kvs := make([]*tbtree.KV, maxTxEntries)
@@ -401,6 +416,8 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 
 		maxTxSize: maxTxSize,
 
+		timeFunc: opts.TimeFunc,
+
 		aht:      aht,
 		blBuffer: blBuffer,
 
@@ -409,8 +426,6 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		_kvs:  kvs,
 		_txs:  txs,
 		_txbs: txbs,
-
-		done: make(chan struct{}),
 
 		compactionDisabled: opts.CompactionDisabled,
 	}
@@ -444,21 +459,30 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 
 	store.indexer, err = newIndexer(indexPath, store, indexOpts, opts.MaxWaitees)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not open indexer: %w", err)
 	}
 
-	if store.aht.Size() > store.committedTxID || store.indexer.Ts() > store.committedTxID {
+	if store.aht.Size() > store.committedTxID {
+		err = store.aht.ResetSize(store.committedTxID)
+		if err != nil {
+			store.Close()
+			return nil, fmt.Errorf("corrupted commit log: can not truncate aht tree: %w", err)
+		}
+	}
+
+	if store.indexer.Ts() > store.committedTxID {
 		store.Close()
-		return nil, ErrCorruptedCLog
+		return nil, fmt.Errorf("corrupted commit log: index size is too large: %w", ErrCorruptedCLog)
 	}
 
 	err = store.syncBinaryLinking()
 	if err != nil {
 		store.Close()
-		return nil, err
+		return nil, fmt.Errorf("binary linking failed: %w", err)
 	}
 
 	if store.blBuffer != nil {
+		store.blDone = make(chan struct{})
 		go store.binaryLinking()
 	}
 
@@ -528,6 +552,19 @@ func (s *ImmuStore) History(key []byte, offset uint64, descOrder bool, limit int
 	return s.indexer.History(key, offset, descOrder, limit)
 }
 
+func (s *ImmuStore) UseTimeFunc(timeFunc TimeFunc) error {
+	if timeFunc == nil {
+		return ErrIllegalArguments
+	}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	s.timeFunc = timeFunc
+
+	return nil
+}
+
 func (s *ImmuStore) NewTx() *Tx {
 	return NewTx(s.maxTxEntries, s.maxKeyLen)
 }
@@ -568,7 +605,7 @@ func (s *ImmuStore) binaryLinking() {
 					return
 				}
 			}
-		case <-s.done:
+		case <-s.blDone:
 			{
 				return
 			}
@@ -625,11 +662,19 @@ func (s *ImmuStore) syncBinaryLinking() error {
 
 		alh := tx.Alh
 		s.aht.Append(alh[:])
+
+		if tx.ID%1000 == 0 {
+			s.log.Infof("Binary linking at '%s' in progress: processing tx: %d", s.path, tx.ID)
+		}
 	}
 
 	s.log.Infof("Binary Linking up to date at '%s'", s.path)
 
 	return nil
+}
+
+func (s *ImmuStore) WaitForTx(txID uint64, cancellation <-chan struct{}) error {
+	return s.wHub.WaitFor(txID, cancellation)
 }
 
 func (s *ImmuStore) WaitForIndexingUpto(txID uint64, cancellation <-chan struct{}) error {
@@ -807,6 +852,10 @@ func (s *ImmuStore) appendData(entries []*KV, donec chan<- appendableResult) {
 }
 
 func (s *ImmuStore) Commit(entries []*KV, waitForIndexing bool) (*TxMetadata, error) {
+	return s.commitUsing(entries, nil, waitForIndexing)
+}
+
+func (s *ImmuStore) commitUsing(entries []*KV, md *TxMetadata, waitForIndexing bool) (*TxMetadata, error) {
 	s.mutex.Lock()
 	if s.closed {
 		s.mutex.Unlock()
@@ -817,6 +866,38 @@ func (s *ImmuStore) Commit(entries []*KV, waitForIndexing bool) (*TxMetadata, er
 	err := s.validateEntries(entries)
 	if err != nil {
 		return nil, err
+	}
+
+	var ts int64
+	var blTxID uint64
+
+	if md == nil {
+		ts = s.timeFunc().Unix()
+		blTxID = s.aht.Size()
+	} else {
+		ts = md.Ts
+		blTxID = md.BlTxID
+
+		// TxMedatada is validated against current store
+
+		currTxID, currAlh := s.Alh()
+
+		var blRoot [sha256.Size]byte
+
+		if blTxID > 0 {
+			blRoot, err = s.aht.RootAt(blTxID)
+			if err != nil && err != ahtree.ErrEmptyTree {
+				return nil, err
+			}
+		}
+
+		if currTxID != md.ID-1 ||
+			currAlh != md.PrevAlh ||
+			blRoot != md.BlRoot ||
+			len(entries) != md.NEntries {
+			return nil, ErrIllegalArguments
+		}
+
 	}
 
 	appendableCh := make(chan appendableResult)
@@ -836,10 +917,20 @@ func (s *ImmuStore) Commit(entries []*KV, waitForIndexing bool) (*TxMetadata, er
 		txe.setKey(e.Key)
 		txe.vLen = len(e.Value)
 		txe.hVal = sha256.Sum256(e.Value)
-		txe.unique = e.Unique
+		txe.constraint = e.Constraint
 	}
 
-	tx.BuildHashTree()
+	err = tx.BuildHashTree()
+	if err != nil {
+		<-appendableCh // wait for data to be written
+		return nil, err
+	}
+
+	// TxMedatada is validated against current store
+	if md != nil && tx.Eh() != md.Eh {
+		<-appendableCh // wait for data to be written
+		return nil, ErrIllegalArguments
+	}
 
 	r := <-appendableCh // wait for data to be written
 	err = r.err
@@ -854,7 +945,7 @@ func (s *ImmuStore) Commit(entries []*KV, waitForIndexing bool) (*TxMetadata, er
 		return nil, ErrAlreadyClosed
 	}
 
-	err = s.commit(tx, r.offsets)
+	err = s.commit(tx, r.offsets, ts, blTxID)
 	if err != nil {
 		s.mutex.Unlock()
 		return nil, err
@@ -872,7 +963,7 @@ func (s *ImmuStore) Commit(entries []*KV, waitForIndexing bool) (*TxMetadata, er
 	return tx.Metadata(), nil
 }
 
-func (s *ImmuStore) commit(tx *Tx, offsets []int64) error {
+func (s *ImmuStore) commit(tx *Tx, offsets []int64, ts int64, blTxID uint64) error {
 	if s.blErr != nil {
 		return s.blErr
 	}
@@ -883,15 +974,17 @@ func (s *ImmuStore) commit(tx *Tx, offsets []int64) error {
 	s.txLog.SetOffset(committedTxLogSize)
 
 	tx.ID = committedTxID + 1
-	tx.Ts = time.Now().Unix()
-
-	blTxID, blRoot, err := s.aht.Root()
-	if err != nil && err != ahtree.ErrEmptyTree {
-		return err
-	}
+	tx.Ts = ts
 
 	tx.BlTxID = blTxID
-	tx.BlRoot = blRoot
+
+	if blTxID > 0 {
+		blRoot, err := s.aht.RootAt(blTxID)
+		if err != nil && err != ahtree.ErrEmptyTree {
+			return err
+		}
+		tx.BlRoot = blRoot
+	}
 
 	if tx.ID <= tx.BlTxID {
 		return ErrUnexpectedLinkingError
@@ -919,20 +1012,23 @@ func (s *ImmuStore) commit(tx *Tx, offsets []int64) error {
 		txe := tx.entries[i]
 		txe.vOff = offsets[i]
 
-		if txe.unique {
+		if txe.constraint != NoConstraint {
 			if tx.ID > 1 {
-				err = s.WaitForIndexingUpto(tx.ID-1, nil)
+				err := s.WaitForIndexingUpto(tx.ID-1, nil)
 				if err != nil {
 					return err
 				}
+			}
 
-				_, _, _, err = s.indexer.Get(txe.Key())
-				if err == nil {
-					return ErrKeyAlreadyExists
-				}
-				if err != ErrKeyNotFound {
-					return err
-				}
+			_, _, _, err := s.indexer.Get(txe.Key())
+			if err == nil && txe.constraint == MustNotExist {
+				return ErrKeyAlreadyExists
+			}
+			if err == ErrKeyNotFound && txe.constraint == MustExist {
+				return ErrKeyNotFound
+			}
+			if err != nil && err != ErrKeyNotFound {
+				return err
 			}
 		}
 
@@ -974,12 +1070,22 @@ func (s *ImmuStore) commit(tx *Tx, offsets []int64) error {
 	}
 
 	if s.blBuffer == nil {
+		err = s.aht.ResetSize(committedTxID)
+		if err != nil {
+			return err
+		}
 		_, _, err := s.aht.Append(tx.Alh[:])
 		if err != nil {
 			return err
 		}
 	} else {
 		s.blBuffer <- tx.Alh
+	}
+
+	// will overwrite partially written and uncommitted data
+	err = s.cLog.SetOffset(int64(committedTxID * cLogEntrySize))
+	if err != nil {
+		return err
 	}
 
 	var cb [cLogEntrySize]byte
@@ -1092,10 +1198,14 @@ func (s *ImmuStore) commitWith(callback func(txID uint64, index KeyIndex) ([]*KV
 		txe.setKey(e.Key)
 		txe.vLen = len(e.Value)
 		txe.hVal = sha256.Sum256(e.Value)
-		txe.unique = e.Unique
+		txe.constraint = e.Constraint
 	}
 
-	tx.BuildHashTree()
+	err = tx.BuildHashTree()
+	if err != nil {
+		<-appendableCh // wait for data to be writen
+		return nil, err
+	}
 
 	r := <-appendableCh // wait for data to be writen
 	err = r.err
@@ -1103,7 +1213,7 @@ func (s *ImmuStore) commitWith(callback func(txID uint64, index KeyIndex) ([]*KV
 		return nil, err
 	}
 
-	err = s.commit(tx, r.offsets)
+	err = s.commit(tx, r.offsets, s.timeFunc().Unix(), s.aht.Size())
 	if err != nil {
 		return nil, err
 	}
@@ -1254,15 +1364,15 @@ func (s *ImmuStore) txOffsetAndSize(txID uint64) (int64, int, error) {
 
 	var cb [cLogEntrySize]byte
 
-	n, err := s.cLog.ReadAt(cb[:], int64(off))
+	_, err := s.cLog.ReadAt(cb[:], int64(off))
 	if err == multiapp.ErrAlreadyClosed || err == singleapp.ErrAlreadyClosed {
 		return 0, 0, ErrAlreadyClosed
 	}
-	if err == io.EOF && n == 0 {
+	if err == io.EOF {
+		// A partially readable commit record must be discarded -
+		// - it is a result of incomplete commit log write
+		// and will be overwritten on the next commit
 		return 0, 0, ErrTxNotFound
-	}
-	if err == io.EOF && n > 0 {
-		return 0, n, ErrCorruptedCLog
 	}
 	if err != nil {
 		return 0, 0, err
@@ -1294,6 +1404,121 @@ func (r *slicedReaderAt) ReadAt(bs []byte, off int64) (n int, err error) {
 	}
 
 	return available, nil
+}
+
+func (s *ImmuStore) ExportTx(txID uint64, tx *Tx) ([]byte, error) {
+	err := s.ReadTx(txID, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	mdBs := tx.Metadata().serialize()
+
+	var buf bytes.Buffer
+
+	var b [4]byte
+	binary.BigEndian.PutUint32(b[:], uint32(len(mdBs)))
+	_, err = buf.Write(b[:])
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = buf.Write(mdBs)
+	if err != nil {
+		return nil, err
+	}
+
+	valBs := make([]byte, s.maxValueLen)
+
+	for _, e := range tx.Entries() {
+		_, err = s.ReadValueAt(valBs[:e.vLen], e.vOff, e.hVal)
+		if err != nil {
+			return nil, err
+		}
+
+		var lenBs [4]byte
+
+		// kLen
+		binary.BigEndian.PutUint32(lenBs[:], uint32(e.kLen))
+		_, err = buf.Write(lenBs[:])
+		if err != nil {
+			return nil, err
+		}
+
+		// vLen
+		binary.BigEndian.PutUint32(lenBs[:], uint32(e.vLen))
+		_, err = buf.Write(lenBs[:])
+		if err != nil {
+			return nil, err
+		}
+
+		// key
+		_, err = buf.Write(e.Key())
+		if err != nil {
+			return nil, err
+		}
+
+		// val
+		_, err = buf.Write(valBs[:e.vLen])
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return buf.Bytes(), nil
+}
+
+func (s *ImmuStore) ReplicateTx(exportedTx []byte, waitForIndexing bool) (*TxMetadata, error) {
+	if len(exportedTx) < 4 {
+		return nil, ErrIllegalArguments
+	}
+
+	i := 0
+
+	mdLen := int(binary.BigEndian.Uint32(exportedTx[i:]))
+	i += 4
+
+	if len(exportedTx[i:]) < mdLen {
+		return nil, ErrIllegalArguments
+	}
+
+	md := &TxMetadata{}
+	err := md.readFrom(exportedTx[i : i+mdLen])
+	if err != nil {
+		return nil, err
+	}
+	i += mdLen
+
+	entries := make([]*KV, md.NEntries)
+
+	for ei := range entries {
+		if len(exportedTx[i:]) < 8 {
+			return nil, ErrIllegalArguments
+		}
+
+		kLen := int(binary.BigEndian.Uint32(exportedTx[i:]))
+		i += 4
+
+		vLen := int(binary.BigEndian.Uint32(exportedTx[i:]))
+		i += 4
+
+		if len(exportedTx[i:]) < kLen+vLen {
+			return nil, ErrIllegalArguments
+		}
+
+		entries[ei] = &KV{
+			Key:   exportedTx[i : i+kLen],
+			Value: exportedTx[i+kLen : i+kLen+vLen],
+		}
+
+		i += kLen + vLen
+	}
+
+	if i != len(exportedTx) {
+		return nil, ErrIllegalArguments
+	}
+
+	return s.commitUsing(entries, md, waitForIndexing)
 }
 
 func (s *ImmuStore) ReadTx(txID uint64, tx *Tx) error {
@@ -1442,49 +1667,39 @@ func (s *ImmuStore) Close() error {
 
 	s.closed = true
 
-	errors := make([]error, 0)
+	merr := multierr.NewMultiErr()
 
 	for i := range s.vLogs {
 		vLog, _ := s.fetchVLog(i+1, false)
 
 		err := vLog.Close()
-		if err != nil {
-			errors = append(errors, err)
-		}
+		merr.Append(err)
 	}
 	s.vLogsCond.Broadcast()
 
-	if s.blBuffer != nil && s.blErr == nil {
+	if s.blBuffer != nil && s.blErr == nil && s.blDone != nil {
 		s.log.Infof("Stopping Binary Linking at '%s'...", s.path)
-		s.done <- struct{}{}
+		s.blDone <- struct{}{}
 		s.log.Infof("Binary linking gracefully stopped at '%s'", s.path)
 		close(s.blBuffer)
 	}
 
 	s.wHub.Close()
 
-	iErr := s.indexer.Close()
-	if iErr != nil {
-		errors = append(errors, iErr)
-	}
+	err := s.indexer.Close()
+	merr.Append(err)
 
-	txErr := s.txLog.Close()
-	if txErr != nil {
-		errors = append(errors, txErr)
-	}
+	err = s.txLog.Close()
+	merr.Append(err)
 
-	cErr := s.cLog.Close()
-	if cErr != nil {
-		errors = append(errors, cErr)
-	}
+	err = s.cLog.Close()
+	merr.Append(err)
 
-	tErr := s.aht.Close()
-	if tErr != nil {
-		errors = append(errors, tErr)
-	}
+	err = s.aht.Close()
+	merr.Append(err)
 
-	if len(errors) > 0 {
-		return &multierr.MultiErr{Errors: errors}
+	if merr.HasErrors() {
+		return merr
 	}
 
 	return nil

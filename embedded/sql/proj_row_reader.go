@@ -32,6 +32,23 @@ type projectedRowReader struct {
 }
 
 func (e *Engine) newProjectedRowReader(rowReader RowReader, tableAlias string, selectors []Selector, limit uint64) (*projectedRowReader, error) {
+	// case: SELECT *
+	if len(selectors) == 0 {
+		cols, err := rowReader.Columns()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, col := range cols {
+			sel := &ColSelector{
+				db:    col.Database,
+				table: col.Table,
+				col:   col.Column,
+			}
+			selectors = append(selectors, sel)
+		}
+	}
+
 	return &projectedRowReader{
 		e:          e,
 		rowReader:  rowReader,
@@ -53,23 +70,14 @@ func (pr *projectedRowReader) ImplicitTable() string {
 	return pr.tableAlias
 }
 
+func (pr *projectedRowReader) OrderBy() *ColDescriptor {
+	return pr.rowReader.OrderBy()
+}
+
 func (pr *projectedRowReader) Columns() ([]*ColDescriptor, error) {
 	colsBySel, err := pr.colsBySelector()
 	if err != nil {
 		return nil, err
-	}
-
-	// Special case: SELECT *
-	if len(pr.selectors) == 0 {
-		colsByPos := make([]*ColDescriptor, len(colsBySel))
-
-		i := 0
-		for _, c := range colsBySel {
-			colsByPos[i] = c
-			i++
-		}
-
-		return colsByPos, nil
 	}
 
 	colsByPos := make([]*ColDescriptor, len(pr.selectors))
@@ -94,8 +102,16 @@ func (pr *projectedRowReader) Columns() ([]*ColDescriptor, error) {
 			}
 		}
 
-		encSel := EncodeSelector(aggFn, db, table, col)
-		colsByPos[i] = &ColDescriptor{Selector: encSel, Type: colsBySel[encSel].Type}
+		colsByPos[i] = &ColDescriptor{
+			AggFn:    aggFn,
+			Database: db,
+			Table:    table,
+			Column:   col,
+		}
+
+		encSel := colsByPos[i].Selector()
+
+		colsByPos[i].Type = colsBySel[encSel].Type
 	}
 
 	return colsByPos, nil
@@ -105,11 +121,6 @@ func (pr *projectedRowReader) colsBySelector() (map[string]*ColDescriptor, error
 	dsColDescriptors, err := pr.rowReader.colsBySelector()
 	if err != nil {
 		return nil, err
-	}
-
-	// Special case: SELECT *
-	if len(pr.selectors) == 0 {
-		return dsColDescriptors, nil
 	}
 
 	colDescriptors := make(map[string]*ColDescriptor, len(pr.selectors))
@@ -141,8 +152,15 @@ func (pr *projectedRowReader) colsBySelector() (map[string]*ColDescriptor, error
 			}
 		}
 
-		encSel = EncodeSelector(aggFn, db, table, col)
-		colDescriptors[encSel] = &ColDescriptor{Selector: encSel, Type: colDesc.Type}
+		des := &ColDescriptor{
+			AggFn:    aggFn,
+			Database: db,
+			Table:    table,
+			Column:   col,
+			Type:     colDesc.Type,
+		}
+
+		colDescriptors[des.Selector()] = des
 	}
 
 	return colDescriptors, nil
@@ -168,23 +186,6 @@ func (pr *projectedRowReader) Read() (*Row, error) {
 
 	prow := &Row{
 		Values: make(map[string]TypedValue, len(pr.selectors)),
-	}
-
-	// Special case: SELECT *
-	if len(pr.selectors) == 0 {
-		colsBySel, err := pr.colsBySelector()
-		if err != nil {
-			return nil, err
-		}
-
-		for encSel, _ := range colsBySel {
-			val, ok := row.Values[encSel]
-			if !ok {
-				return nil, ErrColumnDoesNotExist
-			}
-
-			prow.Values[encSel] = val
-		}
 	}
 
 	for i, sel := range pr.selectors {

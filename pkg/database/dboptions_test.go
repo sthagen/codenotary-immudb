@@ -24,14 +24,15 @@ import (
 )
 
 func TestDefaultOptions(t *testing.T) {
-	op := DefaultOption()
-	if op.GetDbName() != "db_name" {
+	op := DefaultOption().AsReplica(true)
+
+	if op.GetDBName() != "db_name" {
 		t.Errorf("default sysdb name not what expected")
 	}
-	if op.GetDbRootPath() != DefaultOption().dbRootPath {
+	if op.GetDBRootPath() != DefaultOption().dbRootPath {
 		t.Errorf("default db rootpath not what expected")
 	}
-	if !op.GetCorruptionChecker() {
+	if op.GetCorruptionChecker() {
 		t.Errorf("default corruption checker not what expected")
 	}
 
@@ -39,22 +40,31 @@ func TestDefaultOptions(t *testing.T) {
 	rootpath := "rootpath"
 	storeOpts := store.DefaultOptions()
 
+	replicaOpts := &ReplicationOptions{}
+	replicaOpts.WithSrcDatabase("defaultdb").
+		WithSrcAddress("127.0.0.1").
+		WithSrcPort(3322).
+		WithFollowerUsr("immudb").
+		WithFollowerPwd("immdub")
+
 	op = DefaultOption().
-		WithDbName(DbName).
-		WithDbRootPath(rootpath).
-		WithCorruptionChecker(false).
-		WithStoreOptions(storeOpts)
+		WithDBName(DbName).
+		WithDBRootPath(rootpath).
+		WithCorruptionChecker(true).
+		WithStoreOptions(storeOpts).
+		WithReplicationOptions(replicaOpts)
 
-	if op.GetDbName() != DbName {
-		t.Errorf("db name not set correctly , expected %s got %s", DbName, op.GetDbName())
+	if op.GetDBName() != DbName {
+		t.Errorf("db name not set correctly , expected %s got %s", DbName, op.GetDBName())
 	}
-	if op.GetDbRootPath() != rootpath {
-		t.Errorf("rootpath not set correctly , expected %s got %s", rootpath, op.GetDbRootPath())
+	if op.GetDBRootPath() != rootpath {
+		t.Errorf("rootpath not set correctly , expected %s got %s", rootpath, op.GetDBRootPath())
 	}
 
-	if op.GetCorruptionChecker() {
-		t.Errorf("coruuption checker not set correctly , expected %v got %v", false, op.GetCorruptionChecker())
+	if !op.GetCorruptionChecker() {
+		t.Errorf("corruption checker not set correctly , expected %v got %v", true, op.GetCorruptionChecker())
 	}
 
 	require.Equal(t, storeOpts, op.storeOpts)
+	require.Equal(t, replicaOpts, op.GetReplicationOptions())
 }

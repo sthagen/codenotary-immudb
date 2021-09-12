@@ -18,9 +18,6 @@ package store
 import (
 	"crypto/sha256"
 	"encoding/binary"
-	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -32,6 +29,7 @@ type indexer struct {
 	path string
 
 	store *ImmuStore
+	tx    *Tx
 
 	index *tbtree.TBtree
 
@@ -66,8 +64,14 @@ func newIndexer(path string, store *ImmuStore, indexOpts *tbtree.Options, maxWai
 		wHub = watchers.New(0, maxWaitees)
 	}
 
+	tx, err := store.fetchAllocTx()
+	if err != nil {
+		return nil, err
+	}
+
 	indexer := &indexer{
 		store:     store,
+		tx:        tx,
 		path:      path,
 		index:     index,
 		wHub:      wHub,
@@ -166,6 +170,7 @@ func (idx *indexer) Close() error {
 
 	idx.stop()
 	idx.wHub.Close()
+	idx.store.releaseAllocTx(idx.tx)
 
 	idx.closed = true
 
@@ -194,22 +199,12 @@ func (idx *indexer) CompactIndex() (err error) {
 		}
 	}()
 
-	compactedIndexID, err := idx.index.CompactIndex()
+	_, err = idx.index.Compact()
 	if err != nil {
 		return err
 	}
 
-	idx.mutex.Lock()
-	defer idx.mutex.Unlock()
-
-	if idx.closed {
-		return ErrAlreadyClosed
-	}
-
-	idx.stop()
-	defer idx.resume()
-
-	return idx.replaceIndex(compactedIndexID)
+	return idx.restartIndex()
 }
 
 func (idx *indexer) stop() {
@@ -232,35 +227,20 @@ func (idx *indexer) resume() {
 	idx.store.notify(Info, true, "Indexing in progress at '%s'", idx.store.path)
 }
 
-func (idx *indexer) replaceIndex(compactedIndexID uint64) error {
+func (idx *indexer) restartIndex() error {
+	idx.mutex.Lock()
+	defer idx.mutex.Unlock()
+
+	if idx.closed {
+		return ErrAlreadyClosed
+	}
+
+	idx.stop()
+	defer idx.resume()
+
 	opts := idx.index.GetOptions()
 
 	err := idx.index.Close()
-	if err != nil {
-		return err
-	}
-
-	nLogPath := filepath.Join(idx.path, "nodes")
-	err = os.RemoveAll(nLogPath)
-	if err != nil {
-		return err
-	}
-
-	cLogPath := filepath.Join(idx.path, "commit")
-	err = os.RemoveAll(cLogPath)
-	if err != nil {
-		return err
-	}
-
-	cnLogPath := filepath.Join(idx.path, fmt.Sprintf("nodes_%d", compactedIndexID))
-	ccLogPath := filepath.Join(idx.path, fmt.Sprintf("commit_%d", compactedIndexID))
-
-	err = os.Rename(cnLogPath, nLogPath)
-	if err != nil {
-		return err
-	}
-
-	err = os.Rename(ccLogPath, cLogPath)
 	if err != nil {
 		return err
 	}
@@ -271,7 +251,8 @@ func (idx *indexer) replaceIndex(compactedIndexID uint64) error {
 	}
 
 	idx.index = index
-	return nil
+
+	return err
 }
 
 func (idx *indexer) Resume() {
@@ -295,7 +276,7 @@ func (idx *indexer) doIndexing(cancellation <-chan struct{}) {
 			idx.wHub.DoneUpto(lastIndexedTx)
 		}
 
-		err := idx.store.wHub.WaitFor(lastIndexedTx+1, cancellation)
+		err := idx.store.WaitForTx(lastIndexedTx+1, cancellation)
 		if err == watchers.ErrCancellationRequested || err == watchers.ErrAlreadyClosed {
 			return
 		}
@@ -312,6 +293,7 @@ func (idx *indexer) doIndexing(cancellation <-chan struct{}) {
 		idx.stateCond.L.Lock()
 		for {
 			if idx.state == stopped {
+				idx.stateCond.L.Unlock()
 				return
 			}
 			if idx.state == running {
@@ -333,13 +315,7 @@ func (idx *indexer) doIndexing(cancellation <-chan struct{}) {
 }
 
 func (idx *indexer) indexSince(txID uint64, limit int) error {
-	tx, err := idx.store.fetchAllocTx()
-	if err != nil {
-		return err
-	}
-	defer idx.store.releaseAllocTx(tx)
-
-	txReader, err := idx.store.newTxReader(txID, false, tx)
+	txReader, err := idx.store.newTxReader(txID, false, idx.tx)
 	if err != nil {
 		return err
 	}

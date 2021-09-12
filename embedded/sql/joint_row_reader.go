@@ -17,6 +17,7 @@ limitations under the License.
 package sql
 
 import (
+	"github.com/codenotary/immudb/embedded/multierr"
 	"github.com/codenotary/immudb/embedded/store"
 )
 
@@ -29,6 +30,9 @@ type jointRowReader struct {
 	rowReader RowReader
 
 	joins []*JoinSpec
+
+	rowReaders       []RowReader
+	rowReadersValues []map[string]TypedValue
 
 	params map[string]interface{}
 }
@@ -55,12 +59,14 @@ func (e *Engine) newJointRowReader(db *Database, snap *store.Snapshot, params ma
 	}
 
 	return &jointRowReader{
-		e:          e,
-		implicitDB: db,
-		snap:       snap,
-		params:     params,
-		rowReader:  rowReader,
-		joins:      joins,
+		e:                e,
+		implicitDB:       db,
+		snap:             snap,
+		params:           params,
+		rowReader:        rowReader,
+		joins:            joins,
+		rowReaders:       []RowReader{rowReader},
+		rowReadersValues: make([]map[string]TypedValue, 1+len(joins)),
 	}, nil
 }
 
@@ -70,6 +76,10 @@ func (jointr *jointRowReader) ImplicitDB() string {
 
 func (jointr *jointRowReader) ImplicitTable() string {
 	return jointr.rowReader.ImplicitTable()
+}
+
+func (jointr *jointRowReader) OrderBy() *ColDescriptor {
+	return jointr.rowReader.OrderBy()
 }
 
 func (jointr *jointRowReader) Columns() ([]*ColDescriptor, error) {
@@ -100,8 +110,13 @@ func (jointr *jointRowReader) colsBySelector() (map[string]*ColDescriptor, error
 		table, _ := tableRef.referencedTable(jointr.e, jointr.implicitDB)
 
 		for _, c := range table.ColsByID() {
-			encSel := EncodeSelector("", table.db.name, tableRef.Alias(), c.colName)
-			colDescriptors[encSel] = &ColDescriptor{Selector: encSel, Type: c.colType}
+			des := &ColDescriptor{
+				Database: table.db.name,
+				Table:    tableRef.Alias(),
+				Column:   c.colName,
+				Type:     c.colType,
+			}
+			colDescriptors[des.Selector()] = des
 		}
 	}
 
@@ -139,75 +154,88 @@ func (jointr *jointRowReader) SetParameters(params map[string]interface{}) {
 	jointr.params = params
 }
 
-func (jointr *jointRowReader) Read() (*Row, error) {
+func (jointr *jointRowReader) Read() (row *Row, err error) {
 	for {
-		row, err := jointr.rowReader.Read()
-		if err != nil {
-			return nil, err
+		row := &Row{Values: make(map[string]TypedValue)}
+
+		for len(jointr.rowReaders) > 0 {
+			lastReader := jointr.rowReaders[len(jointr.rowReaders)-1]
+
+			r, err := lastReader.Read()
+			if err == ErrNoMoreRows {
+				// previous reader will need to read next row
+				jointr.rowReaders = jointr.rowReaders[:len(jointr.rowReaders)-1]
+
+				err = lastReader.Close()
+				if err != nil {
+					return nil, err
+				}
+
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+
+			// override row data
+			jointr.rowReadersValues[len(jointr.rowReaders)-1] = r.Values
+
+			break
+		}
+
+		if len(jointr.rowReaders) == 0 {
+			return nil, ErrNoMoreRows
+		}
+
+		// append values from readers
+		for i := 0; i < len(jointr.rowReaders); i++ {
+			for c, v := range jointr.rowReadersValues[i] {
+				row.Values[c] = v
+			}
 		}
 
 		unsolvedFK := false
 
-		for _, jspec := range jointr.joins {
-			tableRef := jspec.ds.(*TableRef)
-			table, err := tableRef.referencedTable(jointr.e, jointr.implicitDB)
+		for i := len(jointr.rowReaders) - 1; i < len(jointr.joins); i++ {
+			jspec := jointr.joins[i]
+
+			jointq := &SelectStmt{
+				ds:    jspec.ds,
+				where: jspec.cond.reduceSelectors(row, jointr.ImplicitDB(), jointr.ImplicitTable()),
+			}
+
+			reader, err := jointq.Resolve(jointr.e, jointr.implicitDB, jointr.snap, jointr.params, nil)
 			if err != nil {
 				return nil, err
 			}
 
-			fkSel, err := jspec.cond.jointColumnTo(table.pk, tableRef.Alias())
-			if err != nil {
-				return nil, err
-			}
-
-			fkVal, ok := row.Values[EncodeSelector(fkSel.resolve(jointr.rowReader.ImplicitDB(), jointr.rowReader.ImplicitTable()))]
-			if !ok {
-				return nil, ErrInvalidJointColumn
-			}
-
-			fkEncVal, err := EncodeValue(fkVal, table.pk.colType, asKey)
-			if err != nil {
-				return nil, err
-			}
-
-			pkOrd := &OrdCol{
-				sel: &ColSelector{
-					db:    table.db.name,
-					table: table.name,
-					col:   table.pk.colName,
-				},
-				initKeyVal:    fkEncVal,
-				useInitKeyVal: true,
-			}
-
-			jr, err := jspec.ds.Resolve(jointr.e, jointr.implicitDB, jointr.snap, jointr.params, pkOrd)
-			if err != nil {
-				return nil, err
-			}
-
-			jrow, err := jr.Read()
-			if err == store.ErrNoMoreEntries {
+			r, err := reader.Read()
+			if err == ErrNoMoreRows {
+				// previous reader will need to read next row
 				unsolvedFK = true
-				jr.Close()
+
+				err = reader.Close()
+				if err != nil {
+					return nil, err
+				}
+
 				break
 			}
 			if err != nil {
-				jr.Close()
 				return nil, err
 			}
 
-			// Note: by adding values this way joins behave as nested i.e. following joins will be able to seek values
-			// from previously resolved ones.
-			for c, v := range jrow.Values {
+			// progress with the joint readers
+			// append the reader and kept the values for following rows
+			jointr.rowReaders = append(jointr.rowReaders, reader)
+			jointr.rowReadersValues[i+1] = r.Values
+
+			for c, v := range r.Values {
 				row.Values[c] = v
-			}
-
-			err = jr.Close()
-			if err != nil {
-				return nil, err
 			}
 		}
 
+		// all readers have a valid read
 		if !unsolvedFK {
 			return row, nil
 		}
@@ -215,5 +243,16 @@ func (jointr *jointRowReader) Read() (*Row, error) {
 }
 
 func (jointr *jointRowReader) Close() error {
-	return jointr.rowReader.Close()
+	merr := multierr.NewMultiErr()
+
+	for _, rowReader := range jointr.rowReaders {
+		err := rowReader.Close()
+		merr.Append(err)
+	}
+
+	if merr.HasErrors() {
+		return merr
+	}
+
+	return nil
 }

@@ -53,7 +53,7 @@ func (s *ImmuServer) metricFuncComputeDBSizes() (dbSizes map[string]float64) {
 	if s.dbList != nil {
 		for i := 0; i < s.dbList.Length(); i++ {
 			db := s.dbList.GetByIndex(int64(i))
-			dbName := db.GetOptions().GetDbName()
+			dbName := db.GetOptions().GetDBName()
 			dbSize, err := dirSize(filepath.Join(s.Options.Dir, dbName))
 			if err != nil {
 				s.Logger.Errorf("error updating db size metric for db %s: %v", dbName, err)
@@ -67,8 +67,8 @@ func (s *ImmuServer) metricFuncComputeDBSizes() (dbSizes map[string]float64) {
 	}
 
 	// add systemdb
-	if s.sysDb != nil {
-		sysDBName := s.sysDb.GetOptions().GetDbName()
+	if s.sysDB != nil {
+		sysDBName := s.sysDB.GetOptions().GetDBName()
 		sysDBSize, err := dirSize(filepath.Join(s.Options.Dir, sysDBName))
 		if err != nil {
 			s.Logger.Errorf("error updating db size metric for system db %s: %v", sysDBName, err)
@@ -89,7 +89,7 @@ func (s *ImmuServer) metricFuncComputeDBEntries() (nbEntriesPerDB map[string]flo
 	if s.dbList != nil {
 		for i := 0; i < s.dbList.Length(); i++ {
 			db := s.dbList.GetByIndex(int64(i))
-			dbName := db.GetOptions().GetDbName()
+			dbName := db.GetOptions().GetDBName()
 			state, err := db.CurrentState()
 			if err != nil {
 				s.Logger.Errorf(
@@ -105,9 +105,9 @@ func (s *ImmuServer) metricFuncComputeDBEntries() (nbEntriesPerDB map[string]flo
 	}
 
 	// add systemdb
-	if s.sysDb != nil {
-		sysDBName := s.sysDb.GetOptions().GetDbName()
-		state, err := s.sysDb.CurrentState()
+	if s.sysDB != nil {
+		sysDBName := s.sysDB.GetOptions().GetDBName()
+		state, err := s.sysDB.CurrentState()
 		if err != nil {
 			s.Logger.Errorf(
 				"error getting current state of system db %s to update the number of entries metric: %v",

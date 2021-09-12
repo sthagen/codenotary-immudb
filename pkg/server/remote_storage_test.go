@@ -302,7 +302,7 @@ func TestStoreOptionsForDBWithRemoteStorage(t *testing.T) {
 	s := DefaultServer()
 	m := memory.Open()
 
-	opts := s.storeOptionsForDb("testdb", m)
+	opts := s.storeOptionsForDb("testdb", m, s.Options.DefaultStoreOptions())
 	st, err := store.Open("data/testdb", opts)
 	require.NoError(t, err)
 	st.Commit([]*store.KV{{Key: []byte{1}, Value: []byte{2}}}, true)
@@ -352,11 +352,11 @@ func TestRemoteStorageUsedForNewDB(t *testing.T) {
 	md := metadata.Pairs("authorization", lr.Token)
 	ctx = metadata.NewIncomingContext(context.Background(), md)
 
-	newdb := &schema.Database{
+	newdb := &schema.DatabaseSettings{
 		DatabaseName: "newdb",
 	}
 
-	_, err = s.CreateDatabase(ctx, newdb)
+	_, err = s.CreateDatabaseWith(ctx, newdb)
 	require.NoError(t, err)
 	err = s.CloseDatabases()
 	require.NoError(t, err)

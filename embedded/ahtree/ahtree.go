@@ -32,13 +32,13 @@ import (
 
 var ErrIllegalArguments = errors.New("illegal arguments")
 var ErrorPathIsNotADirectory = errors.New("path is not a directory")
-var ErrCorruptedCLog = errors.New("commit log is corrupted")
 var ErrorCorruptedData = errors.New("data log is corrupted")
 var ErrorCorruptedDigests = errors.New("hash log is corrupted")
 var ErrAlreadyClosed = errors.New("already closed")
 var ErrEmptyTree = errors.New("empty tree")
 var ErrReadOnly = errors.New("cannot append when openned in read-only mode")
 var ErrUnexistentData = errors.New("attempt to read unexistent data")
+var ErrCannotResetToLargerSize = errors.New("can not reset the tree to a larger size")
 
 const LeafPrefix = byte(0)
 const NodePrefix = byte(1)
@@ -81,12 +81,12 @@ func Open(path string, opts *Options) (*AHtree, error) {
 
 	finfo, err := os.Stat(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			err = os.Mkdir(path, opts.fileMode)
-			if err != nil {
-				return nil, err
-			}
-		} else {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+
+		err := os.Mkdir(path, opts.fileMode)
+		if err != nil {
 			return nil, err
 		}
 	} else if !finfo.IsDir() {
@@ -142,13 +142,13 @@ func OpenWith(pLog, dLog, cLog appendable.Appendable, opts *Options) (*AHtree, e
 		return nil, err
 	}
 
-	if cLogSize%cLogEntrySize > 0 {
-		return nil, ErrCorruptedCLog
-	}
-
-	dLogSize, err := dLog.Size()
-	if err != nil {
-		return nil, err
+	rem := cLogSize % cLogEntrySize
+	if rem > 0 {
+		cLogSize -= rem
+		err = cLog.SetOffset(cLogSize)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	pCache, err := cache.NewLRUCache(opts.dataCacheSlots)
@@ -166,25 +166,27 @@ func OpenWith(pLog, dLog, cLog appendable.Appendable, opts *Options) (*AHtree, e
 		dLog:     dLog,
 		cLog:     cLog,
 		pLogSize: 0,
-		dLogSize: dLogSize,
+		dLogSize: 0,
 		cLogSize: cLogSize,
 		pCache:   pCache,
 		dCache:   dCache,
 		readOnly: opts.readOnly,
 	}
 
-	if cLogSize > 0 {
-		var b [cLogEntrySize]byte
-		_, err := cLog.ReadAt(b[:], cLogSize-cLogEntrySize)
-		if err != nil {
-			return nil, err
-		}
-
-		pOff := binary.BigEndian.Uint64(b[:])
-		pSize := binary.BigEndian.Uint32(b[offsetSize:])
-
-		t.pLogSize = int64(pOff) + int64(pSize)
+	if cLogSize == 0 {
+		return t, nil
 	}
+
+	var b [cLogEntrySize]byte
+	_, err = cLog.ReadAt(b[:], cLogSize-cLogEntrySize)
+	if err != nil {
+		return nil, err
+	}
+
+	pOff := binary.BigEndian.Uint64(b[:])
+	pSize := binary.BigEndian.Uint32(b[offsetSize:])
+
+	t.pLogSize = int64(pOff) + int64(pSize)
 
 	pLogFileSize, err := pLog.Size()
 	if err != nil {
@@ -195,7 +197,14 @@ func OpenWith(pLog, dLog, cLog appendable.Appendable, opts *Options) (*AHtree, e
 		return nil, ErrorCorruptedData
 	}
 
-	if dLogSize < int64(nodesUpto(uint64(cLogSize/cLogEntrySize))*sha256.Size) {
+	t.dLogSize = int64(nodesUpto(uint64(cLogSize/cLogEntrySize)) * sha256.Size)
+
+	dLogSize, err := dLog.Size()
+	if err != nil {
+		return nil, err
+	}
+
+	if dLogSize < t.dLogSize {
 		return nil, ErrorCorruptedDigests
 	}
 
@@ -222,7 +231,10 @@ func (t *AHtree) Append(d []byte) (n uint64, h [sha256.Size]byte, err error) {
 	}
 
 	// will overwrite partially written and uncommitted data
-	t.pLog.SetOffset(t.pLogSize)
+	err = t.pLog.SetOffset(t.pLogSize)
+	if err != nil {
+		return
+	}
 
 	var dLenBs [szSize]byte
 	binary.BigEndian.PutUint32(dLenBs[:], uint32(len(d)))
@@ -283,7 +295,10 @@ func (t *AHtree) Append(d []byte) (n uint64, h [sha256.Size]byte, err error) {
 	}
 
 	// will overwrite partially written and uncommitted data
-	t.dLog.SetOffset(t.dLogSize)
+	err = t.dLog.SetOffset(t.dLogSize)
+	if err != nil {
+		return
+	}
 
 	_, _, err = t.dLog.Append(t._digests[:dCount*sha256.Size])
 	if err != nil {
@@ -291,6 +306,12 @@ func (t *AHtree) Append(d []byte) (n uint64, h [sha256.Size]byte, err error) {
 	}
 
 	err = t.dLog.Flush()
+	if err != nil {
+		return
+	}
+
+	// will overwrite partially written and uncommitted data
+	err = t.cLog.SetOffset(t.cLogSize)
 	if err != nil {
 		return
 	}
@@ -332,6 +353,80 @@ func (t *AHtree) Append(d []byte) (n uint64, h [sha256.Size]byte, err error) {
 	t.cLogSize += cLogEntrySize
 
 	return
+}
+
+func (t *AHtree) ResetSize(newSize uint64) error {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	if t.closed {
+		return ErrAlreadyClosed
+	}
+
+	if t.readOnly {
+		return ErrReadOnly
+	}
+
+	currentSize := t.size()
+
+	if currentSize < newSize {
+		return ErrCannotResetToLargerSize
+	}
+
+	if currentSize == newSize {
+		return nil
+	}
+
+	cLogSize := int64(newSize * cLogEntrySize)
+	pLogSize := int64(0)
+	dLogSize := int64(0)
+
+	if newSize > 0 {
+		var b [cLogEntrySize]byte
+		_, err := t.cLog.ReadAt(b[:], cLogSize-cLogEntrySize)
+		if err != nil {
+			return err
+		}
+
+		pOff := binary.BigEndian.Uint64(b[:])
+		pSize := binary.BigEndian.Uint32(b[offsetSize:])
+
+		pLogSize = int64(pOff) + int64(pSize)
+
+		pLogFileSize, err := t.pLog.Size()
+		if err != nil {
+			return err
+		}
+
+		if pLogFileSize < pLogSize {
+			return ErrorCorruptedData
+		}
+
+		dLogSize = int64(nodesUpto(uint64(cLogSize/cLogEntrySize)) * sha256.Size)
+
+		dLogFileSize, err := t.dLog.Size()
+		if err != nil {
+			return err
+		}
+
+		if dLogFileSize < dLogSize {
+			return ErrorCorruptedDigests
+		}
+	}
+
+	// Invalidate caches
+	for i := cLogSize; i < t.cLogSize; i += cLogEntrySize {
+		t.pCache.Pop(uint64(i / cLogEntrySize))
+	}
+	for i := dLogSize; i < t.dLogSize; i += sha256.Size {
+		t.dCache.Pop(uint64(i / sha256.Size))
+	}
+
+	t.cLogSize = cLogSize
+	t.pLogSize = pLogSize
+	t.dLogSize = dLogSize
+
+	return nil
 }
 
 func (t *AHtree) node(n uint64, l int) (h [sha256.Size]byte, err error) {
@@ -541,6 +636,10 @@ func (t *AHtree) Size() uint64 {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
+	return t.size()
+}
+
+func (t *AHtree) size() uint64 {
 	return uint64(t.cLogSize / cLogEntrySize)
 }
 
@@ -680,25 +779,19 @@ func (t *AHtree) Close() error {
 
 	t.closed = true
 
-	errors := make([]error, 0)
+	merrors := multierr.NewMultiErr()
 
-	pErr := t.pLog.Close()
-	if pErr != nil {
-		errors = append(errors, pErr)
-	}
+	err := t.pLog.Close()
+	merrors.Append(err)
 
-	dErr := t.dLog.Close()
-	if dErr != nil {
-		errors = append(errors, dErr)
-	}
+	err = t.dLog.Close()
+	merrors.Append(err)
 
-	cErr := t.cLog.Close()
-	if cErr != nil {
-		errors = append(errors, cErr)
-	}
+	err = t.cLog.Close()
+	merrors.Append(err)
 
-	if len(errors) > 0 {
-		return &multierr.MultiErr{Errors: errors}
+	if merrors.HasErrors() {
+		return merrors
 	}
 
 	return nil

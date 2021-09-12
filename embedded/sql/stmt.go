@@ -30,30 +30,35 @@ import (
 const (
 	catalogDatabasePrefix = "CATALOG.DATABASE." // (key=CATALOG.DATABASE.{dbID}, value={dbNAME})
 	catalogTablePrefix    = "CATALOG.TABLE."    // (key=CATALOG.TABLE.{dbID}{tableID}{pkID}, value={tableNAME})
-	catalogColumnPrefix   = "CATALOG.COLUMN."   // (key=CATALOG.COLUMN.{dbID}{tableID}{colID}{colTYPE}, value={nullable}{colNAME})
+	catalogColumnPrefix   = "CATALOG.COLUMN."   // (key=CATALOG.COLUMN.{dbID}{tableID}{colID}{colTYPE}, value={auto_incremental | nullable}{colNAME})
 	catalogIndexPrefix    = "CATALOG.INDEX."    // (key=CATALOG.INDEX.{dbID}{tableID}{colID}, value={})
 	RowPrefix             = "ROW."              // (key=ROW.{dbID}{tableID}{colID}({valLen}{val})?{pkValLen}{pkVal}, value={})
+)
+
+const (
+	nullableFlag      byte = 1 << iota
+	autoIncrementFlag byte = 1 << iota
 )
 
 type SQLValueType = string
 
 const (
 	IntegerType   SQLValueType = "INTEGER"
-	BooleanType                = "BOOLEAN"
-	VarcharType                = "VARCHAR"
-	BLOBType                   = "BLOB"
-	TimestampType              = "TIMESTAMP"
-	AnyType                    = "ANY"
+	BooleanType   SQLValueType = "BOOLEAN"
+	VarcharType   SQLValueType = "VARCHAR"
+	BLOBType      SQLValueType = "BLOB"
+	TimestampType SQLValueType = "TIMESTAMP"
+	AnyType       SQLValueType = "ANY"
 )
 
 type AggregateFn = string
 
 const (
 	COUNT AggregateFn = "COUNT"
-	SUM               = "SUM"
-	MAX               = "MAX"
-	MIN               = "MIN"
-	AVG               = "AVG"
+	SUM   AggregateFn = "SUM"
+	MAX   AggregateFn = "MAX"
+	MIN   AggregateFn = "MIN"
+	AVG   AggregateFn = "AVG"
 )
 
 type CmpOperator = int
@@ -91,8 +96,43 @@ const (
 	RightJoin
 )
 
+type TxSummary struct {
+	db *Database
+
+	ces []*store.KV
+	des []*store.KV
+
+	updatedRows     int
+	lastInsertedPKs map[string]uint64
+}
+
+func newTxSummary() *TxSummary {
+	return &TxSummary{
+		lastInsertedPKs: make(map[string]uint64),
+	}
+}
+
+func (s *TxSummary) add(summary *TxSummary) error {
+	if summary == nil {
+		return ErrIllegalArguments
+	}
+
+	s.db = summary.db
+
+	s.updatedRows += summary.updatedRows
+
+	s.ces = append(s.ces, summary.ces...)
+	s.des = append(s.des, summary.des...)
+
+	for t, pk := range summary.lastInsertedPKs {
+		s.lastInsertedPKs[t] = pk
+	}
+
+	return nil
+}
+
 type SQLStmt interface {
-	compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (ces, des []*store.KV, db *Database, err error)
+	compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error)
 	inferParameters(e *Engine, implicitDB *Database, params map[string]SQLValueType) error
 }
 
@@ -102,7 +142,7 @@ type TxStmt struct {
 
 func (stmt *TxStmt) inferParameters(e *Engine, implicitDB *Database, params map[string]SQLValueType) error {
 	for _, stmt := range stmt.stmts {
-		err := stmt.inferParameters(e, e.implicitDB, params)
+		err := stmt.inferParameters(e, implicitDB, params)
 		if err != nil {
 			return err
 		}
@@ -111,20 +151,23 @@ func (stmt *TxStmt) inferParameters(e *Engine, implicitDB *Database, params map[
 	return nil
 }
 
-func (stmt *TxStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (ces, des []*store.KV, db *Database, err error) {
+func (stmt *TxStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
+	summary = newTxSummary()
+	summary.db = implicitDB
+
 	for _, stmt := range stmt.stmts {
-		cs, ds, db, err := stmt.compileUsing(e, implicitDB, params)
+		stmtSummary, err := stmt.compileUsing(e, summary.db, params)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 
-		ces = append(ces, cs...)
-		des = append(des, ds...)
-
-		implicitDB = db
+		err = summary.add(stmtSummary)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	return ces, des, implicitDB, nil
+	return summary, nil
 }
 
 type CreateDatabaseStmt struct {
@@ -135,20 +178,26 @@ func (stmt *CreateDatabaseStmt) inferParameters(e *Engine, implicitDB *Database,
 	return nil
 }
 
-func (stmt *CreateDatabaseStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (ces, des []*store.KV, db *Database, err error) {
-	db, err = e.catalog.newDatabase(stmt.DB)
+func (stmt *CreateDatabaseStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
+	summary = newTxSummary()
+
+	id := uint64(len(e.catalog.dbsByID) + 1)
+
+	db, err := e.catalog.newDatabase(id, stmt.DB)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
+
+	summary.db = db
 
 	kv := &store.KV{
 		Key:   e.mapKey(catalogDatabasePrefix, EncodeID(db.id)),
 		Value: []byte(stmt.DB),
 	}
 
-	ces = append(ces, kv)
+	summary.ces = append(summary.ces, kv)
 
-	return ces, nil, implicitDB, nil
+	return summary, nil
 }
 
 type UseDatabaseStmt struct {
@@ -159,13 +208,17 @@ func (stmt *UseDatabaseStmt) inferParameters(e *Engine, implicitDB *Database, pa
 	return nil
 }
 
-func (stmt *UseDatabaseStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (ces, des []*store.KV, db *Database, err error) {
-	db, err = e.catalog.GetDatabaseByName(stmt.DB)
+func (stmt *UseDatabaseStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
+	summary = newTxSummary()
+
+	db, err := e.catalog.GetDatabaseByName(stmt.DB)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
-	return nil, nil, db, nil
+	summary.db = db
+
+	return summary, nil
 }
 
 type UseSnapshotStmt struct {
@@ -177,8 +230,8 @@ func (stmt *UseSnapshotStmt) inferParameters(e *Engine, implicitDB *Database, pa
 	return nil
 }
 
-func (stmt *UseSnapshotStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (ces, des []*store.KV, db *Database, err error) {
-	return nil, nil, nil, ErrNoSupported
+func (stmt *UseSnapshotStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
+	return nil, ErrNoSupported
 }
 
 type CreateTableStmt struct {
@@ -192,24 +245,37 @@ func (stmt *CreateTableStmt) inferParameters(e *Engine, implicitDB *Database, pa
 	return nil
 }
 
-func (stmt *CreateTableStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (ces, des []*store.KV, db *Database, err error) {
+func (stmt *CreateTableStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
+	summary = newTxSummary()
+	summary.db = implicitDB
+
 	if implicitDB == nil {
-		return nil, nil, nil, ErrNoDatabaseSelected
+		return nil, ErrNoDatabaseSelected
 	}
 
 	if stmt.ifNotExists && implicitDB.ExistTable(stmt.table) {
-		return nil, nil, implicitDB, nil
+		return summary, nil
 	}
 
 	table, err := implicitDB.newTable(stmt.table, stmt.colsSpec, stmt.pk)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
+
+	e.catalog.mutated = true
 
 	for colID, col := range table.ColsByID() {
 		v := make([]byte, 1+len(col.colName))
+
+		if col.autoIncrement && (col.colName != table.pk.colName || table.pk.colType != IntegerType) {
+			return nil, ErrLimitedAutoIncrement
+		}
+
+		if col.autoIncrement {
+			v[0] = v[0] | autoIncrementFlag
+		}
 		if col.notNull {
-			v[0] = 1
+			v[0] = v[0] | nullableFlag
 		}
 		copy(v[1:], []byte(col.Name()))
 
@@ -217,22 +283,23 @@ func (stmt *CreateTableStmt) compileUsing(e *Engine, implicitDB *Database, param
 			Key:   e.mapKey(catalogColumnPrefix, EncodeID(implicitDB.id), EncodeID(table.id), EncodeID(colID), []byte(col.colType)),
 			Value: v,
 		}
-		ces = append(ces, ce)
+		summary.ces = append(summary.ces, ce)
 	}
 
 	te := &store.KV{
 		Key:   e.mapKey(catalogTablePrefix, EncodeID(implicitDB.id), EncodeID(table.id), EncodeID(table.pk.id)),
 		Value: []byte(table.name),
 	}
-	ces = append(ces, te)
+	summary.ces = append(summary.ces, te)
 
-	return ces, des, implicitDB, nil
+	return summary, nil
 }
 
 type ColSpec struct {
-	colName string
-	colType SQLValueType
-	notNull bool
+	colName       string
+	colType       SQLValueType
+	autoIncrement bool
+	notNull       bool
 }
 
 type CreateIndexStmt struct {
@@ -244,55 +311,60 @@ func (stmt *CreateIndexStmt) inferParameters(e *Engine, implicitDB *Database, pa
 	return nil
 }
 
-func (stmt *CreateIndexStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (ces, des []*store.KV, db *Database, err error) {
+func (stmt *CreateIndexStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
+	summary = newTxSummary()
+	summary.db = implicitDB
+
 	if implicitDB == nil {
-		return nil, nil, nil, ErrNoDatabaseSelected
+		return nil, ErrNoDatabaseSelected
 	}
 
 	table, err := implicitDB.GetTableByName(stmt.table)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	if table.pk.colName == stmt.col {
-		return nil, nil, nil, ErrIndexAlreadyExists
+		return nil, ErrIndexAlreadyExists
 	}
 
 	col, err := table.GetColumnByName(stmt.col)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	_, exists := table.indexes[col.id]
 	if exists {
-		return nil, nil, nil, ErrIndexAlreadyExists
+		return nil, ErrIndexAlreadyExists
 	}
 
 	// check table is empty
 	lastTxID, _ := e.dataStore.Alh()
 	err = e.dataStore.WaitForIndexingUpto(lastTxID, nil)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	pkPrefix := e.mapKey(RowPrefix, EncodeID(table.db.id), EncodeID(table.id), EncodeID(table.pk.id))
 	existKey, err := e.dataStore.ExistKeyWith(pkPrefix, pkPrefix, false)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	if existKey {
-		return nil, nil, nil, ErrLimitedIndex
+		return nil, ErrLimitedIndex
 	}
 
 	table.indexes[col.id] = struct{}{}
+
+	e.catalog.mutated = true
 
 	te := &store.KV{
 		Key:   e.mapKey(catalogIndexPrefix, EncodeID(table.db.id), EncodeID(table.id), EncodeID(col.id)),
 		Value: []byte(table.name),
 	}
-	ces = append(ces, te)
+	summary.ces = append(summary.ces, te)
 
-	return ces, des, implicitDB, nil
+	return summary, nil
 }
 
 type AddColumnStmt struct {
@@ -304,8 +376,8 @@ func (stmt *AddColumnStmt) inferParameters(e *Engine, implicitDB *Database, para
 	return nil
 }
 
-func (stmt *AddColumnStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (ces, des []*store.KV, db *Database, err error) {
-	return nil, nil, nil, ErrNoSupported
+func (stmt *AddColumnStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
+	return nil, ErrNoSupported
 }
 
 type UpsertIntoStmt struct {
@@ -405,7 +477,7 @@ func (stmt *UpsertIntoStmt) inferParameters(e *Engine, implicitDB *Database, par
 				return err
 			}
 
-			err = val.requiresType(col.colType, make(map[string]*ColDescriptor, 0), params, implicitDB.name, table.name)
+			err = val.requiresType(col.colType, make(map[string]*ColDescriptor), params, implicitDB.name, table.name)
 			if err != nil {
 				return err
 			}
@@ -437,120 +509,160 @@ func (stmt *UpsertIntoStmt) validate(table *Table) (map[uint64]int, error) {
 		selByColID[col.id] = i
 	}
 
-	if !pkIncluded {
+	if !pkIncluded && (!stmt.isInsert || !table.pk.autoIncrement) {
 		return nil, ErrPKCanNotBeNull
+	}
+
+	if pkIncluded && stmt.isInsert && table.pk.autoIncrement {
+		return nil, ErrNoValueForAutoIncrementalColumn
 	}
 
 	return selByColID, nil
 }
 
-func (stmt *UpsertIntoStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (ces, des []*store.KV, db *Database, err error) {
+func (stmt *UpsertIntoStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
+	summary = newTxSummary()
+	summary.db = implicitDB
+
+	if implicitDB == nil {
+		return nil, ErrNoDatabaseSelected
+	}
+
 	table, err := stmt.tableRef.referencedTable(e, implicitDB)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	cs, err := stmt.validate(table)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	for _, row := range stmt.rows {
 		if len(row.Values) != len(stmt.cols) {
-			return nil, nil, nil, ErrInvalidNumberOfValues
+			return nil, ErrInvalidNumberOfValues
 		}
 
-		pkVal := row.Values[cs[table.pk.id]]
+		cols := stmt.cols
+
+		var pkVal ValueExp
+
+		// inject auto-incremental pk value
+		if stmt.isInsert && table.pk.autoIncrement {
+			table.maxPK++
+			e.catalog.mutated = true // TODO: implement transactional in-memory catalog
+
+			pkVal = &Number{val: table.maxPK}
+			cols = append(cols, table.pk.colName)
+			row.Values = append(row.Values, pkVal)
+
+			summary.lastInsertedPKs[table.name] = table.maxPK
+		} else {
+			pkVal = row.Values[cs[table.pk.id]]
+		}
 
 		val, err := pkVal.substitute(params)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 
 		rval, err := val.reduce(e.catalog, nil, implicitDB.name, table.name)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 
 		_, isNull := rval.(*NullValue)
 		if isNull {
-			return nil, nil, nil, ErrPKCanNotBeNull
+			return nil, ErrPKCanNotBeNull
 		}
 
 		pkEncVal, err := EncodeValue(rval, table.pk.colType, asKey)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 
-		bs, err := row.bytes(e.catalog, table, stmt.cols, params)
+		bs, err := row.bytes(e.catalog, table, cols, params)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 
 		// create entry for the column which is the pk
 		mkey := e.mapKey(RowPrefix, EncodeID(table.db.id), EncodeID(table.id), EncodeID(table.pk.id), pkEncVal)
 
-		pke := &store.KV{
-			Key:    mkey,
-			Value:  bs,
-			Unique: stmt.isInsert,
+		constraint := store.NoConstraint
+
+		if stmt.isInsert && !table.pk.autoIncrement {
+			constraint = store.MustNotExist
 		}
-		des = append(des, pke)
+
+		if !stmt.isInsert && table.pk.autoIncrement {
+			constraint = store.MustExist
+		}
+
+		pke := &store.KV{
+			Key:        mkey,
+			Value:      bs,
+			Constraint: constraint,
+		}
+		summary.des = append(summary.des, pke)
+
+		summary.updatedRows++
 
 		// create entries for each indexed column, with value as value for pk column
 		for colID := range table.indexes {
 			colPos, defined := cs[colID]
 			if !defined {
-				return nil, nil, nil, ErrIndexedColumnCanNotBeNull
+				return nil, ErrIndexedColumnCanNotBeNull
 			}
 
 			cVal := row.Values[colPos]
 
 			val, err := cVal.substitute(params)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, err
 			}
 
 			rval, err := val.reduce(e.catalog, nil, implicitDB.name, table.name)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, err
 			}
 
 			_, isNull := rval.(*NullValue)
 			if isNull {
-				return nil, nil, nil, ErrIndexedColumnCanNotBeNull
+				return nil, ErrIndexedColumnCanNotBeNull
 			}
 
 			col, err := table.GetColumnByID(colID)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, err
 			}
 
 			encVal, err := EncodeValue(rval, col.colType, asKey)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, err
 			}
 
 			ie := &store.KV{
 				Key:   e.mapKey(RowPrefix, EncodeID(table.db.id), EncodeID(table.id), EncodeID(colID), encVal, pkEncVal),
 				Value: nil,
 			}
-			des = append(des, ie)
+			summary.des = append(summary.des, ie)
 		}
 	}
 
-	return ces, des, implicitDB, nil
+	return summary, nil
 }
 
 type ValueExp interface {
 	inferType(cols map[string]*ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) (SQLValueType, error)
 	requiresType(t SQLValueType, cols map[string]*ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) error
-	jointColumnTo(col *Column, tableAlias string) (*ColSelector, error)
 	substitute(params map[string]interface{}) (ValueExp, error)
 	reduce(catalog *Catalog, row *Row, implicitDB, implicitTable string) (TypedValue, error)
+	reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp
 }
 
 type TypedValue interface {
+	ValueExp
 	Type() SQLValueType
 	Value() interface{}
 	Compare(val TypedValue) (int, error)
@@ -573,8 +685,7 @@ func (n *NullValue) Compare(val TypedValue) (int, error) {
 		return 0, ErrNotComparableValues
 	}
 
-	_, isNull := val.(*NullValue)
-	if isNull {
+	if val.Value() == nil {
 		return 0, nil
 	}
 
@@ -599,16 +710,16 @@ func (v *NullValue) requiresType(t SQLValueType, cols map[string]*ColDescriptor,
 	return nil
 }
 
-func (v *NullValue) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	return nil, ErrJointColumnNotFound
-}
-
 func (v *NullValue) substitute(params map[string]interface{}) (ValueExp, error) {
 	return v, nil
 }
 
 func (v *NullValue) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable string) (TypedValue, error) {
 	return v, nil
+}
+
+func (v *NullValue) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return v
 }
 
 type Number struct {
@@ -631,16 +742,16 @@ func (v *Number) requiresType(t SQLValueType, cols map[string]*ColDescriptor, pa
 	return nil
 }
 
-func (v *Number) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	return nil, ErrJointColumnNotFound
-}
-
 func (v *Number) substitute(params map[string]interface{}) (ValueExp, error) {
 	return v, nil
 }
 
 func (v *Number) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable string) (TypedValue, error) {
 	return v, nil
+}
+
+func (v *Number) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return v
 }
 
 func (v *Number) Value() interface{} {
@@ -690,16 +801,16 @@ func (v *Varchar) requiresType(t SQLValueType, cols map[string]*ColDescriptor, p
 	return nil
 }
 
-func (v *Varchar) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	return nil, ErrJointColumnNotFound
-}
-
 func (v *Varchar) substitute(params map[string]interface{}) (ValueExp, error) {
 	return v, nil
 }
 
 func (v *Varchar) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable string) (TypedValue, error) {
 	return v, nil
+}
+
+func (v *Varchar) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return v
 }
 
 func (v *Varchar) Value() interface{} {
@@ -741,16 +852,16 @@ func (v *Bool) requiresType(t SQLValueType, cols map[string]*ColDescriptor, para
 	return nil
 }
 
-func (v *Bool) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	return nil, ErrJointColumnNotFound
-}
-
 func (v *Bool) substitute(params map[string]interface{}) (ValueExp, error) {
 	return v, nil
 }
 
 func (v *Bool) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable string) (TypedValue, error) {
 	return v, nil
+}
+
+func (v *Bool) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return v
 }
 
 func (v *Bool) Value() interface{} {
@@ -800,16 +911,16 @@ func (v *Blob) requiresType(t SQLValueType, cols map[string]*ColDescriptor, para
 	return nil
 }
 
-func (v *Blob) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	return nil, ErrJointColumnNotFound
-}
-
 func (v *Blob) substitute(params map[string]interface{}) (ValueExp, error) {
 	return v, nil
 }
 
 func (v *Blob) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable string) (TypedValue, error) {
 	return v, nil
+}
+
+func (v *Blob) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return v
 }
 
 func (v *Blob) Value() interface{} {
@@ -855,10 +966,6 @@ func (v *SysFn) requiresType(t SQLValueType, cols map[string]*ColDescriptor, par
 	return ErrIllegalArguments
 }
 
-func (v *SysFn) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	return nil, ErrJointColumnNotFound
-}
-
 func (v *SysFn) substitute(params map[string]interface{}) (ValueExp, error) {
 	return v, nil
 }
@@ -869,6 +976,10 @@ func (v *SysFn) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable str
 	}
 
 	return nil, errors.New("not yet supported")
+}
+
+func (v *SysFn) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return v
 }
 
 type Param struct {
@@ -897,10 +1008,6 @@ func (v *Param) requiresType(t SQLValueType, cols map[string]*ColDescriptor, par
 	return nil
 }
 
-func (p *Param) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	return nil, ErrJointColumnNotFound
-}
-
 func (p *Param) substitute(params map[string]interface{}) (ValueExp, error) {
 	val, ok := params[p.id]
 	if !ok {
@@ -908,7 +1015,7 @@ func (p *Param) substitute(params map[string]interface{}) (ValueExp, error) {
 	}
 
 	if val == nil {
-		return &NullValue{}, nil
+		return &NullValue{t: AnyType}, nil
 	}
 
 	switch v := val.(type) {
@@ -939,6 +1046,10 @@ func (p *Param) substitute(params map[string]interface{}) (ValueExp, error) {
 
 func (p *Param) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable string) (TypedValue, error) {
 	return nil, ErrUnexpected
+}
+
+func (p *Param) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return p
 }
 
 type Comparison int
@@ -975,12 +1086,12 @@ func (stmt *SelectStmt) Limit() uint64 {
 }
 
 func (stmt *SelectStmt) inferParameters(e *Engine, implicitDB *Database, params map[string]SQLValueType) error {
-	_, _, _, err := stmt.compileUsing(e, implicitDB, nil)
+	_, err := stmt.compileUsing(e, implicitDB, nil)
 	if err != nil {
 		return err
 	}
 
-	snapshot, err := e.Snapshot()
+	snapshot, err := e.getSnapshot()
 	if err != nil {
 		return err
 	}
@@ -995,53 +1106,68 @@ func (stmt *SelectStmt) inferParameters(e *Engine, implicitDB *Database, params 
 	return rowReader.InferParameters(params)
 }
 
-func (stmt *SelectStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (ces, des []*store.KV, db *Database, err error) {
+func (stmt *SelectStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
+	summary = newTxSummary()
+	summary.db = implicitDB
+
+	if implicitDB == nil {
+		return nil, ErrNoDatabaseSelected
+	}
+
 	if stmt.distinct {
-		return nil, nil, nil, ErrNoSupported
+		return nil, ErrNoSupported
 	}
 
 	if stmt.groupBy == nil && stmt.having != nil {
-		return nil, nil, nil, ErrHavingClauseRequiresGroupClause
+		return nil, ErrHavingClauseRequiresGroupClause
+	}
+
+	if len(stmt.groupBy) > 1 {
+		return nil, ErrLimitedGroupBy
 	}
 
 	if len(stmt.orderBy) > 1 {
-		return nil, nil, nil, ErrLimitedOrderBy
+		return nil, ErrLimitedOrderBy
 	}
 
 	if len(stmt.orderBy) > 0 {
 		tableRef, ok := stmt.ds.(*TableRef)
 		if !ok {
-			return nil, nil, nil, ErrLimitedOrderBy
+			return nil, ErrLimitedOrderBy
 		}
 
 		table, err := tableRef.referencedTable(e, implicitDB)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 
 		col, err := table.GetColumnByName(stmt.orderBy[0].sel.col)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 
 		if table.pk.id == col.id {
-			return nil, nil, nil, nil
+			return nil, nil
 		}
 
 		_, indexed := table.indexes[col.id]
 		if !indexed {
-			return nil, nil, nil, ErrLimitedOrderBy
+			return nil, ErrLimitedOrderBy
 		}
 	}
 
-	return nil, nil, implicitDB, nil
+	return summary, nil
 }
 
 func (stmt *SelectStmt) Resolve(e *Engine, implicitDB *Database, snap *store.Snapshot, params map[string]interface{}, ordCol *OrdCol) (RowReader, error) {
 	var orderByCol *OrdCol
 
-	if len(stmt.orderBy) > 0 {
+	if ordCol == nil && len(stmt.orderBy) > 0 {
 		orderByCol = stmt.orderBy[0]
+	}
+
+	if ordCol != nil {
+		orderByCol = ordCol
 	}
 
 	rowReader, err := stmt.ds.Resolve(e, implicitDB, snap, params, orderByCol)
@@ -1212,10 +1338,6 @@ type JoinSpec struct {
 	cond     ValueExp
 }
 
-type GroupBySpec struct {
-	cols []string
-}
-
 type OrdCol struct {
 	sel           *ColSelector
 	cmp           Comparison
@@ -1291,22 +1413,6 @@ func (sel *ColSelector) requiresType(t SQLValueType, cols map[string]*ColDescrip
 	return nil
 }
 
-func (sel *ColSelector) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	if sel.db != "" && sel.db != col.table.db.name {
-		return nil, ErrJointColumnNotFound
-	}
-
-	if sel.table != tableAlias {
-		return nil, ErrJointColumnNotFound
-	}
-
-	if sel.col != col.colName {
-		return nil, ErrJointColumnNotFound
-	}
-
-	return sel, nil
-}
-
 func (sel *ColSelector) substitute(params map[string]interface{}) (ValueExp, error) {
 	return sel, nil
 }
@@ -1320,6 +1426,17 @@ func (sel *ColSelector) reduce(catalog *Catalog, row *Row, implicitDB, implicitT
 	}
 
 	return v, nil
+}
+
+func (sel *ColSelector) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	aggFn, db, table, col := sel.resolve(implicitDB, implicitTable)
+
+	v, ok := row.Values[EncodeSelector(aggFn, db, table, col)]
+	if !ok {
+		return sel
+	}
+
+	return v
 }
 
 type AggColSelector struct {
@@ -1392,10 +1509,6 @@ func (sel *AggColSelector) requiresType(t SQLValueType, cols map[string]*ColDesc
 	return colSelector.requiresType(t, cols, params, implicitDB, implicitTable)
 }
 
-func (sel *AggColSelector) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	return nil, ErrJointColumnNotFound
-}
-
 func (sel *AggColSelector) substitute(params map[string]interface{}) (ValueExp, error) {
 	return sel, nil
 }
@@ -1406,6 +1519,10 @@ func (sel *AggColSelector) reduce(catalog *Catalog, row *Row, implicitDB, implic
 		return nil, ErrColumnDoesNotExist
 	}
 	return v, nil
+}
+
+func (sel *AggColSelector) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return sel
 }
 
 type NumExp struct {
@@ -1443,10 +1560,6 @@ func (bexp *NumExp) requiresType(t SQLValueType, cols map[string]*ColDescriptor,
 	}
 
 	return nil
-}
-
-func (bexp *NumExp) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	return nil, ErrJointColumnNotFound
 }
 
 func (bexp *NumExp) substitute(params map[string]interface{}) (ValueExp, error) {
@@ -1513,6 +1626,14 @@ func (bexp *NumExp) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable
 	return nil, ErrUnexpected
 }
 
+func (bexp *NumExp) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return &NumExp{
+		op:    bexp.op,
+		left:  bexp.left.reduceSelectors(row, implicitDB, implicitTable),
+		right: bexp.right.reduceSelectors(row, implicitDB, implicitTable),
+	}
+}
+
 type NotBoolExp struct {
 	exp ValueExp
 }
@@ -1532,10 +1653,6 @@ func (bexp *NotBoolExp) requiresType(t SQLValueType, cols map[string]*ColDescrip
 	}
 
 	return bexp.exp.requiresType(BooleanType, cols, params, implicitDB, implicitTable)
-}
-
-func (bexp *NotBoolExp) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	return bexp.exp.jointColumnTo(col, tableAlias)
 }
 
 func (bexp *NotBoolExp) substitute(params map[string]interface{}) (ValueExp, error) {
@@ -1563,6 +1680,12 @@ func (bexp *NotBoolExp) reduce(catalog *Catalog, row *Row, implicitDB, implicitT
 	return &Bool{val: !r}, nil
 }
 
+func (bexp *NotBoolExp) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return &NotBoolExp{
+		exp: bexp.exp.reduceSelectors(row, implicitDB, implicitTable),
+	}
+}
+
 type LikeBoolExp struct {
 	sel     Selector
 	pattern string
@@ -1578,10 +1701,6 @@ func (bexp *LikeBoolExp) requiresType(t SQLValueType, cols map[string]*ColDescri
 	}
 
 	return nil
-}
-
-func (bexp *LikeBoolExp) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	return nil, ErrJointColumnNotFound
 }
 
 func (bexp *LikeBoolExp) substitute(params map[string]interface{}) (ValueExp, error) {
@@ -1604,6 +1723,10 @@ func (bexp *LikeBoolExp) reduce(catalog *Catalog, row *Row, implicitDB, implicit
 	}
 
 	return &Bool{val: matched}, nil
+}
+
+func (bexp *LikeBoolExp) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return bexp
 }
 
 type CmpBoolExp struct {
@@ -1659,40 +1782,6 @@ func (bexp *CmpBoolExp) requiresType(t SQLValueType, cols map[string]*ColDescrip
 	return err
 }
 
-func (bexp *CmpBoolExp) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	if bexp.op != EQ {
-		return nil, ErrJointColumnNotFound
-	}
-
-	selLeft, okLeft := bexp.left.(*ColSelector)
-	selRight, okRight := bexp.right.(*ColSelector)
-
-	if !okLeft || !okRight {
-		return nil, ErrJointColumnNotFound
-	}
-
-	_, lErr := selLeft.jointColumnTo(col, tableAlias)
-	_, rErr := selRight.jointColumnTo(col, tableAlias)
-
-	if lErr == nil && rErr == nil {
-		return nil, ErrInvalidJointColumn
-	}
-
-	if lErr == nil && rErr == ErrJointColumnNotFound {
-		return selRight, nil
-	}
-
-	if rErr == nil && lErr == ErrJointColumnNotFound {
-		return selLeft, nil
-	}
-
-	if lErr != nil {
-		return nil, lErr
-	}
-
-	return nil, rErr
-}
-
 func (bexp *CmpBoolExp) substitute(params map[string]interface{}) (ValueExp, error) {
 	rlexp, err := bexp.left.substitute(params)
 	if err != nil {
@@ -1727,6 +1816,14 @@ func (bexp *CmpBoolExp) reduce(catalog *Catalog, row *Row, implicitDB, implicitT
 	}
 
 	return &Bool{val: cmpSatisfiesOp(r, bexp.op)}, nil
+}
+
+func (bexp *CmpBoolExp) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return &CmpBoolExp{
+		op:    bexp.op,
+		left:  bexp.left.reduceSelectors(row, implicitDB, implicitTable),
+		right: bexp.right.reduceSelectors(row, implicitDB, implicitTable),
+	}
 }
 
 func cmpSatisfiesOp(cmp int, op CmpOperator) bool {
@@ -1784,10 +1881,6 @@ func (bexp *BinBoolExp) requiresType(t SQLValueType, cols map[string]*ColDescrip
 	return nil
 }
 
-func (bexp *BinBoolExp) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	return nil, ErrJointColumnNotFound
-}
-
 func (bexp *BinBoolExp) substitute(params map[string]interface{}) (ValueExp, error) {
 	rlexp, err := bexp.left.substitute(params)
 	if err != nil {
@@ -1840,6 +1933,14 @@ func (bexp *BinBoolExp) reduce(catalog *Catalog, row *Row, implicitDB, implicitT
 	return nil, ErrUnexpected
 }
 
+func (bexp *BinBoolExp) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return &BinBoolExp{
+		op:    bexp.op,
+		left:  bexp.left.reduceSelectors(row, implicitDB, implicitTable),
+		right: bexp.right.reduceSelectors(row, implicitDB, implicitTable),
+	}
+}
+
 type ExistsBoolExp struct {
 	q *SelectStmt
 }
@@ -1852,14 +1953,14 @@ func (bexp *ExistsBoolExp) requiresType(t SQLValueType, cols map[string]*ColDesc
 	return errors.New("not yet supported")
 }
 
-func (bexp *ExistsBoolExp) jointColumnTo(col *Column, tableAlias string) (*ColSelector, error) {
-	return nil, ErrJointColumnNotFound
-}
-
 func (bexp *ExistsBoolExp) substitute(params map[string]interface{}) (ValueExp, error) {
 	return bexp, nil
 }
 
 func (bexp *ExistsBoolExp) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable string) (TypedValue, error) {
 	return nil, errors.New("not yet supported")
+}
+
+func (bexp *ExistsBoolExp) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return bexp
 }

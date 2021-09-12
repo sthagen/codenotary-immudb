@@ -18,6 +18,8 @@ package sql
 type Catalog struct {
 	dbsByID   map[uint64]*Database
 	dbsByName map[string]*Database
+
+	mutated bool
 }
 
 type Database struct {
@@ -35,14 +37,16 @@ type Table struct {
 	colsByName map[string]*Column
 	pk         *Column
 	indexes    map[uint64]struct{}
+	maxPK      uint64
 }
 
 type Column struct {
-	table   *Table
-	id      uint64
-	colName string
-	colType SQLValueType
-	notNull bool
+	table         *Table
+	id            uint64
+	colName       string
+	colType       SQLValueType
+	autoIncrement bool
+	notNull       bool
 }
 
 func newCatalog() *Catalog {
@@ -57,16 +61,14 @@ func (c *Catalog) ExistDatabase(db string) bool {
 	return exists
 }
 
-func (c *Catalog) newDatabase(name string) (*Database, error) {
+func (c *Catalog) newDatabase(id uint64, name string) (*Database, error) {
 	exists := c.ExistDatabase(name)
 	if exists {
 		return nil, ErrDatabaseAlreadyExists
 	}
 
-	id := len(c.dbsByID) + 1
-
 	db := &Database{
-		id:           uint64(id),
+		id:           id,
 		name:         name,
 		tablesByID:   map[uint64]*Table{},
 		tablesByName: map[string]*Table{},
@@ -221,9 +223,9 @@ func (db *Database) newTable(name string, colsSpec []*ColSpec, pk string) (*Tabl
 		id:         uint64(id),
 		db:         db,
 		name:       name,
-		colsByID:   make(map[uint64]*Column, 0),
-		colsByName: make(map[string]*Column, 0),
-		indexes:    make(map[uint64]struct{}, 0),
+		colsByID:   make(map[uint64]*Column),
+		colsByName: make(map[string]*Column),
+		indexes:    make(map[uint64]struct{}),
 	}
 
 	for _, cs := range colsSpec {
@@ -235,11 +237,12 @@ func (db *Database) newTable(name string, colsSpec []*ColSpec, pk string) (*Tabl
 		id := len(table.colsByID) + 1
 
 		col := &Column{
-			id:      uint64(id),
-			table:   table,
-			colName: cs.colName,
-			colType: cs.colType,
-			notNull: cs.notNull || cs.colName == pk,
+			id:            uint64(id),
+			table:         table,
+			colName:       cs.colName,
+			colType:       cs.colType,
+			autoIncrement: cs.autoIncrement,
+			notNull:       cs.notNull || cs.colName == pk,
 		}
 
 		table.colsByID[col.id] = col
@@ -274,4 +277,8 @@ func (c *Column) Type() SQLValueType {
 
 func (c *Column) IsNullable() bool {
 	return !c.notNull
+}
+
+func (c *Column) IsAutoIncremental() bool {
+	return c.autoIncrement
 }

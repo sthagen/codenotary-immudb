@@ -21,8 +21,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +58,14 @@ const cLogEntrySize = 8 // root node offset
 const (
 	MetaVersion     = "VERSION"
 	MetaMaxNodeSize = "MAX_NODE_SIZE"
+)
+
+const (
+	// actual nodes and commit folders will be suffixed by root logical timestamp except for initial trees so to be backward compatible
+	nodesFolderPrefix  = "nodes"
+	commitFolderPrefix = "commit"
+
+	historyFolder = "history" // history data is snapshot-agnostic / compaction-agnostic i.e. history(t) = history(compact(t))
 )
 
 // TBTree implements a timed-btree
@@ -94,6 +105,7 @@ type TBtree struct {
 	lastSnapRoot   node
 	lastSnapRootAt time.Time
 
+	committedLogSize  int64
 	committedNLogSize int64
 	committedHLogSize int64
 
@@ -173,12 +185,11 @@ func Open(path string, opts *Options) (*TBtree, error) {
 
 	finfo, err := os.Stat(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			err = os.Mkdir(path, opts.fileMode)
-			if err != nil {
-				return nil, err
-			}
-		} else {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		err = os.Mkdir(path, opts.fileMode)
+		if err != nil {
 			return nil, err
 		}
 	} else if !finfo.IsDir() {
@@ -204,25 +215,156 @@ func Open(path string, opts *Options) (*TBtree, error) {
 		}
 	}
 
-	appendableOpts.WithFileExt("n")
-	nLog, err := appFactory(path, "nodes", appendableOpts)
+	appendableOpts.WithFileExt("hx")
+	hLog, err := appFactory(path, historyFolder, appendableOpts)
 	if err != nil {
 		return nil, err
 	}
 
-	appendableOpts.WithFileExt("hx")
-	hLog, err := appFactory(path, "history", appendableOpts)
+	// If compaction was not fully completed, a valid or partially written full snapshot may be there
+	snapIDs, err := recoverFullSnapshots(path, commitFolderPrefix, opts.log)
+	if err != nil {
+		return nil, err
+	}
+
+	// Try snapshots from newest to older
+	for i := len(snapIDs); i > 0; i-- {
+		snapID := snapIDs[i-1]
+
+		nFolder := snapFolder(nodesFolderPrefix, snapID)
+		cFolder := snapFolder(commitFolderPrefix, snapID)
+
+		snapPath := filepath.Join(path, cFolder)
+
+		opts.log.Infof("Reading snapshot at '%s'...", snapPath)
+
+		appendableOpts.WithFileExt("n")
+		nLog, err := appFactory(path, nFolder, appendableOpts)
+		if err != nil {
+			return nil, err
+		}
+
+		appendableOpts.WithFileExt("ri")
+		cLog, err := appFactory(path, cFolder, appendableOpts)
+		if err != nil {
+			return nil, err
+		}
+
+		// TODO: semantic validation and further ammendment procedures may be done instead of a full initialization
+		t, err := OpenWith(path, nLog, hLog, cLog, opts)
+		if err != nil {
+			opts.log.Infof("Error reading snapshot at '%s'. %v", snapPath, err)
+
+			err = nLog.Close()
+			if err != nil {
+				return nil, err
+			}
+
+			err = cLog.Close()
+			if err != nil {
+				return nil, err
+			}
+
+			err = discardSnapshots(path, snapIDs[i-1:i], opts.log)
+			if err != nil {
+				opts.log.Warningf("Error discarding snapshots at '%s'. %v", path, err)
+			}
+
+			continue
+		}
+
+		opts.log.Infof("Successfully read snapshot at '%s'", snapPath)
+
+		// Discard older snapshots upon sucessful validation
+		err = discardSnapshots(path, snapIDs[:i-1], opts.log)
+		if err != nil {
+			opts.log.Warningf("Error discarding snapshots at '%s'. %v", path, err)
+		}
+
+		return t, nil
+	}
+
+	// No snapshot present or none was valid, fresh initialization
+	opts.log.Infof("Staring with an empty index...")
+
+	err = hLog.SetOffset(0)
+	if err != nil {
+		return nil, err
+	}
+
+	appendableOpts.WithFileExt("n")
+	nLog, err := appFactory(path, nodesFolderPrefix, appendableOpts)
 	if err != nil {
 		return nil, err
 	}
 
 	appendableOpts.WithFileExt("ri")
-	cLog, err := appFactory(path, "commit", appendableOpts)
+	cLog, err := appFactory(path, commitFolderPrefix, appendableOpts)
 	if err != nil {
 		return nil, err
 	}
 
 	return OpenWith(path, nLog, hLog, cLog, opts)
+}
+
+func snapFolder(folder string, snapID uint64) string {
+	if snapID == 0 {
+		return folder
+	}
+
+	return fmt.Sprintf("%s%016d", folder, snapID)
+}
+
+func recoverFullSnapshots(path, prefix string, log logger.Logger) (snapIDs []uint64, err error) {
+	fis, err := ioutil.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, f := range fis {
+		if f.IsDir() && strings.HasPrefix(f.Name(), prefix) {
+			if f.Name() == prefix {
+				snapIDs = append(snapIDs, 0)
+				continue
+			}
+
+			id, err := strconv.ParseInt(strings.TrimPrefix(f.Name(), prefix), 10, 64)
+			if err != nil {
+				log.Warningf("invalid folder found '%s'", f.Name())
+				continue
+			}
+
+			snapIDs = append(snapIDs, uint64(id))
+		}
+	}
+
+	return snapIDs, nil
+}
+
+func discardSnapshots(path string, snapIDs []uint64, log logger.Logger) error {
+	for _, snapID := range snapIDs {
+		nFolder := snapFolder(nodesFolderPrefix, snapID)
+		cFolder := snapFolder(commitFolderPrefix, snapID)
+
+		nPath := filepath.Join(path, nFolder)
+		cPath := filepath.Join(path, cFolder)
+
+		log.Infof("Discarding snapshot at '%s'...", cPath)
+
+		err := os.RemoveAll(nPath) // TODO: nLog.Remove()
+		if err != nil {
+			return err
+		}
+
+		err = os.RemoveAll(cPath) // TODO: cLog.Remove()
+		if err != nil {
+			return err
+		}
+
+		log.Infof("Snapshot at '%s' has been discarded", cPath)
+	}
+
+	return nil
 }
 
 func OpenWith(path string, nLog, hLog, cLog appendable.Appendable, opts *Options) (*TBtree, error) {
@@ -242,13 +384,13 @@ func OpenWith(path string, nLog, hLog, cLog appendable.Appendable, opts *Options
 		return nil, err
 	}
 
-	if cLogSize%cLogEntrySize > 0 {
-		return nil, ErrCorruptedCLog
-	}
-
-	hLogSize, err := hLog.Size()
-	if err != nil {
-		return nil, err
+	rem := cLogSize % cLogEntrySize
+	if rem > 0 {
+		cLogSize -= rem
+		err = cLog.SetOffset(cLogSize)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	cache, err := cache.NewLRUCache(opts.cacheSize)
@@ -262,8 +404,9 @@ func OpenWith(path string, nLog, hLog, cLog appendable.Appendable, opts *Options
 		nLog:                  nLog,
 		hLog:                  hLog,
 		cLog:                  cLog,
-		committedNLogSize:     0,
-		committedHLogSize:     hLogSize,
+		committedLogSize:      cLogSize,
+		committedNLogSize:     0, // If garbage is accepted then t.committedNLogSize should be set to its size during initialization
+		committedHLogSize:     hLog.Offset(),
 		cache:                 cache,
 		maxNodeSize:           maxNodeSize,
 		flushThld:             opts.flushThld,
@@ -687,6 +830,13 @@ func (t *TBtree) flushTree() (wN int64, wH int64, err error) {
 
 	snapshot := t.newSnapshot(0, t.root)
 
+	// will overwrite partially written and uncommitted data
+	// if garbage is accepted then t.committedNLogSize should be set to its size during initialization
+	err = t.nLog.SetOffset(t.committedNLogSize)
+	if err != nil {
+		return 0, 0, err
+	}
+
 	wopts := &WriteOpts{
 		OnlyMutated:    true,
 		BaseNLogOffset: t.committedNLogSize,
@@ -709,6 +859,12 @@ func (t *TBtree) flushTree() (wN int64, wH int64, err error) {
 		return 0, 0, t.warn("Flushing index '%s' returned: %v", err)
 	}
 
+	// will overwrite partially written and uncommitted data
+	err = t.cLog.SetOffset(t.committedLogSize)
+	if err != nil {
+		return 0, 0, err
+	}
+
 	var cb [cLogEntrySize]byte
 	binary.BigEndian.PutUint64(cb[:], uint64(t.root.offset()))
 	_, _, err = t.cLog.Append(cb[:])
@@ -722,6 +878,7 @@ func (t *TBtree) flushTree() (wN int64, wH int64, err error) {
 	}
 
 	t.insertionCount = 0
+	t.committedLogSize += cLogEntrySize
 	t.committedNLogSize += wN
 	t.committedHLogSize += wH
 
@@ -748,54 +905,41 @@ func (t *TBtree) currentSnapshot() (*Snapshot, error) {
 	return t.newSnapshot(0, t.root), nil
 }
 
-func (t *TBtree) storedSnapshotsCount() (int, error) {
-	sz, err := t.cLog.Size()
-	if err != nil {
-		return 0, err
-	}
-	return int(sz / cLogEntrySize), nil
-}
-
-func (t *TBtree) CompactIndex() (uint64, error) {
+// SnapshotCount returns the number of stored snapshots
+// Note: snapshotCount(compact(t)) = 1
+func (t *TBtree) SnapshotCount() (uint64, error) {
 	t.mutex.Lock()
+	defer t.mutex.Unlock()
 
 	if t.closed {
-		t.mutex.Unlock()
+		return 0, ErrAlreadyClosed
+	}
+
+	return t.snapshotCount(), nil
+}
+
+func (t *TBtree) snapshotCount() uint64 {
+	return uint64(t.committedLogSize / cLogEntrySize)
+}
+
+func (t *TBtree) Compact() (uint64, error) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	if t.closed {
 		return 0, ErrAlreadyClosed
 	}
 
 	if t.compacting {
-		t.mutex.Unlock()
 		return 0, ErrCompactAlreadyInProgress
 	}
 
-	if len(t.snapshots) > 0 {
-		t.mutex.Unlock()
-		return 0, ErrSnapshotsNotClosed
-	}
-
-	snapCount, err := t.storedSnapshotsCount()
-	if err != nil {
-		t.mutex.Unlock()
-		return 0, err
-	}
-
-	if snapCount < t.compactionThld {
-		t.mutex.Unlock()
+	if t.snapshotCount() < uint64(t.compactionThld) {
 		return 0, ErrCompactionThresholdNotReached
 	}
 
-	t.compacting = true
-
-	defer func() {
-		t.mutex.Lock()
-		t.compacting = false
-		t.mutex.Unlock()
-	}()
-
 	snapshot, err := t.currentSnapshot()
 	if err != nil {
-		t.mutex.Unlock()
 		return 0, err
 	}
 
@@ -804,8 +948,22 @@ func (t *TBtree) CompactIndex() (uint64, error) {
 		return 0, err
 	}
 
-	indexID := snapshot.Ts()
+	t.compacting = true
 
+	t.mutex.Unlock()
+	err = t.fullDump(snapshot)
+	t.mutex.Lock()
+
+	t.compacting = false
+
+	if err != nil {
+		return 0, err
+	}
+
+	return snapshot.Ts(), nil
+}
+
+func (t *TBtree) fullDump(snapshot *Snapshot) error {
 	metadata := appendable.NewMetadata(nil)
 	metadata.PutInt(MetaVersion, Version)
 	metadata.PutInt(MetaMaxNodeSize, t.maxNodeSize)
@@ -818,19 +976,29 @@ func (t *TBtree) CompactIndex() (uint64, error) {
 		WithMetadata(t.cLog.Metadata())
 
 	appendableOpts.WithFileExt("n")
-	nLogPath := filepath.Join(t.path, fmt.Sprintf("nodes_%d", indexID))
+	nLogPath := filepath.Join(t.path, snapFolder(nodesFolderPrefix, snapshot.Ts()))
 	nLog, err := multiapp.Open(nLogPath, appendableOpts)
 	if err != nil {
-		t.mutex.Unlock()
-		return 0, err
+		return err
 	}
 	defer func() {
-		nLog.Sync()
 		nLog.Close()
 	}()
 
-	t.mutex.Unlock()
+	appendableOpts.WithFileExt("ri")
+	cLogPath := filepath.Join(t.path, snapFolder(commitFolderPrefix, snapshot.Ts()))
+	cLog, err := multiapp.Open(cLogPath, appendableOpts)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		cLog.Close()
+	}()
 
+	return t.fullDumpTo(snapshot, nLog, cLog)
+}
+
+func (t *TBtree) fullDumpTo(snapshot *Snapshot, nLog, cLog appendable.Appendable) error {
 	wopts := &WriteOpts{
 		OnlyMutated:    false,
 		BaseNLogOffset: 0,
@@ -839,28 +1007,37 @@ func (t *TBtree) CompactIndex() (uint64, error) {
 
 	offset, _, _, err := snapshot.WriteTo(&appendableWriter{nLog}, nil, wopts)
 	if err != nil {
-		return 0, err
+		return err
 	}
-
-	appendableOpts.WithFileExt("ri")
-	cLogPath := filepath.Join(t.path, fmt.Sprintf("commit_%d", indexID))
-	cLog, err := multiapp.Open(cLogPath, appendableOpts)
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		cLog.Sync()
-		cLog.Close()
-	}()
 
 	var cb [cLogEntrySize]byte
 	binary.BigEndian.PutUint64(cb[:], uint64(offset))
 	_, _, err = cLog.Append(cb[:])
 	if err != nil {
-		return 0, err
+		return err
 	}
 
-	return indexID, nil
+	err = nLog.Flush()
+	if err != nil {
+		return err
+	}
+
+	err = nLog.Sync()
+	if err != nil {
+		return err
+	}
+
+	err = cLog.Flush()
+	if err != nil {
+		return err
+	}
+
+	err = cLog.Sync()
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (t *TBtree) Close() error {
@@ -882,25 +1059,19 @@ func (t *TBtree) Close() error {
 
 	t.closed = true
 
-	errors := make([]error, 0)
+	merrors := multierr.NewMultiErr()
 
-	nErr := t.nLog.Close()
-	if nErr != nil {
-		errors = append(errors, nErr)
-	}
+	err = t.nLog.Close()
+	merrors.Append(err)
 
-	hErr := t.hLog.Close()
-	if hErr != nil {
-		errors = append(errors, hErr)
-	}
+	err = t.hLog.Close()
+	merrors.Append(err)
 
-	cErr := t.cLog.Close()
-	if cErr != nil {
-		errors = append(errors, cErr)
-	}
+	err = t.cLog.Close()
+	merrors.Append(err)
 
-	if len(errors) > 0 {
-		return &multierr.MultiErr{Errors: errors}
+	if merrors.HasErrors() {
+		return merrors
 	}
 
 	return nil
@@ -1010,10 +1181,6 @@ func (t *TBtree) SnapshotSince(ts uint64) (*Snapshot, error) {
 
 	if len(t.snapshots) == t.maxActiveSnapshots {
 		return nil, ErrorToManyActiveSnapshots
-	}
-
-	if t.compacting {
-		return nil, ErrCompactAlreadyInProgress
 	}
 
 	if t.lastSnapRoot == nil || t.lastSnapRoot.ts() < ts ||
