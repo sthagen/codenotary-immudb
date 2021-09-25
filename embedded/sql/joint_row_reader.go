@@ -46,16 +46,6 @@ func (e *Engine) newJointRowReader(db *Database, snap *store.Snapshot, params ma
 		if jspec.joinType != InnerJoin {
 			return nil, ErrUnsupportedJoinType
 		}
-
-		tableRef, ok := jspec.ds.(*TableRef)
-		if !ok {
-			return nil, ErrLimitedJoins
-		}
-
-		_, err := tableRef.referencedTable(e, db)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	return &jointRowReader{
@@ -78,8 +68,12 @@ func (jointr *jointRowReader) ImplicitTable() string {
 	return jointr.rowReader.ImplicitTable()
 }
 
-func (jointr *jointRowReader) OrderBy() *ColDescriptor {
+func (jointr *jointRowReader) OrderBy() []*ColDescriptor {
 	return jointr.rowReader.OrderBy()
+}
+
+func (jointr *jointRowReader) ScanSpecs() *ScanSpecs {
+	return jointr.rowReader.ScanSpecs()
 }
 
 func (jointr *jointRowReader) Columns() ([]*ColDescriptor, error) {
@@ -106,10 +100,13 @@ func (jointr *jointRowReader) colsBySelector() (map[string]*ColDescriptor, error
 	}
 
 	for _, jspec := range jointr.joins {
-		tableRef := jspec.ds.(*TableRef)
-		table, _ := tableRef.referencedTable(jointr.e, jointr.implicitDB)
+		tableRef := jspec.ds.(*tableRef)
+		table, err := tableRef.referencedTable(jointr.e, jointr.implicitDB)
+		if err != nil {
+			return nil, err
+		}
 
-		for _, c := range table.ColsByID() {
+		for _, c := range table.Cols() {
 			des := &ColDescriptor{
 				Database: table.db.name,
 				Table:    tableRef.Alias(),
@@ -200,11 +197,12 @@ func (jointr *jointRowReader) Read() (row *Row, err error) {
 			jspec := jointr.joins[i]
 
 			jointq := &SelectStmt{
-				ds:    jspec.ds,
-				where: jspec.cond.reduceSelectors(row, jointr.ImplicitDB(), jointr.ImplicitTable()),
+				ds:      jspec.ds,
+				where:   jspec.cond.reduceSelectors(row, jointr.ImplicitDB(), jointr.ImplicitTable()),
+				indexOn: jspec.indexOn,
 			}
 
-			reader, err := jointq.Resolve(jointr.e, jointr.implicitDB, jointr.snap, jointr.params, nil)
+			reader, err := jointq.Resolve(jointr.e, jointr.snap, jointr.implicitDB, jointr.params, nil)
 			if err != nil {
 				return nil, err
 			}

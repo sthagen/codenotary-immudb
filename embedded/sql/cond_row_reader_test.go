@@ -16,7 +16,6 @@ limitations under the License.
 package sql
 
 import (
-	"errors"
 	"os"
 	"testing"
 
@@ -33,67 +32,22 @@ func TestConditionalRowReader(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("catalog_cond_row_reader")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
-	dummyr := &dummyRowReader{}
+	dummyr := &dummyRowReader{failReturningColumns: true}
 
 	rowReader, err := engine.newConditionalRowReader(dummyr, &Bool{val: true}, nil)
 	require.NoError(t, err)
 
 	_, err = rowReader.Columns()
-	require.Equal(t, dummyError, err)
+	require.Equal(t, errDummy, err)
 
 	err = rowReader.InferParameters(nil)
-	require.Equal(t, dummyError, err)
+	require.Equal(t, errDummy, err)
 
 	dummyr.failInferringParams = true
 
 	err = rowReader.InferParameters(nil)
-	require.Equal(t, dummyError, err)
-}
-
-var dummyError = errors.New("dummy error")
-
-type dummyRowReader struct {
-	failInferringParams bool
-}
-
-func (r *dummyRowReader) ImplicitDB() string {
-	return "db1"
-}
-
-func (r *dummyRowReader) ImplicitTable() string {
-	return "table1"
-}
-
-func (r *dummyRowReader) Read() (*Row, error) {
-	return nil, dummyError
-}
-
-func (r *dummyRowReader) Close() error {
-	return dummyError
-}
-
-func (r *dummyRowReader) OrderBy() *ColDescriptor {
-	return nil
-}
-
-func (r *dummyRowReader) Columns() ([]*ColDescriptor, error) {
-	return nil, dummyError
-}
-
-func (r *dummyRowReader) SetParameters(params map[string]interface{}) {
-}
-
-func (r *dummyRowReader) InferParameters(params map[string]SQLValueType) error {
-	if r.failInferringParams {
-		return dummyError
-	}
-
-	return nil
-}
-
-func (r *dummyRowReader) colsBySelector() (map[string]*ColDescriptor, error) {
-	return nil, dummyError
+	require.Equal(t, errDummy, err)
 }

@@ -70,6 +70,7 @@
     - [VerifiableReferenceRequest](#immudb.schema.VerifiableReferenceRequest)
     - [VerifiableSQLEntry](#immudb.schema.VerifiableSQLEntry)
     - [VerifiableSQLEntry.ColIdsByNameEntry](#immudb.schema.VerifiableSQLEntry.ColIdsByNameEntry)
+    - [VerifiableSQLEntry.ColLenByIdEntry](#immudb.schema.VerifiableSQLEntry.ColLenByIdEntry)
     - [VerifiableSQLEntry.ColNamesByIdEntry](#immudb.schema.VerifiableSQLEntry.ColNamesByIdEntry)
     - [VerifiableSQLEntry.ColTypesByIdEntry](#immudb.schema.VerifiableSQLEntry.ColTypesByIdEntry)
     - [VerifiableSQLGetRequest](#immudb.schema.VerifiableSQLGetRequest)
@@ -236,11 +237,11 @@
 | ----- | ---- | ----- | ----------- |
 | databaseName | [string](#string) |  |  |
 | replica | [bool](#bool) |  |  |
-| srcDatabase | [string](#string) |  |  |
-| srcAddress | [string](#string) |  |  |
-| srcPort | [uint32](#uint32) |  |  |
-| followerUsr | [string](#string) |  |  |
-| followerPwd | [string](#string) |  |  |
+| masterDatabase | [string](#string) |  |  |
+| masterAddress | [string](#string) |  |  |
+| masterPort | [uint32](#uint32) |  |  |
+| followerUsername | [string](#string) |  |  |
+| followerPassword | [string](#string) |  |  |
 | fileSize | [uint32](#uint32) |  |  |
 | maxKeyLen | [uint32](#uint32) |  |  |
 | maxValueLen | [uint32](#uint32) |  |  |
@@ -774,7 +775,7 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | table | [string](#string) |  |  |
-| pkValue | [SQLValue](#immudb.schema.SQLValue) |  |  |
+| pkValues | [SQLValue](#immudb.schema.SQLValue) | repeated |  |
 | atTx | [uint64](#uint64) |  |  |
 | sinceTx | [uint64](#uint64) |  |  |
 
@@ -825,7 +826,7 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | null | [google.protobuf.NullValue](#google.protobuf.NullValue) |  |  |
-| n | [uint64](#uint64) |  |  |
+| n | [int64](#int64) |  |  |
 | s | [string](#string) |  |  |
 | b | [bool](#bool) |  |  |
 | bs | [bytes](#bytes) |  |  |
@@ -1174,12 +1175,13 @@
 | sqlEntry | [SQLEntry](#immudb.schema.SQLEntry) |  |  |
 | verifiableTx | [VerifiableTx](#immudb.schema.VerifiableTx) |  |  |
 | inclusionProof | [InclusionProof](#immudb.schema.InclusionProof) |  |  |
-| DatabaseId | [uint64](#uint64) |  |  |
-| TableId | [uint64](#uint64) |  |  |
-| PKName | [string](#string) |  |  |
+| DatabaseId | [uint32](#uint32) |  |  |
+| TableId | [uint32](#uint32) |  |  |
+| PKIDs | [uint32](#uint32) | repeated |  |
 | ColNamesById | [VerifiableSQLEntry.ColNamesByIdEntry](#immudb.schema.VerifiableSQLEntry.ColNamesByIdEntry) | repeated |  |
 | ColIdsByName | [VerifiableSQLEntry.ColIdsByNameEntry](#immudb.schema.VerifiableSQLEntry.ColIdsByNameEntry) | repeated |  |
 | ColTypesById | [VerifiableSQLEntry.ColTypesByIdEntry](#immudb.schema.VerifiableSQLEntry.ColTypesByIdEntry) | repeated |  |
+| ColLenById | [VerifiableSQLEntry.ColLenByIdEntry](#immudb.schema.VerifiableSQLEntry.ColLenByIdEntry) | repeated |  |
 
 
 
@@ -1195,7 +1197,23 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | key | [string](#string) |  |  |
-| value | [uint64](#uint64) |  |  |
+| value | [uint32](#uint32) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.VerifiableSQLEntry.ColLenByIdEntry"></a>
+
+### VerifiableSQLEntry.ColLenByIdEntry
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [uint32](#uint32) |  |  |
+| value | [int32](#int32) |  |  |
 
 
 
@@ -1210,7 +1228,7 @@
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| key | [uint64](#uint64) |  |  |
+| key | [uint32](#uint32) |  |  |
 | value | [string](#string) |  |  |
 
 
@@ -1226,7 +1244,7 @@
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| key | [uint64](#uint64) |  |  |
+| key | [uint32](#uint32) |  |  |
 | value | [string](#string) |  |  |
 
 

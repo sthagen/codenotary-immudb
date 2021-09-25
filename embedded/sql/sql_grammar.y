@@ -47,21 +47,21 @@ func setResult(l yyLexer, stmts []SQLStmt) {
     sels []Selector
     distinct bool
     ds DataSource
-    tableRef *TableRef
+    tableRef *tableRef
     joins []*JoinSpec
     join *JoinSpec
     joinType JoinType
-    boolExp ValueExp
+    exp ValueExp
     binExp ValueExp
     err error
     ordcols []*OrdCol
-    opt_ord Comparison
+    opt_ord Order
     logicOp LogicOperator
     cmpOp CmpOperator
     pparam int
 }
 
-%token CREATE USE DATABASE SNAPSHOT SINCE UP TO TABLE INDEX ON ALTER ADD COLUMN PRIMARY KEY
+%token CREATE USE DATABASE SNAPSHOT SINCE UP TO TABLE UNIQUE INDEX ON ALTER ADD COLUMN PRIMARY KEY
 %token BEGIN TRANSACTION COMMIT
 %token INSERT UPSERT INTO VALUES
 %token SELECT DISTINCT FROM BEFORE TX JOIN HAVING WHERE GROUP BY LIMIT ORDER ASC DESC AS
@@ -96,11 +96,11 @@ func setResult(l yyLexer, stmts []SQLStmt) {
 %type <stmt> sqlstmt dstmt ddlstmt dmlstmt dqlstmt
 %type <colsSpec> colsSpec
 %type <colSpec> colSpec
-%type <ids> ids
+%type <ids> ids one_or_more_ids opt_ids
 %type <cols> cols
 %type <rows> rows
 %type <row> row
-%type <values> values
+%type <values> values opt_values
 %type <value> val
 %type <sel> selector
 %type <sels> opt_selectors selectors
@@ -111,13 +111,14 @@ func setResult(l yyLexer, stmts []SQLStmt) {
 %type <number> opt_since opt_as_before
 %type <joins> opt_joins joins
 %type <join> join
-%type <boolExp> boolExp opt_where opt_having
+%type <exp> exp opt_where opt_having
 %type <binExp> binExp
 %type <cols> opt_groupby
-%type <number> opt_limit
+%type <number> opt_limit opt_max_len
 %type <id> opt_as
 %type <ordcols> ordcols opt_orderby
 %type <opt_ord> opt_ord
+%type <ids> opt_indexon
 %type <boolean> opt_if_not_exists opt_auto_increment opt_not_null
 
 %start sql
@@ -188,14 +189,19 @@ ddlstmt:
         $$ = &UseSnapshotStmt{sinceTx: $3, asBefore: $4}
     }
 |
-    CREATE TABLE opt_if_not_exists IDENTIFIER '(' colsSpec ',' PRIMARY KEY IDENTIFIER ')'
+    CREATE TABLE opt_if_not_exists IDENTIFIER '(' colsSpec ',' PRIMARY KEY one_or_more_ids ')'
     {
-        $$ = &CreateTableStmt{ifNotExists: $3, table: $4, colsSpec: $6, pk: $10}
+        $$ = &CreateTableStmt{ifNotExists: $3, table: $4, colsSpec: $6, pkColNames: $10}
     }
 |
-    CREATE INDEX ON IDENTIFIER '(' IDENTIFIER ')'
+    CREATE INDEX ON IDENTIFIER '(' ids ')'
     {
-        $$ = &CreateIndexStmt{table: $4, col: $6}
+        $$ = &CreateIndexStmt{table: $4, cols: $6}
+    }
+|
+    CREATE UNIQUE INDEX ON IDENTIFIER '(' ids ')'
+    {
+        $$ = &CreateIndexStmt{unique: true, table: $5, cols: $7}
     }
 |
     ALTER TABLE IDENTIFIER ADD COLUMN colSpec
@@ -223,8 +229,19 @@ opt_if_not_exists:
         $$ = true
     }
 
+one_or_more_ids:
+    IDENTIFIER
+    {
+        $$ = []string{$1}
+    }
+|
+    '(' ids ')'
+    {
+        $$ = $2
+    }
+
 dmlstmt:
-    INSERT INTO tableRef '(' ids ')' VALUES rows
+    INSERT INTO tableRef '(' opt_ids ')' VALUES rows
     {
         $$ = &UpsertIntoStmt{isInsert: true, tableRef: $3, cols: $5, rows: $8}
     }
@@ -232,6 +249,16 @@ dmlstmt:
     UPSERT INTO tableRef '(' ids ')' VALUES rows
     {
         $$ = &UpsertIntoStmt{tableRef: $3, cols: $5, rows: $8}
+    }
+
+opt_ids:
+    {
+        $$ = nil
+    }
+|
+    ids
+    {
+        $$ = $1
     }
 
 rows:
@@ -246,7 +273,7 @@ rows:
     }
 
 row:
-    '(' values ')'
+    '(' opt_values ')'
     {
         $$ = &RowSpec{Values: $2}
     }
@@ -273,13 +300,23 @@ cols:
         $$ = append($1, $3)
     }
 
+opt_values:
+    {
+        $$ = nil
+    }
+|
+    values
+    {
+        $$ = $1
+    }
+
 values:
-    val
+    exp
     {
         $$ = []ValueExp{$1}
     }
 |
-    values ',' val
+    values ',' exp
     {
         $$ = append($1, $3)
     }
@@ -287,7 +324,7 @@ values:
 val: 
     NUMBER
     {
-        $$ = &Number{val: $1}
+        $$ = &Number{val: int64($1)}
     }
 |
     VARCHAR
@@ -337,9 +374,19 @@ colsSpec:
     }
 
 colSpec:
-    IDENTIFIER TYPE opt_auto_increment opt_not_null
+    IDENTIFIER TYPE opt_max_len opt_auto_increment opt_not_null
     {
-        $$ = &ColSpec{colName: $1, colType: $2, autoIncrement: $3, notNull: $4}
+        $$ = &ColSpec{colName: $1, colType: $2, maxLen: int($3), autoIncrement: $4, notNull: $5}
+    }
+
+opt_max_len:
+    {
+        $$ = 0
+    }
+|
+    '[' NUMBER ']'
+    {
+        $$ = $2
     }
 
 opt_auto_increment:
@@ -368,19 +415,20 @@ opt_not_null:
     }
 
 dqlstmt:
-    SELECT opt_distinct opt_selectors FROM ds opt_joins opt_where opt_groupby opt_having opt_orderby opt_limit opt_as
+    SELECT opt_distinct opt_selectors FROM ds opt_indexon opt_joins opt_where opt_groupby opt_having opt_orderby opt_limit opt_as
     {
         $$ = &SelectStmt{
                 distinct: $2,
                 selectors: $3,
                 ds: $5,
-                joins: $6,
-                where: $7,
-                groupBy: $8,
-                having: $9,
-                orderBy: $10,
-                limit: $11,
-                as: $12,
+                indexOn: $6,
+                joins: $7,
+                where: $8,
+                groupBy: $9,
+                having: $10,
+                orderBy: $11,
+                limit: int($12),
+                as: $13,
             }
     }
 
@@ -471,12 +519,12 @@ ds:
 tableRef:
     IDENTIFIER
     {
-        $$ = &TableRef{table: $1}
+        $$ = &tableRef{table: $1}
     }
 |
     IDENTIFIER '.' IDENTIFIER
     {
-        $$ = &TableRef{db: $1, table: $3}
+        $$ = &tableRef{db: $1, table: $3}
     }
 
 opt_as_before:
@@ -511,9 +559,9 @@ joins:
     }
 
 join:
-    JOINTYPE JOIN ds ON boolExp
+    JOINTYPE JOIN ds opt_indexon ON exp
     {
-        $$ = &JoinSpec{joinType: $1, ds: $3, cond: $5}
+        $$ = &JoinSpec{joinType: $1, ds: $3, indexOn: $4, cond: $6}
     }
 
 opt_where:
@@ -521,7 +569,7 @@ opt_where:
         $$ = nil
     }
 |
-    WHERE boolExp
+    WHERE exp
     {
         $$ = $2
     }
@@ -541,7 +589,7 @@ opt_having:
         $$ = nil
     }
 |
-    HAVING boolExp
+    HAVING exp
     {
         $$ = $2
     }
@@ -566,30 +614,40 @@ opt_orderby:
         $$ = $3
     }
 
+opt_indexon:
+    {
+        $$ = nil
+    }
+|
+    USE INDEX ON one_or_more_ids
+    {
+        $$ = $4
+    }
+
 ordcols:
     col opt_ord
     {
-        $$ = []*OrdCol{{sel: $1, cmp: $2}}
+        $$ = []*OrdCol{{sel: $1, order: $2}}
     }
 |
     ordcols ',' col opt_ord
     {
-        $$ = append($1, &OrdCol{sel: $3, cmp: $4})
+        $$ = append($1, &OrdCol{sel: $3, order: $4})
     }
 
 opt_ord:
     {
-        $$ = GreaterOrEqualTo
+        $$ = AscOrder
     }
 |
     ASC
     {
-        $$ = GreaterOrEqualTo
+        $$ = AscOrder
     }
 |
     DESC
     {
-        $$ = LowerOrEqualTo
+        $$ = DescOrder
     }
 
 opt_as:
@@ -602,7 +660,7 @@ opt_as:
         $$ = $2
     }
 
-boolExp:
+exp:
     selector
     {
         $$ = $1
@@ -618,17 +676,17 @@ boolExp:
         $$ = $1
     }
 |
-    NOT boolExp
+    NOT exp
     {
         $$ = &NotBoolExp{exp: $2}
     }
 |
-    '-' boolExp
+    '-' exp
     {
-        $$ = &NumExp{left: &Number{val: uint64(0)}, op: SUBSOP, right: $2}
+        $$ = &NumExp{left: &Number{val: 0}, op: SUBSOP, right: $2}
     }
 |
-    '(' boolExp ')'
+    '(' exp ')'
     {
         $$ = $2
     }
@@ -644,32 +702,32 @@ boolExp:
     }
 
 binExp:
-    boolExp '+' boolExp
+    exp '+' exp
     {
         $$ = &NumExp{left: $1, op: ADDOP, right: $3}
     }
 |
-    boolExp '-' boolExp
+    exp '-' exp
     {
         $$ = &NumExp{left: $1, op: SUBSOP, right: $3}
     }
 |
-    boolExp '/' boolExp
+    exp '/' exp
     {
         $$ = &NumExp{left: $1, op: DIVOP, right: $3}
     }
 |
-    boolExp '*' boolExp
+    exp '*' exp
     {
         $$ = &NumExp{left: $1, op: MULTOP, right: $3}
     }
 |
-    boolExp LOP boolExp
+    exp LOP exp
     {
         $$ = &BinBoolExp{left: $1, op: $2, right: $3}
     }
 |
-    boolExp CMPOP boolExp
+    exp CMPOP exp
     {
         $$ = &CmpBoolExp{left: $1, op: $2, right: $3}
     }

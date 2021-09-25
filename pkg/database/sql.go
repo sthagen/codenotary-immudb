@@ -16,7 +16,9 @@ limitations under the License.
 package database
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/codenotary/immudb/embedded/sql"
@@ -58,13 +60,28 @@ func (d *db) VerifiableSQLGet(req *schema.VerifiableSQLGetRequest) (*schema.Veri
 		return nil, err
 	}
 
-	pkEncVal, err := sql.EncodeRawValue(schema.RawValue(req.SqlGetRequest.PkValue), table.PrimaryKey().Type(), true)
-	if err != nil {
-		return nil, err
+	valbuf := bytes.Buffer{}
+
+	for i, pkCol := range table.PrimaryIndex().Cols() {
+		pkEncVal, err := sql.EncodeAsKey(schema.RawValue(req.SqlGetRequest.PkValues[i]), pkCol.Type(), pkCol.MaxLen())
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = valbuf.Write(pkEncVal)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// build the encoded key for the pk
-	pkKey := sql.MapKey([]byte{SQLPrefix}, sql.RowPrefix, sql.EncodeID(table.Database().ID()), sql.EncodeID(table.ID()), sql.EncodeID(table.PrimaryKey().ID()), pkEncVal)
+	pkKey := sql.MapKey(
+		[]byte{SQLPrefix},
+		sql.PIndexPrefix,
+		sql.EncodeID(table.Database().ID()),
+		sql.EncodeID(table.ID()),
+		sql.EncodeID(sql.PKIndexID),
+		valbuf.Bytes())
 
 	e, err := d.sqlGetAt(pkKey, req.SqlGetRequest.AtTx, d.st, txEntry)
 	if err != nil {
@@ -115,14 +132,22 @@ func (d *db) VerifiableSQLGet(req *schema.VerifiableSQLGetRequest) (*schema.Veri
 		DualProof: schema.DualProofTo(dualProof),
 	}
 
-	colNamesById := make(map[uint64]string, len(table.ColsByID()))
-	colIdsByName := make(map[string]uint64, len(table.ColsByName()))
-	colTypesById := make(map[uint64]string, len(table.ColsByID()))
+	colNamesByID := make(map[uint32]string, len(table.Cols()))
+	colIdsByName := make(map[string]uint32, len(table.ColsByName()))
+	colTypesByID := make(map[uint32]string, len(table.Cols()))
+	colLenByID := make(map[uint32]int32, len(table.Cols()))
 
-	for _, col := range table.ColsByID() {
-		colNamesById[col.ID()] = col.Name()
+	for _, col := range table.Cols() {
+		colNamesByID[col.ID()] = col.Name()
 		colIdsByName[sql.EncodeSelector("", d.options.dbName, table.Name(), col.Name())] = col.ID()
-		colTypesById[col.ID()] = col.Type()
+		colTypesByID[col.ID()] = col.Type()
+		colLenByID[col.ID()] = int32(col.MaxLen())
+	}
+
+	pkIDs := make([]uint32, len(table.PrimaryIndex().Cols()))
+
+	for i, col := range table.PrimaryIndex().Cols() {
+		pkIDs[i] = col.ID()
 	}
 
 	return &schema.VerifiableSQLEntry{
@@ -131,10 +156,11 @@ func (d *db) VerifiableSQLGet(req *schema.VerifiableSQLGetRequest) (*schema.Veri
 		InclusionProof: schema.InclusionProofTo(inclusionProof),
 		DatabaseId:     table.Database().ID(),
 		TableId:        table.ID(),
-		PKName:         table.PrimaryKey().Name(),
-		ColNamesById:   colNamesById,
+		PKIDs:          pkIDs,
+		ColNamesById:   colNamesByID,
 		ColIdsByName:   colIdsByName,
-		ColTypesById:   colTypesById,
+		ColTypesById:   colTypesByID,
+		ColLenById:     colLenByID,
 	}, nil
 }
 
@@ -215,14 +241,11 @@ func (d *db) DescribeTable(tableName string) (*schema.SQLQueryResult, error) {
 		{Name: "NULLABLE", Type: sql.BooleanType},
 		{Name: "INDEX", Type: sql.VarcharType},
 		{Name: "AUTO_INCREMENT", Type: sql.BooleanType},
+		{Name: "UNIQUE", Type: sql.BooleanType},
 	}}
 
-	for _, c := range table.ColsByID() {
+	for _, c := range table.Cols() {
 		index := "NO"
-
-		if table.PrimaryKey().Name() == c.Name() {
-			index = "PRIMARY KEY"
-		}
 
 		indexed, err := table.IsIndexed(c.Name())
 		if err != nil {
@@ -232,13 +255,32 @@ func (d *db) DescribeTable(tableName string) (*schema.SQLQueryResult, error) {
 			index = "YES"
 		}
 
+		if table.PrimaryIndex().IncludesCol(c.ID()) {
+			index = "PRIMARY KEY"
+		}
+
+		var unique bool
+		for _, index := range table.IndexesByColID(c.ID()) {
+			if index.IsUnique() && len(index.Cols()) == 1 {
+				unique = true
+				break
+			}
+		}
+
+		var maxLen string
+
+		if c.MaxLen() > 0 && (c.Type() == sql.VarcharType || c.Type() == sql.BLOBType) {
+			maxLen = fmt.Sprintf("[%d]", c.MaxLen())
+		}
+
 		res.Rows = append(res.Rows, &schema.Row{
 			Values: []*schema.SQLValue{
 				{Value: &schema.SQLValue_S{S: c.Name()}},
-				{Value: &schema.SQLValue_S{S: c.Type()}},
+				{Value: &schema.SQLValue_S{S: c.Type() + maxLen}},
 				{Value: &schema.SQLValue_B{B: c.IsNullable()}},
 				{Value: &schema.SQLValue_S{S: index}},
 				{Value: &schema.SQLValue_B{B: c.IsAutoIncremental()}},
+				{Value: &schema.SQLValue_B{B: unique}},
 			},
 		})
 	}
@@ -481,7 +523,7 @@ func typedValueToRowValue(tv sql.TypedValue) *schema.SQLValue {
 	switch tv.Type() {
 	case sql.IntegerType:
 		{
-			return &schema.SQLValue{Value: &schema.SQLValue_N{N: tv.Value().(uint64)}}
+			return &schema.SQLValue{Value: &schema.SQLValue_N{N: tv.Value().(int64)}}
 		}
 	case sql.VarcharType:
 		{

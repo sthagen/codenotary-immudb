@@ -16,7 +16,9 @@ limitations under the License.
 
 package pgmeta
 
-import "fmt"
+import (
+	"fmt"
+)
 
 const PgTypeMapOid = 0
 const PgTypeMapLength = 1
@@ -69,3 +71,5 @@ var MTypes = map[byte]string{
 	'B': "bind",
 	'H': "flush",
 }
+
+var MaxMsgSize = 32 << 20 // 32MB

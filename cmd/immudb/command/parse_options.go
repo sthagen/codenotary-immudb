@@ -23,8 +23,21 @@ import (
 
 func parseOptions() (options *server.Options, err error) {
 	dir := viper.GetString("dir")
-	port := viper.GetInt("port")
+
 	address := viper.GetString("address")
+	port := viper.GetInt("port")
+
+	replicationEnabled := viper.GetBool("replication-enabled")
+
+	var replicationOptions *server.ReplicationOptions
+
+	if replicationEnabled {
+		replicationOptions = (&server.ReplicationOptions{}).
+			WithMasterAddress(viper.GetString("replication-master-address")).
+			WithMasterPort(viper.GetInt("replication-master-port")).
+			WithFollowerUsername(viper.GetString("replication-follower-username")).
+			WithFollowerPassword(viper.GetString("replication-follower-password"))
+	}
 
 	pidfile := viper.GetString("pidfile")
 	logfile := viper.GetString("logfile")
@@ -76,6 +89,7 @@ func parseOptions() (options *server.Options, err error) {
 		WithDir(dir).
 		WithPort(port).
 		WithAddress(address).
+		WithReplicationOptions(replicationOptions).
 		WithPidfile(pidfile).
 		WithLogfile(logfile).
 		WithTLS(tlsConfig).

@@ -30,8 +30,8 @@ import (
 	"github.com/codenotary/immudb/pkg/auth"
 )
 
-const SystemdbName = "systemdb"
-const DefaultdbName = "defaultdb"
+const SystemDBName = "systemdb"
+const DefaultDBName = "defaultdb"
 const DefaultMaxValueLen = 1 << 25   //32Mb
 const DefaultStoreFileSize = 1 << 29 //512Mb
 
@@ -55,8 +55,8 @@ type Options struct {
 	WebServerPort        int
 	DevMode              bool
 	AdminPassword        string `json:"-"`
-	systemAdminDbName    string
-	defaultDbName        string
+	systemAdminDBName    string
+	defaultDBName        string
 	listener             net.Listener
 	usingCustomListener  bool
 	maintenance          bool
@@ -67,6 +67,7 @@ type Options struct {
 	TokenExpiryTimeMin   int
 	PgsqlServer          bool
 	PgsqlServerPort      int
+	ReplicationOptions   *ReplicationOptions
 }
 
 type RemoteStorageOptions struct {
@@ -76,6 +77,14 @@ type RemoteStorageOptions struct {
 	S3SecretKey   string `json:"-"`
 	S3BucketName  string
 	S3PathPrefix  string
+}
+
+type ReplicationOptions struct {
+	MasterAddress    string
+	MasterPort       int
+	MasterDatabase   string
+	FollowerUsername string
+	FollowerPassword string
 }
 
 // DefaultOptions returns default server options
@@ -90,7 +99,7 @@ func DefaultOptions() *Options {
 		Config:               "configs/immudb.toml",
 		Pidfile:              "",
 		Logfile:              "",
-		TLSConfig:            &tls.Config{},
+		TLSConfig:            nil,
 		auth:                 true,
 		MaxRecvMsgSize:       1024 * 1024 * 32, // 32Mb
 		NoHistograms:         false,
@@ -99,8 +108,8 @@ func DefaultOptions() *Options {
 		WebServer:            true,
 		DevMode:              false,
 		AdminPassword:        auth.SysAdminPassword,
-		systemAdminDbName:    SystemdbName,
-		defaultDbName:        DefaultdbName,
+		systemAdminDBName:    SystemDBName,
+		defaultDBName:        DefaultDBName,
 		usingCustomListener:  false,
 		maintenance:          false,
 		synced:               true,
@@ -121,7 +130,7 @@ func (opts *Options) DefaultStoreOptions() *store.Options {
 	return store.DefaultOptions().
 		WithIndexOptions(indexOptions).
 		WithMaxLinearProofLen(0).
-		WithMaxConcurrency(10).
+		WithMaxConcurrency(30).
 		WithMaxIOConcurrency(1).
 		WithFileSize(DefaultStoreFileSize).
 		WithMaxKeyLen(store.DefaultMaxKeyLen).
@@ -156,9 +165,7 @@ func (o *Options) WithAddress(address string) *Options {
 
 // WithPort sets port
 func (o *Options) WithPort(port int) *Options {
-	if port > 0 {
-		o.Port = port
-	}
+	o.Port = port
 	return o
 }
 
@@ -238,6 +245,13 @@ func (o *Options) String() string {
 	opts = append(opts, "================ Config ================")
 	opts = append(opts, rightPad("Data dir", o.Dir))
 	opts = append(opts, rightPad("Address", fmt.Sprintf("%s:%d", o.Address, o.Port)))
+
+	repOpts := o.ReplicationOptions
+
+	if o.ReplicationOptions != nil {
+		opts = append(opts, rightPad("Replica of", fmt.Sprintf("%s:%d", repOpts.MasterAddress, repOpts.MasterPort)))
+	}
+
 	if o.MetricsServer {
 		opts = append(opts, rightPad("Metrics address", fmt.Sprintf("%s:%d/metrics", o.Address, o.MetricsPort)))
 	}
@@ -253,7 +267,7 @@ func (o *Options) String() string {
 	opts = append(opts, rightPad("Max recv msg size", o.MaxRecvMsgSize))
 	opts = append(opts, rightPad("Auth enabled", o.auth))
 	opts = append(opts, rightPad("Dev mode", o.DevMode))
-	opts = append(opts, rightPad("Default database", o.defaultDbName))
+	opts = append(opts, rightPad("Default database", o.defaultDBName))
 	opts = append(opts, rightPad("Maintenance mode", o.maintenance))
 	opts = append(opts, rightPad("Synced mode", o.synced))
 	if o.RemoteStorageOptions.S3Storage {
@@ -262,10 +276,12 @@ func (o *Options) String() string {
 		opts = append(opts, rightPad("   bucket name", o.RemoteStorageOptions.S3BucketName))
 		opts = append(opts, rightPad("   prefix", o.RemoteStorageOptions.S3PathPrefix))
 	}
-	opts = append(opts, "----------------------------------------")
-	opts = append(opts, "Superadmin default credentials")
-	opts = append(opts, rightPad("   Username", auth.SysAdminUsername))
-	opts = append(opts, rightPad("   Password", auth.SysAdminPassword))
+	if o.AdminPassword == auth.SysAdminPassword {
+		opts = append(opts, "----------------------------------------")
+		opts = append(opts, "Superadmin default credentials")
+		opts = append(opts, rightPad("   Username", auth.SysAdminUsername))
+		opts = append(opts, rightPad("   Password", auth.SysAdminPassword))
+	}
 	opts = append(opts, "========================================")
 	return strings.Join(opts, "\n")
 }
@@ -284,9 +300,7 @@ func (o *Options) WithWebServer(webServer bool) *Options {
 
 // WithWebServerPort ...
 func (o *Options) WithWebServerPort(port int) *Options {
-	if port > 0 {
-		o.WebServerPort = port
-	}
+	o.WebServerPort = port
 	return o
 }
 
@@ -302,14 +316,14 @@ func (o *Options) WithAdminPassword(adminPassword string) *Options {
 	return o
 }
 
-//GetSystemAdminDbName returns the System database name
-func (o *Options) GetSystemAdminDbName() string {
-	return o.systemAdminDbName
+//GetSystemAdminDBName returns the System database name
+func (o *Options) GetSystemAdminDBName() string {
+	return o.systemAdminDBName
 }
 
-//GetDefaultDbName returns the default database name
-func (o *Options) GetDefaultDbName() string {
-	return o.defaultDbName
+//GetDefaultDBName returns the default database name
+func (o *Options) GetDefaultDBName() string {
+	return o.defaultDBName
 }
 
 // WithListener used usually to pass a bufered listener for testing purposes
@@ -376,6 +390,11 @@ func (o *Options) WithRemoteStorageOptions(remoteStorageOptions *RemoteStorageOp
 	return o
 }
 
+func (o *Options) WithReplicationOptions(replicationOptions *ReplicationOptions) *Options {
+	o.ReplicationOptions = replicationOptions
+	return o
+}
+
 // RemoteStorageOptions
 
 func (opts *RemoteStorageOptions) WithS3Storage(S3Storage bool) *RemoteStorageOptions {
@@ -405,5 +424,32 @@ func (opts *RemoteStorageOptions) WithS3BucketName(s3BucketName string) *RemoteS
 
 func (opts *RemoteStorageOptions) WithS3PathPrefix(s3PathPrefix string) *RemoteStorageOptions {
 	opts.S3PathPrefix = s3PathPrefix
+	return opts
+}
+
+// ReplicationOptions
+
+func (opts *ReplicationOptions) WithMasterAddress(masterAddress string) *ReplicationOptions {
+	opts.MasterAddress = masterAddress
+	return opts
+}
+
+func (opts *ReplicationOptions) WithMasterPort(masterPort int) *ReplicationOptions {
+	opts.MasterPort = masterPort
+	return opts
+}
+
+func (opts *ReplicationOptions) WithMasterDatabase(masterDatabase string) *ReplicationOptions {
+	opts.MasterDatabase = masterDatabase
+	return opts
+}
+
+func (opts *ReplicationOptions) WithFollowerUsername(followerUsername string) *ReplicationOptions {
+	opts.FollowerUsername = followerUsername
+	return opts
+}
+
+func (opts *ReplicationOptions) WithFollowerPassword(followerPassword string) *ReplicationOptions {
+	opts.FollowerPassword = followerPassword
 	return opts
 }

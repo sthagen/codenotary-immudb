@@ -23,9 +23,6 @@ var (
 
 func (s *ImmuServer) createRemoteStorageInstance() (remotestorage.Storage, error) {
 	if s.Options.RemoteStorageOptions.S3Storage {
-
-		s.Logger.Warningf("Remote Storage is a work-in-progress feature. Not ready for production use")
-
 		// S3 storage
 		return s3.Open(
 			s.Options.RemoteStorageOptions.S3Endpoint,
@@ -37,7 +34,6 @@ func (s *ImmuServer) createRemoteStorageInstance() (remotestorage.Storage, error
 	}
 
 	return nil, nil
-
 }
 
 func (s *ImmuServer) initializeRemoteStorage(storage remotestorage.Storage) error {
@@ -108,7 +104,7 @@ func (s *ImmuServer) updateRemoteUUID(remoteStorage remotestorage.Storage) error
 	return remoteStorage.Put(ctx, IDENTIFIER_FNAME, filepath.Join(s.Options.Dir, IDENTIFIER_FNAME))
 }
 
-func (s *ImmuServer) storeOptionsForDb(name string, remoteStorage remotestorage.Storage, stOpts *store.Options) *store.Options {
+func (s *ImmuServer) storeOptionsForDB(name string, remoteStorage remotestorage.Storage, stOpts *store.Options) *store.Options {
 	if remoteStorage != nil {
 		stOpts.WithAppFactory(func(rootPath, subPath string, opts *multiapp.Options) (appendable.Appendable, error) {
 			baseDir, err := filepath.Abs(s.Options.Dir)

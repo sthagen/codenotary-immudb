@@ -25,6 +25,7 @@ import (
 
 	"github.com/codenotary/immudb/embedded/remotestorage"
 	pgsqlsrv "github.com/codenotary/immudb/pkg/pgsql/server"
+	"github.com/codenotary/immudb/pkg/replication"
 	"github.com/codenotary/immudb/pkg/stream"
 
 	"github.com/codenotary/immudb/pkg/database"
@@ -49,11 +50,16 @@ const sysDBIndex = int64(math.MaxInt64)
 
 // ImmuServer ...
 type ImmuServer struct {
-	OS          immuos.OS
-	dbList      database.DatabaseList
+	OS immuos.OS
+
+	dbList database.DatabaseList
+
+	replicators      map[string]*replication.TxReplicator
+	replicationMutex sync.Mutex
+
 	Logger      logger.Logger
 	Options     *Options
-	listener    net.Listener
+	Listener    net.Listener
 	GrpcServer  *grpc.Server
 	UUID        xid.ID
 	Pid         PIDFile
@@ -78,6 +84,7 @@ func DefaultServer() *ImmuServer {
 	return &ImmuServer{
 		OS:                   immuos.NewStandardOS(),
 		dbList:               database.NewDatabaseList(),
+		replicators:          make(map[string]*replication.TxReplicator),
 		Logger:               logger.NewSimpleLogger("immudb ", os.Stderr),
 		Options:              DefaultOptions(),
 		quit:                 make(chan struct{}),

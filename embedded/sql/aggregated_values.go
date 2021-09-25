@@ -24,7 +24,7 @@ type AggregatedValue interface {
 }
 
 type CountValue struct {
-	c   uint64
+	c   int64
 	sel string
 }
 
@@ -49,7 +49,7 @@ func (v *CountValue) Compare(val TypedValue) (int, error) {
 		return 0, ErrNotComparableValues
 	}
 
-	nv := val.Value().(uint64)
+	nv := val.Value().(int64)
 
 	if v.c == nv {
 		return 0, nil
@@ -96,8 +96,16 @@ func (v *CountValue) reduceSelectors(row *Row, implicitDB, implicitTable string)
 	return nil
 }
 
+func (v *CountValue) isConstant() bool {
+	return false
+}
+
+func (v *CountValue) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
+}
+
 type SumValue struct {
-	s   uint64
+	s   int64
 	sel string
 }
 
@@ -122,7 +130,7 @@ func (v *SumValue) Compare(val TypedValue) (int, error) {
 		return 0, ErrNotComparableValues
 	}
 
-	nv := val.Value().(uint64)
+	nv := val.Value().(int64)
 
 	if v.s == nv {
 		return 0, nil
@@ -140,7 +148,7 @@ func (v *SumValue) updateWith(val TypedValue) error {
 		return ErrNotComparableValues
 	}
 
-	v.s += val.Value().(uint64)
+	v.s += val.Value().(int64)
 
 	return nil
 }
@@ -172,6 +180,14 @@ func (v *SumValue) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable 
 
 func (v *SumValue) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
 	return v
+}
+
+func (v *SumValue) isConstant() bool {
+	return false
+}
+
+func (v *SumValue) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
 }
 
 type MinValue struct {
@@ -252,6 +268,14 @@ func (v *MinValue) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable 
 }
 
 func (v *MinValue) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return nil
+}
+
+func (v *MinValue) isConstant() bool {
+	return false
+}
+
+func (v *MinValue) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
 	return nil
 }
 
@@ -336,9 +360,17 @@ func (v *MaxValue) reduceSelectors(row *Row, implicitDB, implicitTable string) V
 	return nil
 }
 
+func (v *MaxValue) isConstant() bool {
+	return false
+}
+
+func (v *MaxValue) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
+}
+
 type AVGValue struct {
-	s   uint64
-	c   uint64
+	s   int64
+	c   int64
 	sel string
 }
 
@@ -364,7 +396,7 @@ func (v *AVGValue) Compare(val TypedValue) (int, error) {
 	}
 
 	avg := v.s / v.c
-	nv := val.Value().(uint64)
+	nv := val.Value().(int64)
 
 	if avg == nv {
 		return 0, nil
@@ -382,7 +414,7 @@ func (v *AVGValue) updateWith(val TypedValue) error {
 		return ErrNotComparableValues
 	}
 
-	v.s += val.Value().(uint64)
+	v.s += val.Value().(int64)
 	v.c++
 
 	return nil
@@ -415,5 +447,13 @@ func (v *AVGValue) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable 
 }
 
 func (v *AVGValue) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
+	return nil
+}
+
+func (v *AVGValue) isConstant() bool {
+	return false
+}
+
+func (v *AVGValue) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
 	return nil
 }

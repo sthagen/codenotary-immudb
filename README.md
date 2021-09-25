@@ -10,6 +10,7 @@ custom_edit_url: https://github.com/codenotary/immudb/edit/master/README.md
 
 # immudb [![License](https://img.shields.io/github/license/codenotary/immudb)](LICENSE) <img align="right" src="img/Black%20logo%20-%20no%20background.png" height="47px" />
 
+[![Documentation](https://img.shields.io/website?label=Docs&url=https%3A%2F%2Fdocs.immudb.io%2F)](https://docs.immudb.io/)
 [![Build Status](https://travis-ci.com/codenotary/immudb.svg?branch=master)](https://travis-ci.com/codenotary/immudb)
 [![Go Report Card](https://goreportcard.com/badge/github.com/codenotary/immudb)](https://goreportcard.com/report/github.com/codenotary/immudb)
 [![Coverage](https://coveralls.io/repos/github/codenotary/immudb/badge.svg?branch=master)](https://coveralls.io/github/codenotary/immudb?branch=master)
@@ -17,7 +18,7 @@ custom_edit_url: https://github.com/codenotary/immudb/edit/master/README.md
 [![Mentioned in Awesome Go](https://awesome.re/mentioned-badge.svg)](https://github.com/avelino/awesome-go)
 
 [![Discord](https://img.shields.io/discord/831257098368319569)](https://discord.gg/ThSJxNEHhZ)
-[![Immudb Careers](https://img.shields.io/badge/careers-We%20are%20hiring!-blue?style=flat)](https://immudb.io/careers/)
+[![Immudb Careers](https://img.shields.io/badge/careers-We%20are%20hiring!-blue?style=flat)](https://www.codenotary.com/join)
 [![Tweet about
 immudb!](https://img.shields.io/twitter/url/http/shields.io.svg?style=social&label=Tweet%20about%20immudb)](https://twitter.com/intent/tweet?text=immudb:%20lightweight,%20high-speed%20immutable%20database!&url=https://github.com/codenotary/immudb)
 
@@ -26,6 +27,10 @@ Don't forget to ⭐ this repo if you like immudb!
 ```
 
 [:tada: 5M pulls from docker hub!](https://hub.docker.com/r/codenotary)
+
+---
+
+Detailed documentation can be found at https://docs.immudb.io/
 
 ---
 
@@ -103,7 +108,7 @@ docker run -d --net host -it --rm --name immudb codenotary/immudb:latest
 
 If you are running the Docker image without host networking, make sure to expose ports 3322 and 9497.
 
-### Enabling S3 storage (Feature Work-in-progress. Not ready for production use)
+### Enabling S3 storage
 
 immudb can store its data in the Amazon S3 service (or a compatible alternative).
 The following example shows how to run immudb with the S3 storage enabled:

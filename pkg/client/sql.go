@@ -16,9 +16,11 @@ limitations under the License.
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+
 	"github.com/codenotary/immudb/pkg/client/errors"
 
 	"github.com/codenotary/immudb/embedded/sql"
@@ -78,8 +80,8 @@ func (c *immuClient) DescribeTable(ctx context.Context, tableName string) (*sche
 	return c.ServiceClient.DescribeTable(ctx, &schema.Table{TableName: tableName})
 }
 
-func (c *immuClient) VerifyRow(ctx context.Context, row *schema.Row, table string, pkVal *schema.SQLValue) error {
-	if row == nil || len(table) == 0 || pkVal == nil {
+func (c *immuClient) VerifyRow(ctx context.Context, row *schema.Row, table string, pkVals []*schema.SQLValue) error {
+	if row == nil || len(table) == 0 || len(pkVals) == 0 {
 		return ErrIllegalArguments
 	}
 
@@ -103,11 +105,15 @@ func (c *immuClient) VerifyRow(ctx context.Context, row *schema.Row, table strin
 	}
 
 	vEntry, err := c.ServiceClient.VerifiableSQLGet(ctx, &schema.VerifiableSQLGetRequest{
-		SqlGetRequest: &schema.SQLGetRequest{Table: table, PkValue: pkVal},
+		SqlGetRequest: &schema.SQLGetRequest{Table: table, PkValues: pkVals},
 		ProveSinceTx:  state.TxId,
 	})
 	if err != nil {
 		return err
+	}
+
+	if len(vEntry.PKIDs) < len(pkVals) {
+		return ErrIllegalArguments
 	}
 
 	inclusionProof := schema.InclusionProofFrom(vEntry.InclusionProof)
@@ -122,21 +128,40 @@ func (c *immuClient) VerifyRow(ctx context.Context, row *schema.Row, table strin
 
 	dbID := vEntry.DatabaseId
 	tableID := vEntry.TableId
-	pkID, ok := vEntry.ColIdsByName[sql.EncodeSelector("", c.currentDatabase(), table, vEntry.PKName)]
-	if !ok {
-		return sql.ErrCorruptedData
-	}
-	pkType, ok := vEntry.ColTypesById[pkID]
-	if !ok {
-		return sql.ErrCorruptedData
+
+	valbuf := bytes.Buffer{}
+
+	for i, pkVal := range pkVals {
+		pkID := vEntry.PKIDs[i]
+
+		pkType, ok := vEntry.ColTypesById[pkID]
+		if !ok {
+			return sql.ErrCorruptedData
+		}
+
+		pkLen, ok := vEntry.ColLenById[pkID]
+		if !ok {
+			return sql.ErrCorruptedData
+		}
+
+		pkEncVal, err := sql.EncodeAsKey(schema.RawValue(pkVal), pkType, int(pkLen))
+		if err != nil {
+			return err
+		}
+
+		_, err = valbuf.Write(pkEncVal)
+		if err != nil {
+			return err
+		}
 	}
 
-	pkEncVal, err := sql.EncodeRawValue(schema.RawValue(pkVal), pkType, true)
-	if err != nil {
-		return err
-	}
-
-	pkKey := sql.MapKey([]byte{SQLPrefix}, sql.RowPrefix, sql.EncodeID(dbID), sql.EncodeID(tableID), sql.EncodeID(pkID), pkEncVal)
+	pkKey := sql.MapKey(
+		[]byte{SQLPrefix},
+		sql.PIndexPrefix,
+		sql.EncodeID(dbID),
+		sql.EncodeID(tableID),
+		sql.EncodeID(sql.PKIndexID),
+		valbuf.Bytes())
 
 	decodedRow, err := decodeRow(vEntry.SqlEntry.Value, vEntry.ColTypesById)
 	if err != nil {
@@ -212,7 +237,7 @@ func (c *immuClient) VerifyRow(ctx context.Context, row *schema.Row, table strin
 	return nil
 }
 
-func verifyRowAgainst(row *schema.Row, decodedRow map[uint64]*schema.SQLValue, colIdsByName map[string]uint64) error {
+func verifyRowAgainst(row *schema.Row, decodedRow map[uint32]*schema.SQLValue, colIdsByName map[string]uint32) error {
 	for i, colName := range row.Columns {
 		colID, ok := colIdsByName[colName]
 		if !ok {
@@ -250,7 +275,7 @@ func verifyRowAgainst(row *schema.Row, decodedRow map[uint64]*schema.SQLValue, c
 	return nil
 }
 
-func decodeRow(encodedRow []byte, colTypes map[uint64]sql.SQLValueType) (map[uint64]*schema.SQLValue, error) {
+func decodeRow(encodedRow []byte, colTypes map[uint32]sql.SQLValueType) (map[uint32]*schema.SQLValue, error) {
 	off := 0
 
 	if len(encodedRow) < off+sql.EncLenLen {
@@ -260,14 +285,14 @@ func decodeRow(encodedRow []byte, colTypes map[uint64]sql.SQLValueType) (map[uin
 	colsCount := binary.BigEndian.Uint32(encodedRow[off:])
 	off += sql.EncLenLen
 
-	values := make(map[uint64]*schema.SQLValue, colsCount)
+	values := make(map[uint32]*schema.SQLValue, colsCount)
 
 	for i := 0; i < int(colsCount); i++ {
 		if len(encodedRow) < off+sql.EncIDLen {
 			return nil, sql.ErrCorruptedData
 		}
 
-		colID := binary.BigEndian.Uint64(encodedRow[off:])
+		colID := binary.BigEndian.Uint32(encodedRow[off:])
 		off += sql.EncIDLen
 
 		colType, ok := colTypes[colID]
@@ -291,7 +316,7 @@ func typedValueToRowValue(tv sql.TypedValue) *schema.SQLValue {
 	switch tv.Type() {
 	case sql.IntegerType:
 		{
-			return &schema.SQLValue{Value: &schema.SQLValue_N{N: tv.Value().(uint64)}}
+			return &schema.SQLValue{Value: &schema.SQLValue_N{N: tv.Value().(int64)}}
 		}
 	case sql.VarcharType:
 		{

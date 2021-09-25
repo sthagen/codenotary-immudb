@@ -28,12 +28,16 @@ import (
 )
 
 const (
-	catalogDatabasePrefix = "CATALOG.DATABASE." // (key=CATALOG.DATABASE.{dbID}, value={dbNAME})
-	catalogTablePrefix    = "CATALOG.TABLE."    // (key=CATALOG.TABLE.{dbID}{tableID}{pkID}, value={tableNAME})
-	catalogColumnPrefix   = "CATALOG.COLUMN."   // (key=CATALOG.COLUMN.{dbID}{tableID}{colID}{colTYPE}, value={auto_incremental | nullable}{colNAME})
-	catalogIndexPrefix    = "CATALOG.INDEX."    // (key=CATALOG.INDEX.{dbID}{tableID}{colID}, value={})
-	RowPrefix             = "ROW."              // (key=ROW.{dbID}{tableID}{colID}({valLen}{val})?{pkValLen}{pkVal}, value={})
+	catalogDatabasePrefix = "CTL.DATABASE." // (key=CTL.DATABASE.{dbID}, value={dbNAME})
+	catalogTablePrefix    = "CTL.TABLE."    // (key=CTL.TABLE.{dbID}{tableID}, value={tableNAME})
+	catalogColumnPrefix   = "CTL.COLUMN."   // (key=CTL.COLUMN.{dbID}{tableID}{colID}{colTYPE}, value={(auto_incremental | nullable){maxLen}{colNAME}})
+	catalogIndexPrefix    = "CTL.INDEX."    // (key=CTL.INDEX.{dbID}{tableID}{indexID}, value={unique {colID1}(ASC|DESC)...{colIDN}(ASC|DESC)})
+	PIndexPrefix          = "P."            // (key=P.{dbID}{tableID}{0}({pkVal}{padding}{pkValLen})+, value={count (colID valLen val)+})
+	SIndexPrefix          = "S."            // (key=S.{dbID}{tableID}{indexID}({val}{padding}{valLen})+({pkVal}{padding}{pkValLen})+, value={})
+	UIndexPrefix          = "U."            // (key=U.{dbID}{tableID}{indexID}({val}{padding}{valLen})+, value={({pkVal}{padding}{pkValLen})+})
 )
+
+const PKIndexID = uint32(0)
 
 const (
 	nullableFlag      byte = 1 << iota
@@ -103,12 +107,13 @@ type TxSummary struct {
 	des []*store.KV
 
 	updatedRows     int
-	lastInsertedPKs map[string]uint64
+	lastInsertedPKs map[string]int64
 }
 
-func newTxSummary() *TxSummary {
+func newTxSummary(db *Database) *TxSummary {
 	return &TxSummary{
-		lastInsertedPKs: make(map[string]uint64),
+		db:              db,
+		lastInsertedPKs: make(map[string]int64),
 	}
 }
 
@@ -152,8 +157,7 @@ func (stmt *TxStmt) inferParameters(e *Engine, implicitDB *Database, params map[
 }
 
 func (stmt *TxStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
-	summary = newTxSummary()
-	summary.db = implicitDB
+	summary = newTxSummary(implicitDB)
 
 	for _, stmt := range stmt.stmts {
 		stmtSummary, err := stmt.compileUsing(e, summary.db, params)
@@ -179,16 +183,14 @@ func (stmt *CreateDatabaseStmt) inferParameters(e *Engine, implicitDB *Database,
 }
 
 func (stmt *CreateDatabaseStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
-	summary = newTxSummary()
-
-	id := uint64(len(e.catalog.dbsByID) + 1)
+	id := uint32(len(e.catalog.dbsByID) + 1)
 
 	db, err := e.catalog.newDatabase(id, stmt.DB)
 	if err != nil {
 		return nil, err
 	}
 
-	summary.db = db
+	summary = newTxSummary(db)
 
 	kv := &store.KV{
 		Key:   e.mapKey(catalogDatabasePrefix, EncodeID(db.id)),
@@ -209,16 +211,12 @@ func (stmt *UseDatabaseStmt) inferParameters(e *Engine, implicitDB *Database, pa
 }
 
 func (stmt *UseDatabaseStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
-	summary = newTxSummary()
-
 	db, err := e.catalog.GetDatabaseByName(stmt.DB)
 	if err != nil {
 		return nil, err
 	}
 
-	summary.db = db
-
-	return summary, nil
+	return newTxSummary(db), nil
 }
 
 type UseSnapshotStmt struct {
@@ -238,7 +236,7 @@ type CreateTableStmt struct {
 	table       string
 	ifNotExists bool
 	colsSpec    []*ColSpec
-	pk          string
+	pkColNames  []string
 }
 
 func (stmt *CreateTableStmt) inferParameters(e *Engine, implicitDB *Database, params map[string]SQLValueType) error {
@@ -246,48 +244,61 @@ func (stmt *CreateTableStmt) inferParameters(e *Engine, implicitDB *Database, pa
 }
 
 func (stmt *CreateTableStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
-	summary = newTxSummary()
-	summary.db = implicitDB
-
 	if implicitDB == nil {
 		return nil, ErrNoDatabaseSelected
 	}
+
+	summary = newTxSummary(implicitDB)
 
 	if stmt.ifNotExists && implicitDB.ExistTable(stmt.table) {
 		return summary, nil
 	}
 
-	table, err := implicitDB.newTable(stmt.table, stmt.colsSpec, stmt.pk)
+	table, err := implicitDB.newTable(stmt.table, stmt.colsSpec)
 	if err != nil {
 		return nil, err
 	}
 
-	e.catalog.mutated = true
+	createIndexStmt := &CreateIndexStmt{unique: true, table: table.name, cols: stmt.pkColNames}
+	indexSummary, err := createIndexStmt.compileUsing(e, implicitDB, params)
+	if err != nil {
+		return nil, err
+	}
 
-	for colID, col := range table.ColsByID() {
-		v := make([]byte, 1+len(col.colName))
+	err = summary.add(indexSummary)
+	if err != nil {
+		return nil, err
+	}
 
-		if col.autoIncrement && (col.colName != table.pk.colName || table.pk.colType != IntegerType) {
-			return nil, ErrLimitedAutoIncrement
-		}
+	for _, col := range table.Cols() {
+		//{auto_incremental | nullable}{maxLen}{colNAME})
+		v := make([]byte, 1+4+len(col.colName))
 
 		if col.autoIncrement {
+			if len(table.primaryIndex.cols) > 1 || col.id != table.primaryIndex.cols[0].id {
+				return nil, ErrLimitedAutoIncrement
+			}
+
 			v[0] = v[0] | autoIncrementFlag
 		}
+
 		if col.notNull {
 			v[0] = v[0] | nullableFlag
 		}
-		copy(v[1:], []byte(col.Name()))
+
+		binary.BigEndian.PutUint32(v[1:], uint32(col.MaxLen()))
+
+		copy(v[5:], []byte(col.Name()))
 
 		ce := &store.KV{
-			Key:   e.mapKey(catalogColumnPrefix, EncodeID(implicitDB.id), EncodeID(table.id), EncodeID(colID), []byte(col.colType)),
+			Key:   e.mapKey(catalogColumnPrefix, EncodeID(implicitDB.id), EncodeID(table.id), EncodeID(col.id), []byte(col.colType)),
 			Value: v,
 		}
 		summary.ces = append(summary.ces, ce)
 	}
 
 	te := &store.KV{
-		Key:   e.mapKey(catalogTablePrefix, EncodeID(implicitDB.id), EncodeID(table.id), EncodeID(table.pk.id)),
+		Key:   e.mapKey(catalogTablePrefix, EncodeID(implicitDB.id), EncodeID(table.id)),
 		Value: []byte(table.name),
 	}
 	summary.ces = append(summary.ces, te)
@@ -298,13 +309,15 @@ func (stmt *CreateTableStmt) compileUsing(e *Engine, implicitDB *Database, param
 type ColSpec struct {
 	colName       string
 	colType       SQLValueType
+	maxLen        int
 	autoIncrement bool
 	notNull       bool
 }
 
 type CreateIndexStmt struct {
-	table string
-	col   string
+	unique bool
+	table  string
+	cols   []string
 }
 
 func (stmt *CreateIndexStmt) inferParameters(e *Engine, implicitDB *Database, params map[string]SQLValueType) error {
@@ -312,55 +325,80 @@ func (stmt *CreateIndexStmt) inferParameters(e *Engine, implicitDB *Database, pa
 }
 
 func (stmt *CreateIndexStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
-	summary = newTxSummary()
-	summary.db = implicitDB
+	if len(stmt.cols) < 1 {
+		return nil, ErrIllegalArguments
+	}
+
+	if len(stmt.cols) > MaxNumberOfColumnsInIndex {
+		return nil, ErrMaxNumberOfColumnsInIndexExceeded
+	}
 
 	if implicitDB == nil {
 		return nil, ErrNoDatabaseSelected
 	}
+
+	summary = newTxSummary(implicitDB)
 
 	table, err := implicitDB.GetTableByName(stmt.table)
 	if err != nil {
 		return nil, err
 	}
 
-	if table.pk.colName == stmt.col {
-		return nil, ErrIndexAlreadyExists
-	}
-
-	col, err := table.GetColumnByName(stmt.col)
-	if err != nil {
-		return nil, err
-	}
-
-	_, exists := table.indexes[col.id]
-	if exists {
-		return nil, ErrIndexAlreadyExists
-	}
-
 	// check table is empty
-	lastTxID, _ := e.dataStore.Alh()
-	err = e.dataStore.WaitForIndexingUpto(lastTxID, nil)
+	{
+		lastTxID, _ := e.dataStore.Alh()
+		err = e.dataStore.WaitForIndexingUpto(lastTxID, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		pkPrefix := e.mapKey(PIndexPrefix, EncodeID(table.db.id), EncodeID(table.id), EncodeID(PKIndexID))
+		existKey, err := e.dataStore.ExistKeyWith(pkPrefix, pkPrefix, false)
+		if err != nil {
+			return nil, err
+		}
+		if existKey {
+			return nil, ErrLimitedIndexCreation
+		}
+	}
+
+	colIDs := make([]uint32, len(stmt.cols))
+
+	for i, colName := range stmt.cols {
+		col, err := table.GetColumnByName(colName)
+		if err != nil {
+			return nil, err
+		}
+
+		if variableSized(col.colType) && (col.MaxLen() == 0 || col.MaxLen() > maxKeyLen) {
+			return nil, ErrLimitedKeyType
+		}
+
+		colIDs[i] = col.id
+	}
+
+	index, err := table.newIndex(stmt.unique, colIDs)
 	if err != nil {
 		return nil, err
 	}
 
-	pkPrefix := e.mapKey(RowPrefix, EncodeID(table.db.id), EncodeID(table.id), EncodeID(table.pk.id))
-	existKey, err := e.dataStore.ExistKeyWith(pkPrefix, pkPrefix, false)
-	if err != nil {
-		return nil, err
-	}
-	if existKey {
-		return nil, ErrLimitedIndex
+	// v={unique {colID1}(ASC|DESC)...{colIDN}(ASC|DESC)}
+	// TODO: currently only ASC order is supported
+	colSpecLen := EncIDLen + 1
+
+	encodedValues := make([]byte, 1+len(index.cols)*colSpecLen)
+
+	if index.IsUnique() {
+		encodedValues[0] = 1
 	}
 
-	table.indexes[col.id] = struct{}{}
-
-	e.catalog.mutated = true
+	for i, col := range index.cols {
+		copy(encodedValues[1+i*colSpecLen:], EncodeID(col.id))
+	}
 
 	te := &store.KV{
-		Key:   e.mapKey(catalogIndexPrefix, EncodeID(table.db.id), EncodeID(table.id), EncodeID(col.id)),
-		Value: []byte(table.name),
+		Key:   e.mapKey(catalogIndexPrefix, EncodeID(table.db.id), EncodeID(table.id), EncodeID(index.id)),
+		Value: encodedValues,
 	}
 	summary.ces = append(summary.ces, te)
 
@@ -382,82 +420,13 @@ func (stmt *AddColumnStmt) compileUsing(e *Engine, implicitDB *Database, params 
 
 type UpsertIntoStmt struct {
 	isInsert bool
-	tableRef *TableRef
+	tableRef *tableRef
 	cols     []string
 	rows     []*RowSpec
 }
 
 type RowSpec struct {
 	Values []ValueExp
-}
-
-func (r *RowSpec) bytes(catalog *Catalog, t *Table, cols []string, params map[string]interface{}) ([]byte, error) {
-	valbuf := bytes.Buffer{}
-
-	colCount := 0
-
-	notNullCols := make(map[uint64]struct{}, len(t.colsByID))
-
-	for i, val := range r.Values {
-		col, err := t.GetColumnByName(cols[i])
-		if err != nil {
-			return nil, err
-		}
-
-		sval, err := val.substitute(params)
-		if err != nil {
-			return nil, err
-		}
-
-		rval, err := sval.reduce(catalog, nil, t.db.name, t.name)
-		if err != nil {
-			return nil, err
-		}
-
-		_, isNull := rval.(*NullValue)
-		if isNull {
-			continue
-		}
-
-		b := make([]byte, EncIDLen)
-		binary.BigEndian.PutUint64(b, uint64(col.id))
-
-		_, err = valbuf.Write(b)
-		if err != nil {
-			return nil, err
-		}
-
-		valb, err := EncodeValue(rval, col.colType, !asKey)
-		if err != nil {
-			return nil, err
-		}
-
-		_, err = valbuf.Write(valb)
-		if err != nil {
-			return nil, err
-		}
-
-		notNullCols[col.id] = struct{}{}
-
-		colCount++
-	}
-
-	for _, c := range t.colsByID {
-		if c.IsNullable() {
-			continue
-		}
-
-		_, notNull := notNullCols[c.id]
-		if !notNull {
-			return nil, ErrNotNullableColumnCannotBeNull
-		}
-	}
-
-	b := make([]byte, EncLenLen+len(valbuf.Bytes()))
-	binary.BigEndian.PutUint32(b, uint32(colCount))
-	copy(b[EncLenLen:], valbuf.Bytes())
-
-	return b, nil
 }
 
 func (stmt *UpsertIntoStmt) inferParameters(e *Engine, implicitDB *Database, params map[string]SQLValueType) error {
@@ -487,9 +456,8 @@ func (stmt *UpsertIntoStmt) inferParameters(e *Engine, implicitDB *Database, par
 	return nil
 }
 
-func (stmt *UpsertIntoStmt) validate(table *Table) (map[uint64]int, error) {
-	pkIncluded := false
-	selByColID := make(map[uint64]int, len(stmt.cols))
+func (stmt *UpsertIntoStmt) validate(table *Table) (map[uint32]int, error) {
+	selPosByColID := make(map[uint32]int, len(stmt.cols))
 
 	for i, c := range stmt.cols {
 		col, err := table.GetColumnByName(c)
@@ -497,43 +465,34 @@ func (stmt *UpsertIntoStmt) validate(table *Table) (map[uint64]int, error) {
 			return nil, err
 		}
 
-		if table.pk.colName == c {
-			pkIncluded = true
-		}
-
-		_, duplicated := selByColID[col.id]
+		_, duplicated := selPosByColID[col.id]
 		if duplicated {
 			return nil, ErrDuplicatedColumn
 		}
 
-		selByColID[col.id] = i
+		selPosByColID[col.id] = i
 	}
 
-	if !pkIncluded && (!stmt.isInsert || !table.pk.autoIncrement) {
-		return nil, ErrPKCanNotBeNull
-	}
-
-	if pkIncluded && stmt.isInsert && table.pk.autoIncrement {
-		return nil, ErrNoValueForAutoIncrementalColumn
-	}
-
-	return selByColID, nil
+	return selPosByColID, nil
 }
 
 func (stmt *UpsertIntoStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
-	summary = newTxSummary()
-	summary.db = implicitDB
-
 	if implicitDB == nil {
 		return nil, ErrNoDatabaseSelected
 	}
+
+	summary = newTxSummary(implicitDB)
 
 	table, err := stmt.tableRef.referencedTable(e, implicitDB)
 	if err != nil {
 		return nil, err
 	}
 
-	cs, err := stmt.validate(table)
+	if !stmt.isInsert && len(table.indexes) > 1 {
+		return nil, ErrLimitedUpsert
+	}
+
+	selPosByColID, err := stmt.validate(table)
 	if err != nil {
 		return nil, err
 	}
@@ -543,76 +502,19 @@ func (stmt *UpsertIntoStmt) compileUsing(e *Engine, implicitDB *Database, params
 			return nil, ErrInvalidNumberOfValues
 		}
 
-		cols := stmt.cols
+		valuesByColID := make(map[uint32]TypedValue)
 
-		var pkVal ValueExp
+		for colID, col := range table.colsByID {
+			colPos, specified := selPosByColID[colID]
+			if !specified {
+				if col.notNull {
+					return nil, ErrNotNullableColumnCannotBeNull
+				}
+				continue
+			}
 
-		// inject auto-incremental pk value
-		if stmt.isInsert && table.pk.autoIncrement {
-			table.maxPK++
-			e.catalog.mutated = true // TODO: implement transactional in-memory catalog
-
-			pkVal = &Number{val: table.maxPK}
-			cols = append(cols, table.pk.colName)
-			row.Values = append(row.Values, pkVal)
-
-			summary.lastInsertedPKs[table.name] = table.maxPK
-		} else {
-			pkVal = row.Values[cs[table.pk.id]]
-		}
-
-		val, err := pkVal.substitute(params)
-		if err != nil {
-			return nil, err
-		}
-
-		rval, err := val.reduce(e.catalog, nil, implicitDB.name, table.name)
-		if err != nil {
-			return nil, err
-		}
-
-		_, isNull := rval.(*NullValue)
-		if isNull {
-			return nil, ErrPKCanNotBeNull
-		}
-
-		pkEncVal, err := EncodeValue(rval, table.pk.colType, asKey)
-		if err != nil {
-			return nil, err
-		}
-
-		bs, err := row.bytes(e.catalog, table, cols, params)
-		if err != nil {
-			return nil, err
-		}
-
-		// create entry for the column which is the pk
-		mkey := e.mapKey(RowPrefix, EncodeID(table.db.id), EncodeID(table.id), EncodeID(table.pk.id), pkEncVal)
-
-		constraint := store.NoConstraint
-
-		if stmt.isInsert && !table.pk.autoIncrement {
-			constraint = store.MustNotExist
-		}
-
-		if !stmt.isInsert && table.pk.autoIncrement {
-			constraint = store.MustExist
-		}
-
-		pke := &store.KV{
-			Key:        mkey,
-			Value:      bs,
-			Constraint: constraint,
-		}
-		summary.des = append(summary.des, pke)
-
-		summary.updatedRows++
-
-		// create entries for each indexed column, with value as value for pk column
-		for colID := range table.indexes {
-			colPos, defined := cs[colID]
-			if !defined {
-				return nil, ErrIndexedColumnCanNotBeNull
+			if stmt.isInsert && col.autoIncrement {
+				return nil, ErrNoValueForAutoIncrementalColumn
 			}
 
 			cVal := row.Values[colPos]
@@ -629,25 +531,165 @@ func (stmt *UpsertIntoStmt) compileUsing(e *Engine, implicitDB *Database, params
 
 			_, isNull := rval.(*NullValue)
 			if isNull {
-				return nil, ErrIndexedColumnCanNotBeNull
+				if col.notNull {
+					return nil, ErrNotNullableColumnCannotBeNull
+				}
+
+				continue
 			}
 
-			col, err := table.GetColumnByID(colID)
+			valuesByColID[colID] = rval
+		}
+
+		// inject auto-incremental pk value
+		if stmt.isInsert && table.autoIncrementPK {
+			table.maxPK++
+			e.catalog.mutated = true // TODO: implement transactional in-memory catalog
+
+			pkCol := table.primaryIndex.cols[0]
+
+			valuesByColID[pkCol.id] = &Number{val: table.maxPK}
+
+			summary.lastInsertedPKs[table.name] = table.maxPK
+		}
+
+		valbuf := bytes.Buffer{}
+
+		for _, col := range table.primaryIndex.cols {
+			rval, notNull := valuesByColID[col.id]
+			if !notNull {
+				return nil, ErrPKCanNotBeNull
+			}
+
+			encVal, err := EncodeAsKey(rval.Value(), col.colType, col.MaxLen())
 			if err != nil {
 				return nil, err
 			}
 
-			encVal, err := EncodeValue(rval, col.colType, asKey)
+			if len(encVal) > maxKeyLen {
+				return nil, ErrMaxKeyLengthExceeded
+			}
+
+			_, err = valbuf.Write(encVal)
 			if err != nil {
 				return nil, err
+			}
+		}
+
+		pkEncVals := valbuf.Bytes()
+
+		valbuf = bytes.Buffer{}
+
+		b := make([]byte, EncLenLen)
+		binary.BigEndian.PutUint32(b, uint32(len(valuesByColID)))
+
+		_, err = valbuf.Write(b)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, col := range table.cols {
+			rval, notNull := valuesByColID[col.id]
+			if !notNull {
+				continue
+			}
+
+			b := make([]byte, EncIDLen)
+			binary.BigEndian.PutUint32(b, uint32(col.id))
+
+			_, err = valbuf.Write(b)
+			if err != nil {
+				return nil, err
+			}
+
+			encVal, err := EncodeValue(rval.Value(), col.colType, col.MaxLen())
+			if err != nil {
+				return nil, err
+			}
+
+			_, err = valbuf.Write(encVal)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		// create primary index entry
+		mkey := e.mapKey(PIndexPrefix, EncodeID(table.db.id), EncodeID(table.id), EncodeID(table.primaryIndex.id), pkEncVals)
+
+		constraint := store.NoConstraint
+
+		if stmt.isInsert && !table.autoIncrementPK {
+			constraint = store.MustNotExist
+		}
+
+		if !stmt.isInsert && table.autoIncrementPK {
+			constraint = store.MustExist
+		}
+
+		pke := &store.KV{
+			Key:        mkey,
+			Value:      valbuf.Bytes(),
+			Constraint: constraint,
+		}
+		summary.des = append(summary.des, pke)
+
+		// create entries for secondary indexes
+		for _, index := range table.indexes {
+			if index.IsPrimary() {
+				continue
+			}
+
+			var prefix string
+			var encodedValues [][]byte
+			var val []byte
+
+			if index.IsUnique() {
+				prefix = UIndexPrefix
+				encodedValues = make([][]byte, 3+len(index.cols))
+				val = pkEncVals
+			} else {
+				prefix = SIndexPrefix
+				encodedValues = make([][]byte, 4+len(index.cols))
+				encodedValues[len(encodedValues)-1] = pkEncVals
+			}
+
+			encodedValues[0] = EncodeID(table.db.id)
+			encodedValues[1] = EncodeID(table.id)
+			encodedValues[2] = EncodeID(index.id)
+
+			for i, col := range index.cols {
+				rval, notNull := valuesByColID[col.id]
+				if !notNull {
+					return nil, ErrIndexedColumnCanNotBeNull
+				}
+
+				encVal, err := EncodeAsKey(rval.Value(), col.colType, col.MaxLen())
+				if err != nil {
+					return nil, err
+				}
+
+				if len(encVal) > maxKeyLen {
+					return nil, ErrMaxKeyLengthExceeded
+				}
+
+				encodedValues[i+3] = encVal
+			}
+
+			constraint = store.NoConstraint
+			if stmt.isInsert && index.IsUnique() {
+				constraint = store.MustNotExist
 			}
 
 			ie := &store.KV{
-				Key:   e.mapKey(RowPrefix, EncodeID(table.db.id), EncodeID(table.id), EncodeID(colID), encVal, pkEncVal),
-				Value: nil,
+				Key:        e.mapKey(prefix, encodedValues...),
+				Value:      val,
+				Constraint: constraint,
 			}
+
 			summary.des = append(summary.des, ie)
 		}
+
+		summary.updatedRows++
 	}
 
 	return summary, nil
@@ -659,6 +701,110 @@ type ValueExp interface {
 	substitute(params map[string]interface{}) (ValueExp, error)
 	reduce(catalog *Catalog, row *Row, implicitDB, implicitTable string) (TypedValue, error)
 	reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp
+	isConstant() bool
+	selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error
+}
+
+type typedValueRange struct {
+	lRange *typedValueSemiRange
+	hRange *typedValueSemiRange
+}
+
+type typedValueSemiRange struct {
+	val       TypedValue
+	inclusive bool
+}
+
+func (r *typedValueRange) unitary() bool {
+	// TODO: this simplified implementation doesn't cover all unitary cases e.g. 3<=v<4
+	if r.lRange == nil || r.hRange == nil {
+		return false
+	}
+
+	res, _ := r.lRange.val.Compare(r.hRange.val)
+	return res == 0 && r.lRange.inclusive && r.hRange.inclusive
+}
+
+func (r *typedValueRange) refineWith(refiningRange *typedValueRange) error {
+	if r.lRange == nil {
+		r.lRange = refiningRange.lRange
+	} else if r.lRange != nil && refiningRange.lRange != nil {
+		maxRange, err := maxSemiRange(r.lRange, refiningRange.lRange)
+		if err != nil {
+			return err
+		}
+		r.lRange = maxRange
+	}
+
+	if r.hRange == nil {
+		r.hRange = refiningRange.hRange
+	} else if r.hRange != nil && refiningRange.hRange != nil {
+		minRange, err := minSemiRange(r.hRange, refiningRange.hRange)
+		if err != nil {
+			return err
+		}
+		r.hRange = minRange
+	}
+
+	return nil
+}
+
+func (r *typedValueRange) extendWith(extendingRange *typedValueRange) error {
+	if r.lRange == nil || extendingRange.lRange == nil {
+		r.lRange = nil
+	} else {
+		minRange, err := minSemiRange(r.lRange, extendingRange.lRange)
+		if err != nil {
+			return err
+		}
+		r.lRange = minRange
+	}
+
+	if r.hRange == nil || extendingRange.hRange == nil {
+		r.hRange = nil
+	} else {
+		maxRange, err := maxSemiRange(r.hRange, extendingRange.hRange)
+		if err != nil {
+			return err
+		}
+		r.hRange = maxRange
+	}
+
+	return nil
+}
+
+func maxSemiRange(or1, or2 *typedValueSemiRange) (*typedValueSemiRange, error) {
+	r, err := or1.val.Compare(or2.val)
+	if err != nil {
+		return nil, err
+	}
+
+	maxVal := or1.val
+	if r < 0 {
+		maxVal = or2.val
+	}
+
+	return &typedValueSemiRange{
+		val:       maxVal,
+		inclusive: or1.inclusive && or2.inclusive,
+	}, nil
+}
+
+func minSemiRange(or1, or2 *typedValueSemiRange) (*typedValueSemiRange, error) {
+	r, err := or1.val.Compare(or2.val)
+	if err != nil {
+		return nil, err
+	}
+
+	minVal := or1.val
+	if r > 0 {
+		minVal = or2.val
+	}
+
+	return &typedValueSemiRange{
+		val:       minVal,
+		inclusive: or1.inclusive || or2.inclusive,
+	}, nil
 }
 
 type TypedValue interface {
@@ -722,8 +868,16 @@ func (v *NullValue) reduceSelectors(row *Row, implicitDB, implicitTable string) 
 	return v
 }
 
+func (v *NullValue) isConstant() bool {
+	return true
+}
+
+func (v *NullValue) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
+}
+
 type Number struct {
-	val uint64
+	val int64
 }
 
 func (v *Number) Type() SQLValueType {
@@ -754,6 +908,14 @@ func (v *Number) reduceSelectors(row *Row, implicitDB, implicitTable string) Val
 	return v
 }
 
+func (v *Number) isConstant() bool {
+	return true
+}
+
+func (v *Number) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
+}
+
 func (v *Number) Value() interface{} {
 	return v.val
 }
@@ -768,7 +930,7 @@ func (v *Number) Compare(val TypedValue) (int, error) {
 		return 0, ErrNotComparableValues
 	}
 
-	rval := val.Value().(uint64)
+	rval := val.Value().(int64)
 
 	if v.val == rval {
 		return 0, nil
@@ -811,6 +973,14 @@ func (v *Varchar) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable s
 
 func (v *Varchar) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
 	return v
+}
+
+func (v *Varchar) isConstant() bool {
+	return true
+}
+
+func (v *Varchar) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
 }
 
 func (v *Varchar) Value() interface{} {
@@ -862,6 +1032,14 @@ func (v *Bool) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable stri
 
 func (v *Bool) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
 	return v
+}
+
+func (v *Bool) isConstant() bool {
+	return true
+}
+
+func (v *Bool) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
 }
 
 func (v *Bool) Value() interface{} {
@@ -923,6 +1101,14 @@ func (v *Blob) reduceSelectors(row *Row, implicitDB, implicitTable string) Value
 	return v
 }
 
+func (v *Blob) isConstant() bool {
+	return true
+}
+
+func (v *Blob) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
+}
+
 func (v *Blob) Value() interface{} {
 	return v.val
 }
@@ -972,7 +1158,7 @@ func (v *SysFn) substitute(params map[string]interface{}) (ValueExp, error) {
 
 func (v *SysFn) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable string) (TypedValue, error) {
 	if strings.ToUpper(v.fn) == "NOW" {
-		return &Number{val: uint64(time.Now().UnixNano())}, nil
+		return &Number{val: time.Now().UnixNano()}, nil
 	}
 
 	return nil, errors.New("not yet supported")
@@ -980,6 +1166,14 @@ func (v *SysFn) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable str
 
 func (v *SysFn) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
 	return v
+}
+
+func (v *SysFn) isConstant() bool {
+	return false
+}
+
+func (v *SysFn) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
 }
 
 type Param struct {
@@ -1029,9 +1223,17 @@ func (p *Param) substitute(params map[string]interface{}) (ValueExp, error) {
 		}
 	case int:
 		{
-			return &Number{val: uint64(v)}, nil
+			return &Number{val: int64(v)}, nil
+		}
+	case uint:
+		{
+			return &Number{val: int64(v)}, nil
 		}
 	case uint64:
+		{
+			return &Number{val: int64(v)}, nil
+		}
+	case int64:
 		{
 			return &Number{val: v}, nil
 		}
@@ -1052,6 +1254,14 @@ func (p *Param) reduceSelectors(row *Row, implicitDB, implicitTable string) Valu
 	return p
 }
 
+func (p *Param) isConstant() bool {
+	return true
+}
+
+func (v *Param) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
+}
+
 type Comparison int
 
 const (
@@ -1064,7 +1274,7 @@ const (
 
 type DataSource interface {
 	inferParameters(e *Engine, implicitDB *Database, params map[string]SQLValueType) error
-	Resolve(e *Engine, implicitDB *Database, snap *store.Snapshot, params map[string]interface{}, ordCol *OrdCol) (RowReader, error)
+	Resolve(e *Engine, snap *store.Snapshot, implicitDB *Database, params map[string]interface{}, ScanSpecs *ScanSpecs) (RowReader, error)
 	Alias() string
 }
 
@@ -1072,16 +1282,23 @@ type SelectStmt struct {
 	distinct  bool
 	selectors []Selector
 	ds        DataSource
+	indexOn   []string
 	joins     []*JoinSpec
 	where     ValueExp
 	groupBy   []*ColSelector
 	having    ValueExp
-	limit     uint64
+	limit     int
 	orderBy   []*OrdCol
 	as        string
 }
 
-func (stmt *SelectStmt) Limit() uint64 {
+type ScanSpecs struct {
+	index         *Index
+	rangesByColID map[uint32]*typedValueRange
+	cmp           Comparison
+}
+
+func (stmt *SelectStmt) Limit() int {
 	return stmt.limit
 }
 
@@ -1097,7 +1314,7 @@ func (stmt *SelectStmt) inferParameters(e *Engine, implicitDB *Database, params 
 	}
 
 	// TODO (jeroiraz) may be optimized so to resolve the query statement just once
-	rowReader, err := stmt.Resolve(e, implicitDB, snapshot, nil, nil)
+	rowReader, err := stmt.Resolve(e, snapshot, implicitDB, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -1107,15 +1324,8 @@ func (stmt *SelectStmt) inferParameters(e *Engine, implicitDB *Database, params 
 }
 
 func (stmt *SelectStmt) compileUsing(e *Engine, implicitDB *Database, params map[string]interface{}) (summary *TxSummary, err error) {
-	summary = newTxSummary()
-	summary.db = implicitDB
-
 	if implicitDB == nil {
 		return nil, ErrNoDatabaseSelected
-	}
-
-	if stmt.distinct {
-		return nil, ErrNoSupported
 	}
 
 	if stmt.groupBy == nil && stmt.having != nil {
@@ -1131,7 +1341,7 @@ func (stmt *SelectStmt) compileUsing(e *Engine, implicitDB *Database, params map
 	}
 
 	if len(stmt.orderBy) > 0 {
-		tableRef, ok := stmt.ds.(*TableRef)
+		tableRef, ok := stmt.ds.(*tableRef)
 		if !ok {
 			return nil, ErrLimitedOrderBy
 		}
@@ -1146,31 +1356,22 @@ func (stmt *SelectStmt) compileUsing(e *Engine, implicitDB *Database, params map
 			return nil, err
 		}
 
-		if table.pk.id == col.id {
-			return nil, nil
-		}
-
-		_, indexed := table.indexes[col.id]
+		_, indexed := table.indexesByColID[col.id]
 		if !indexed {
 			return nil, ErrLimitedOrderBy
 		}
 	}
 
-	return summary, nil
+	return newTxSummary(implicitDB), nil
 }
 
-func (stmt *SelectStmt) Resolve(e *Engine, implicitDB *Database, snap *store.Snapshot, params map[string]interface{}, ordCol *OrdCol) (RowReader, error) {
-	var orderByCol *OrdCol
-
-	if ordCol == nil && len(stmt.orderBy) > 0 {
-		orderByCol = stmt.orderBy[0]
+func (stmt *SelectStmt) Resolve(e *Engine, snap *store.Snapshot, implicitDB *Database, params map[string]interface{}, _ *ScanSpecs) (rowReader RowReader, err error) {
+	scanSpecs, err := stmt.genScanSpecs(e, snap, implicitDB, params)
+	if err != nil {
+		return nil, err
 	}
 
-	if ordCol != nil {
-		orderByCol = ordCol
-	}
-
-	rowReader, err := stmt.ds.Resolve(e, implicitDB, snap, params, orderByCol)
+	rowReader, err = stmt.ds.Resolve(e, snap, implicitDB, params, scanSpecs)
 	if err != nil {
 		return nil, err
 	}
@@ -1216,7 +1417,23 @@ func (stmt *SelectStmt) Resolve(e *Engine, implicitDB *Database, snap *store.Sna
 		}
 	}
 
-	return e.newProjectedRowReader(rowReader, stmt.as, stmt.selectors, stmt.limit)
+	rowReader, err = e.newProjectedRowReader(rowReader, stmt.as, stmt.selectors)
+	if err != nil {
+		return nil, err
+	}
+
+	if stmt.distinct {
+		rowReader, err = e.newDistinctRowReader(rowReader)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if stmt.limit > 0 {
+		return e.newLimitRowReader(rowReader, stmt.limit)
+	}
+
+	return rowReader, nil
 }
 
 func (stmt *SelectStmt) Alias() string {
@@ -1227,14 +1444,99 @@ func (stmt *SelectStmt) Alias() string {
 	return stmt.as
 }
 
-type TableRef struct {
+func (stmt *SelectStmt) genScanSpecs(e *Engine, snap *store.Snapshot, implicitDB *Database, params map[string]interface{}) (*ScanSpecs, error) {
+	tableRef, isTableRef := stmt.ds.(*tableRef)
+	if !isTableRef {
+		return nil, nil
+	}
+
+	table, err := tableRef.referencedTable(e, implicitDB)
+	if err != nil {
+		return nil, err
+	}
+
+	rangesByColID := make(map[uint32]*typedValueRange)
+	if stmt.where != nil {
+		err = stmt.where.selectorRanges(table, tableRef.Alias(), params, rangesByColID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var preferredIndex *Index
+
+	if len(stmt.indexOn) > 0 {
+		cols := make([]*Column, len(stmt.indexOn))
+
+		for i, colName := range stmt.indexOn {
+			col, err := table.GetColumnByName(colName)
+			if err != nil {
+				return nil, err
+			}
+
+			cols[i] = col
+		}
+
+		index, ok := table.indexes[indexKeyFrom(cols)]
+		if !ok {
+			return nil, ErrNoAvailableIndex
+		}
+
+		preferredIndex = index
+	}
+
+	var sortingIndex *Index
+	cmp := GreaterOrEqualTo
+
+	if stmt.orderBy == nil {
+		if preferredIndex == nil {
+			sortingIndex = table.primaryIndex
+		} else {
+			sortingIndex = preferredIndex
+		}
+	}
+
+	if len(stmt.orderBy) > 0 {
+		col, err := table.GetColumnByName(stmt.orderBy[0].sel.col)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, idx := range table.indexesByColID[col.id] {
+			if idx.sortableUsing(col.id, rangesByColID) {
+				if preferredIndex == nil || idx.id == preferredIndex.id {
+					sortingIndex = idx
+					break
+				}
+			}
+		}
+
+		if stmt.orderBy[0].order == AscOrder {
+			cmp = GreaterOrEqualTo
+		} else {
+			cmp = LowerOrEqualTo
+		}
+	}
+
+	if sortingIndex == nil {
+		return nil, ErrNoAvailableIndex
+	}
+
+	return &ScanSpecs{
+		index:         sortingIndex,
+		rangesByColID: rangesByColID,
+		cmp:           cmp,
+	}, nil
+}
+
+type tableRef struct {
 	db       string
 	table    string
 	asBefore uint64
 	as       string
 }
 
-func (stmt *TableRef) referencedTable(e *Engine, implicitDB *Database) (*Table, error) {
+func (stmt *tableRef) referencedTable(e *Engine, implicitDB *Database) (*Table, error) {
 	var db *Database
 
 	if stmt.db != "" {
@@ -1262,12 +1564,12 @@ func (stmt *TableRef) referencedTable(e *Engine, implicitDB *Database) (*Table, 
 	return table, nil
 }
 
-func (stmt *TableRef) inferParameters(e *Engine, implicitDB *Database, params map[string]SQLValueType) error {
+func (stmt *tableRef) inferParameters(e *Engine, implicitDB *Database, params map[string]SQLValueType) error {
 	return nil
 }
 
-func (stmt *TableRef) Resolve(e *Engine, implicitDB *Database, snap *store.Snapshot, params map[string]interface{}, ordCol *OrdCol) (RowReader, error) {
-	if e == nil || snap == nil || (ordCol != nil && ordCol.sel == nil) {
+func (stmt *tableRef) Resolve(e *Engine, snap *store.Snapshot, implicitDB *Database, params map[string]interface{}, scanSpecs *ScanSpecs) (RowReader, error) {
+	if e == nil || snap == nil {
 		return nil, ErrIllegalArguments
 	}
 
@@ -1276,56 +1578,15 @@ func (stmt *TableRef) Resolve(e *Engine, implicitDB *Database, snap *store.Snaps
 		return nil, err
 	}
 
-	colName := table.pk.colName
-	cmp := GreaterOrEqualTo
-	var initKeyVal []byte
-
-	if ordCol != nil {
-		if ordCol.sel.db != "" && ordCol.sel.db != table.db.name {
-			return nil, ErrInvalidColumn
-		}
-
-		if ordCol.sel.table != "" && ordCol.sel.table != table.name {
-			return nil, ErrInvalidColumn
-		}
-
-		col, err := table.GetColumnByName(ordCol.sel.col)
-		if err != nil {
-			return nil, err
-		}
-
-		// if it's not PK then it must be an indexed column
-		if table.pk.colName != ordCol.sel.col {
-			_, indexed := table.indexes[col.id]
-			if !indexed {
-				return nil, ErrColumnNotIndexed
-			}
-		}
-
-		colName = col.colName
-		cmp = ordCol.cmp
-
-		if ordCol.useInitKeyVal {
-			if len(ordCol.initKeyVal) > EncLenLen+len(maxKeyVal(col.colType)) {
-				return nil, ErrMaxKeyLengthExceeded
-			}
-			initKeyVal = ordCol.initKeyVal
-		}
-
-		if !ordCol.useInitKeyVal && (cmp == LowerThan || cmp == LowerOrEqualTo) {
-			initKeyVal = maxKeyVal(col.colType)
-		}
-	}
-
 	asBefore := stmt.asBefore
 	if asBefore == 0 {
 		asBefore = e.snapAsBeforeTx
 	}
 
-	return e.newRawRowReader(implicitDB, snap, table, asBefore, stmt.as, colName, cmp, initKeyVal)
+	return e.newRawRowReader(snap, table, asBefore, stmt.as, scanSpecs)
 }
 
-func (stmt *TableRef) Alias() string {
+func (stmt *tableRef) Alias() string {
 	if stmt.as == "" {
 		return stmt.table
 	}
@@ -1336,13 +1597,19 @@ type JoinSpec struct {
 	joinType JoinType
 	ds       DataSource
 	cond     ValueExp
+	indexOn  []string
 }
 
+type Order int
+
+const (
+	AscOrder Order = iota
+	DescOrder
+)
+
 type OrdCol struct {
-	sel           *ColSelector
-	cmp           Comparison
-	initKeyVal    []byte
-	useInitKeyVal bool
+	sel   *ColSelector
+	order Order
 }
 
 type Selector interface {
@@ -1418,6 +1685,10 @@ func (sel *ColSelector) substitute(params map[string]interface{}) (ValueExp, err
 }
 
 func (sel *ColSelector) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable string) (TypedValue, error) {
+	if row == nil {
+		return nil, ErrInvalidValue
+	}
+
 	aggFn, db, table, col := sel.resolve(implicitDB, implicitTable)
 
 	v, ok := row.Values[EncodeSelector(aggFn, db, table, col)]
@@ -1437,6 +1708,14 @@ func (sel *ColSelector) reduceSelectors(row *Row, implicitDB, implicitTable stri
 	}
 
 	return v
+}
+
+func (sel *ColSelector) isConstant() bool {
+	return false
+}
+
+func (sel *ColSelector) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
 }
 
 type AggColSelector struct {
@@ -1525,6 +1804,14 @@ func (sel *AggColSelector) reduceSelectors(row *Row, implicitDB, implicitTable s
 	return sel
 }
 
+func (sel *AggColSelector) isConstant() bool {
+	return false
+}
+
+func (sel *AggColSelector) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
+}
+
 type NumExp struct {
 	op          NumOperator
 	left, right ValueExp
@@ -1590,14 +1877,14 @@ func (bexp *NumExp) reduce(catalog *Catalog, row *Row, implicitDB, implicitTable
 		return nil, err
 	}
 
-	nl, isNumber := vl.Value().(uint64)
+	nl, isNumber := vl.Value().(int64)
 	if !isNumber {
-		return nil, ErrInvalidCondition
+		return nil, ErrInvalidValue
 	}
 
-	nr, isNumber := vr.Value().(uint64)
+	nr, isNumber := vr.Value().(int64)
 	if !isNumber {
-		return nil, ErrInvalidCondition
+		return nil, ErrInvalidValue
 	}
 
 	switch bexp.op {
@@ -1632,6 +1919,14 @@ func (bexp *NumExp) reduceSelectors(row *Row, implicitDB, implicitTable string) 
 		left:  bexp.left.reduceSelectors(row, implicitDB, implicitTable),
 		right: bexp.right.reduceSelectors(row, implicitDB, implicitTable),
 	}
+}
+
+func (bexp *NumExp) isConstant() bool {
+	return bexp.left.isConstant() && bexp.right.isConstant()
+}
+
+func (bexp *NumExp) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
 }
 
 type NotBoolExp struct {
@@ -1686,6 +1981,14 @@ func (bexp *NotBoolExp) reduceSelectors(row *Row, implicitDB, implicitTable stri
 	}
 }
 
+func (bexp *NotBoolExp) isConstant() bool {
+	return bexp.exp.isConstant()
+}
+
+func (bexp *NotBoolExp) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
+}
+
 type LikeBoolExp struct {
 	sel     Selector
 	pattern string
@@ -1727,6 +2030,14 @@ func (bexp *LikeBoolExp) reduce(catalog *Catalog, row *Row, implicitDB, implicit
 
 func (bexp *LikeBoolExp) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
 	return bexp
+}
+
+func (bexp *LikeBoolExp) isConstant() bool {
+	return false
+}
+
+func (bexp *LikeBoolExp) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
 }
 
 type CmpBoolExp struct {
@@ -1824,6 +2135,121 @@ func (bexp *CmpBoolExp) reduceSelectors(row *Row, implicitDB, implicitTable stri
 		left:  bexp.left.reduceSelectors(row, implicitDB, implicitTable),
 		right: bexp.right.reduceSelectors(row, implicitDB, implicitTable),
 	}
+}
+
+func (bexp *CmpBoolExp) isConstant() bool {
+	return bexp.left.isConstant() && bexp.right.isConstant()
+}
+
+func (bexp *CmpBoolExp) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	matchingFunc := func(left, right ValueExp) (*ColSelector, ValueExp, bool) {
+		s, isSel := bexp.left.(*ColSelector)
+		if isSel && bexp.right.isConstant() {
+			return s, right, true
+		}
+		return nil, nil, false
+	}
+
+	sel, c, ok := matchingFunc(bexp.left, bexp.right)
+	if !ok {
+		sel, c, ok = matchingFunc(bexp.right, bexp.left)
+	}
+
+	if !ok {
+		return nil
+	}
+
+	aggFn, db, t, col := sel.resolve(table.db.name, table.name)
+	if aggFn != "" || db != table.db.name || t != asTable {
+		return nil
+	}
+
+	column, err := table.GetColumnByName(col)
+	if err != nil {
+		return err
+	}
+
+	val, err := c.substitute(params)
+	if err == ErrMissingParameter {
+		// TODO: not supported when parameters are not provided during query resolution
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	rval, err := val.reduce(nil, nil, table.db.name, table.name)
+	if err != nil {
+		return err
+	}
+
+	return updateRangeFor(column.id, rval, bexp.op, rangesByColID)
+}
+
+func updateRangeFor(colID uint32, val TypedValue, cmp CmpOperator, rangesByColID map[uint32]*typedValueRange) error {
+	currRange, ranged := rangesByColID[colID]
+	var newRange *typedValueRange
+
+	switch cmp {
+	case EQ:
+		{
+			newRange = &typedValueRange{
+				lRange: &typedValueSemiRange{
+					val:       val,
+					inclusive: true,
+				},
+				hRange: &typedValueSemiRange{
+					val:       val,
+					inclusive: true,
+				},
+			}
+		}
+	case LT:
+		{
+			newRange = &typedValueRange{
+				hRange: &typedValueSemiRange{
+					val: val,
+				},
+			}
+		}
+	case LE:
+		{
+			newRange = &typedValueRange{
+				hRange: &typedValueSemiRange{
+					val:       val,
+					inclusive: true,
+				},
+			}
+		}
+	case GT:
+		{
+			newRange = &typedValueRange{
+				lRange: &typedValueSemiRange{
+					val: val,
+				},
+			}
+		}
+	case GE:
+		{
+			newRange = &typedValueRange{
+				lRange: &typedValueSemiRange{
+					val:       val,
+					inclusive: true,
+				},
+			}
+		}
+	case NE:
+		{
+			return nil
+		}
+	}
+
+	if !ranged {
+		rangesByColID[colID] = newRange
+		return nil
+	}
+
+	return currRange.refineWith(newRange)
 }
 
 func cmpSatisfiesOp(cmp int, op CmpOperator) bool {
@@ -1941,6 +2367,50 @@ func (bexp *BinBoolExp) reduceSelectors(row *Row, implicitDB, implicitTable stri
 	}
 }
 
+func (bexp *BinBoolExp) isConstant() bool {
+	return bexp.left.isConstant() && bexp.right.isConstant()
+}
+
+func (bexp *BinBoolExp) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	if bexp.op == AND {
+		err := bexp.left.selectorRanges(table, asTable, params, rangesByColID)
+		if err != nil {
+			return err
+		}
+
+		return bexp.right.selectorRanges(table, asTable, params, rangesByColID)
+	}
+
+	lRanges := make(map[uint32]*typedValueRange)
+	rRanges := make(map[uint32]*typedValueRange)
+
+	err := bexp.left.selectorRanges(table, asTable, params, lRanges)
+	if err != nil {
+		return err
+	}
+
+	err = bexp.right.selectorRanges(table, asTable, params, rRanges)
+	if err != nil {
+		return err
+	}
+
+	for colID, lr := range lRanges {
+		rr, ok := rRanges[colID]
+		if !ok {
+			continue
+		}
+
+		err = lr.extendWith(rr)
+		if err != nil {
+			return err
+		}
+
+		rangesByColID[colID] = lr
+	}
+
+	return nil
+}
+
 type ExistsBoolExp struct {
 	q *SelectStmt
 }
@@ -1963,4 +2433,12 @@ func (bexp *ExistsBoolExp) reduce(catalog *Catalog, row *Row, implicitDB, implic
 
 func (bexp *ExistsBoolExp) reduceSelectors(row *Row, implicitDB, implicitTable string) ValueExp {
 	return bexp
+}
+
+func (bexp *ExistsBoolExp) isConstant() bool {
+	return false
+}
+
+func (bexp *ExistsBoolExp) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
+	return nil
 }

@@ -32,7 +32,7 @@ func TestReadOnlyReplica(t *testing.T) {
 
 	options := DefaultOption().WithDBRootPath(rootPath).WithDBName("db").AsReplica(true)
 
-	replica, err := NewDB(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
+	replica, err := NewDB(options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.NoError(t, err)
 
 	defer os.RemoveAll(options.dbRootPath)
@@ -40,7 +40,7 @@ func TestReadOnlyReplica(t *testing.T) {
 	err = replica.Close()
 	require.NoError(t, err)
 
-	replica, err = OpenDB(options, nil, logger.NewSimpleLogger("immudb ", os.Stderr))
+	replica, err = OpenDB(options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.NoError(t, err)
 
 	_, err = replica.Set(&schema.SetRequest{KVs: []*schema.KeyValue{{Key: []byte("key1"), Value: []byte("value1")}}})
@@ -90,8 +90,8 @@ func TestReadOnlyReplica(t *testing.T) {
 
 	_, err = replica.VerifiableSQLGet(&schema.VerifiableSQLGetRequest{
 		SqlGetRequest: &schema.SQLGetRequest{
-			Table:   "mytable",
-			PkValue: &schema.SQLValue{Value: &schema.SQLValue_N{N: 1}},
+			Table:    "mytable",
+			PkValues: []*schema.SQLValue{{Value: &schema.SQLValue_N{N: 1}}},
 		},
 	})
 	require.Equal(t, ErrSQLNotReady, err)
@@ -111,7 +111,7 @@ func TestSwitchToReplica(t *testing.T) {
 	_, err = replica.SQLExec(&schema.SQLExecRequest{Sql: "INSERT INTO mytable(id, title) VALUES (1, 'TITLE1')"})
 	require.NoError(t, err)
 
-	replica.UpdateReplication(true, nil)
+	replica.AsReplica(true)
 
 	err = replica.UseSnapshot(&schema.UseSnapshotRequest{SinceTx: 1})
 	require.NoError(t, err)
@@ -127,8 +127,8 @@ func TestSwitchToReplica(t *testing.T) {
 
 	_, err = replica.VerifiableSQLGet(&schema.VerifiableSQLGetRequest{
 		SqlGetRequest: &schema.SQLGetRequest{
-			Table:   "mytable",
-			PkValue: &schema.SQLValue{Value: &schema.SQLValue_N{N: 1}},
+			Table:    "mytable",
+			PkValues: []*schema.SQLValue{{Value: &schema.SQLValue_N{N: 1}}},
 		},
 	})
 	require.NoError(t, err)

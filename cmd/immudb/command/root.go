@@ -31,12 +31,19 @@ func (cl *Commandline) NewRootCmd(immudbServer server.ImmuServerIf) (*cobra.Comm
 		Short: "immudb - the lightweight, high-speed immutable database for systems and applications",
 		Long: `immudb - the lightweight, high-speed immutable database for systems and applications.
 
+immudb documentation:
+  https://docs.immudb.io/
+
 Environment variables:
   IMMUDB_DIR=.
   IMMUDB_NETWORK=tcp
   IMMUDB_ADDRESS=0.0.0.0
   IMMUDB_PORT=3322
-  IMMUDB_DBNAME=immudb
+  IMMUDB_REPLICATION_ENABLED=true
+  IMMUDB_REPLICATION_MASTER_ADDRESS=127.0.0.1
+  IMMUDB_REPLICATION_PORT=3322
+  IMMUDB_REPLICATION_USERNAME=immudb
+  IMMUDB_REPLICATION_PASSWORD=immudb
   IMMUDB_PIDFILE=
   IMMUDB_LOGFILE=
   IMMUDB_MTLS=false

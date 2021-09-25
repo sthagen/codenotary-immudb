@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -28,9 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const sqlPrefix = 2
-
-var prefix = []byte{sqlPrefix}
+var sqlPrefix = []byte{2}
 
 func TestCreateDatabase(t *testing.T) {
 	catalogStore, err := store.Open("catalog_create_db", store.DefaultOptions())
@@ -41,7 +40,7 @@ func TestCreateDatabase(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_create_db")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	err = engine.EnsureCatalogReady(nil)
@@ -78,7 +77,7 @@ func TestUseDatabase(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_use_db")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	err = engine.UseDatabase("db1")
@@ -123,7 +122,7 @@ func TestCreateTable(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_create_table")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE TABLE table1 (id INTEGER, PRIMARY KEY id)", nil, true)
@@ -135,10 +134,19 @@ func TestCreateTable(t *testing.T) {
 	err = engine.UseDatabase("db1")
 	require.NoError(t, err)
 
+	_, err = engine.ExecStmt("CREATE TABLE table1 (id INTEGER, ts TIMESTAMP, PRIMARY KEY id)", nil, true)
+	require.ErrorIs(t, err, ErrNoSupported)
+
 	_, err = engine.ExecStmt("CREATE TABLE table1 (name VARCHAR, PRIMARY KEY id)", nil, true)
-	require.Equal(t, ErrInvalidPK, err)
+	require.Equal(t, ErrColumnDoesNotExist, err)
 
 	_, err = engine.ExecStmt("CREATE TABLE table1 (name VARCHAR, PRIMARY KEY name)", nil, true)
+	require.ErrorIs(t, err, ErrLimitedKeyType)
+
+	_, err = engine.ExecStmt("CREATE TABLE table1 (name VARCHAR[512], PRIMARY KEY name)", nil, true)
+	require.ErrorIs(t, err, ErrLimitedKeyType)
+
+	_, err = engine.ExecStmt("CREATE TABLE table1 (name VARCHAR[32], PRIMARY KEY name)", nil, true)
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE TABLE table2 (id INTEGER, PRIMARY KEY id)", nil, true)
@@ -148,6 +156,9 @@ func TestCreateTable(t *testing.T) {
 	require.Equal(t, ErrTableAlreadyExists, err)
 
 	_, err = engine.ExecStmt("CREATE TABLE IF NOT EXISTS table1 (id INTEGER, PRIMARY KEY id)", nil, true)
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt("CREATE TABLE IF NOT EXISTS blob_table (id BLOB[2], PRIMARY KEY id)", nil, true)
 	require.NoError(t, err)
 }
 
@@ -160,7 +171,7 @@ func TestDumpCatalogTo(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("dump_catalog_data")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -191,7 +202,7 @@ func TestDumpCatalogTo(t *testing.T) {
 	err = engine.DumpCatalogTo("db1", "db2", dumpedCatalogStore)
 	require.Equal(t, ErrAlreadyClosed, err)
 
-	engine, err = NewEngine(dumpedCatalogStore, dataStore, prefix)
+	engine, err = NewEngine(dumpedCatalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	err = engine.EnsureCatalogReady(nil)
@@ -218,7 +229,7 @@ func TestAddColumn(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_add_column")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE TABLE table1 (id INTEGER, PRIMARY KEY id)", nil, true)
@@ -231,7 +242,7 @@ func TestAddColumn(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE TABLE table1 (name VARCHAR, PRIMARY KEY id)", nil, true)
-	require.Equal(t, ErrInvalidPK, err)
+	require.Equal(t, ErrColumnDoesNotExist, err)
 
 	_, err = engine.ExecStmt("ALTER TABLE table1 ADD COLUMN surname VARCHAR", nil, true)
 	require.Equal(t, ErrNoSupported, err)
@@ -246,7 +257,7 @@ func TestCreateIndex(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_create_index")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -255,7 +266,7 @@ func TestCreateIndex(t *testing.T) {
 	err = engine.UseDatabase("db1")
 	require.NoError(t, err)
 
-	_, err = engine.ExecStmt("CREATE TABLE table1 (id INTEGER, name VARCHAR, age INTEGER, active BOOLEAN, PRIMARY KEY id)", nil, true)
+	_, err = engine.ExecStmt("CREATE TABLE table1 (id INTEGER, name VARCHAR[50], age INTEGER, active BOOLEAN, PRIMARY KEY id)", nil, true)
 	require.NoError(t, err)
 
 	db, err := engine.GetDatabaseByName("db1")
@@ -264,8 +275,7 @@ func TestCreateIndex(t *testing.T) {
 
 	table, err := engine.GetTableByName("db1", "table1")
 	require.NoError(t, err)
-
-	require.Len(t, table.indexes, 0)
+	require.Len(t, table.indexes, 1)
 
 	_, err = engine.ExecStmt("CREATE INDEX ON table1(name)", nil, true)
 	require.NoError(t, err)
@@ -273,7 +283,8 @@ func TestCreateIndex(t *testing.T) {
 	col, err := table.GetColumnByName("name")
 	require.NoError(t, err)
 
-	_, indexed := table.indexes[col.id]
+	indexed, err := table.IsIndexed(col.colName)
+	require.NoError(t, err)
 	require.True(t, indexed)
 
 	_, err = engine.ExecStmt("CREATE INDEX ON table1(id)", nil, true)
@@ -285,7 +296,8 @@ func TestCreateIndex(t *testing.T) {
 	col, err = table.GetColumnByName("age")
 	require.NoError(t, err)
 
-	_, indexed = table.indexes[col.id]
+	indexed, err = table.IsIndexed(col.colName)
+	require.NoError(t, err)
 	require.True(t, indexed)
 
 	_, err = engine.ExecStmt("CREATE INDEX ON table1(name)", nil, true)
@@ -297,8 +309,6 @@ func TestCreateIndex(t *testing.T) {
 	_, err = engine.ExecStmt("CREATE INDEX ON table1(title)", nil, true)
 	require.Equal(t, ErrColumnDoesNotExist, err)
 
-	require.Len(t, table.indexes, 2)
-
 	_, err = engine.ExecStmt("INSERT INTO table1(id, name, age) VALUES (1, 'name1', 50)", nil, true)
 	require.NoError(t, err)
 
@@ -306,7 +316,7 @@ func TestCreateIndex(t *testing.T) {
 	require.ErrorIs(t, err, ErrPKCanNotBeNull)
 
 	_, err = engine.ExecStmt("CREATE INDEX ON table1(active)", nil, true)
-	require.Equal(t, ErrLimitedIndex, err)
+	require.Equal(t, ErrLimitedIndexCreation, err)
 }
 
 func TestUpsertInto(t *testing.T) {
@@ -318,7 +328,7 @@ func TestUpsertInto(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_upsert")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -342,25 +352,25 @@ func TestUpsertInto(t *testing.T) {
 	_, err = engine.ExecStmt("UPSERT INTO table1 (id, age) VALUES (1, 50)", nil, true)
 	require.Equal(t, ErrColumnDoesNotExist, err)
 
-	_, err = engine.ExecStmt("UPSERT INTO table1 (id, title) VALUES (@id, 'title1')", nil, true)
+	_, err = engine.ExecStmt("UPSERT INTO table1 (id, title, active) VALUES (@id, 'title1', true)", nil, true)
 	require.Equal(t, ErrMissingParameter, err)
 
 	params := make(map[string]interface{}, 1)
 	params["id"] = [4]byte{1, 2, 3, 4}
-	_, err = engine.ExecStmt("UPSERT INTO table1 (id, title) VALUES (@id, 'title1')", params, true)
+	_, err = engine.ExecStmt("UPSERT INTO table1 (id, title, active) VALUES (@id, 'title1', true)", params, true)
 	require.Equal(t, ErrUnsupportedParameter, err)
 
 	params = make(map[string]interface{}, 1)
 	params["id"] = []byte{1, 2, 3}
-	_, err = engine.ExecStmt("UPSERT INTO table1 (id, title) VALUES (@id, 'title1')", params, true)
+	_, err = engine.ExecStmt("UPSERT INTO table1 (id, title, active) VALUES (@id, 'title1', true)", params, true)
 	require.Equal(t, ErrInvalidValue, err)
 
-	_, err = engine.ExecStmt("UPSERT INTO table1 (id, title) VALUES (1, @title)", nil, true)
+	_, err = engine.ExecStmt("UPSERT INTO table1 (id, title, active) VALUES (1, @title, false)", nil, true)
 	require.Equal(t, ErrMissingParameter, err)
 
 	params = make(map[string]interface{}, 1)
 	params["title"] = uint64(1)
-	_, err = engine.ExecStmt("UPSERT INTO table1 (id, title) VALUES (1, @title)", params, true)
+	_, err = engine.ExecStmt("UPSERT INTO table1 (id, title, active) VALUES (1, @title, true)", params, true)
 	require.Equal(t, ErrInvalidValue, err)
 
 	_, err = engine.ExecStmt("UPSERT INTO Table1 (id, active) VALUES (1, true)", nil, true)
@@ -378,17 +388,78 @@ func TestUpsertInto(t *testing.T) {
 	_, err = engine.ExecStmt("UPSERT INTO table1 (id, id) VALUES (1, 2)", nil, true)
 	require.Equal(t, ErrDuplicatedColumn, err)
 
-	_, err = engine.ExecStmt("UPSERT INTO table1 (id) VALUES ('1')", nil, true)
+	_, err = engine.ExecStmt("UPSERT INTO table1 (id, active) VALUES ('1', true)", nil, true)
 	require.Equal(t, ErrInvalidValue, err)
 
-	_, err = engine.ExecStmt("UPSERT INTO table1 (id) VALUES (NULL)", nil, true)
+	_, err = engine.ExecStmt("UPSERT INTO table1 (id, active) VALUES (NULL, false)", nil, true)
 	require.Equal(t, ErrPKCanNotBeNull, err)
 
 	_, err = engine.ExecStmt("UPSERT INTO table1 (id, title, active) VALUES (2, NULL, true)", nil, true)
 	require.NoError(t, err)
 
-	_, err = engine.ExecStmt("UPSERT INTO table1 (title) VALUES ('interesting title')", nil, true)
+	_, err = engine.ExecStmt("UPSERT INTO table1 (title, active) VALUES ('interesting title', true)", nil, true)
 	require.Equal(t, ErrPKCanNotBeNull, err)
+
+	_, err = engine.ExecStmt("CREATE TABLE IF NOT EXISTS blob_table (id BLOB[2], PRIMARY KEY id)", nil, true)
+	require.NoError(t, err)
+}
+
+func TestInsertIntoEdgeCases(t *testing.T) {
+	catalogStore, err := store.Open("catalog_insert", store.DefaultOptions())
+	require.NoError(t, err)
+	defer os.RemoveAll("catalog_insert")
+
+	dataStore, err := store.Open("sqldata_insert", store.DefaultOptions())
+	require.NoError(t, err)
+	defer os.RemoveAll("sqldata_insert")
+
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
+	require.NoError(t, err)
+
+	err = engine.UseDatabase("db1")
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt("CREATE TABLE table1 (id INTEGER, title VARCHAR[10], active BOOLEAN, payload BLOB[2], PRIMARY KEY id)", nil, true)
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt("CREATE INDEX ON table1 (title)", nil, true)
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt("CREATE INDEX ON table1 (active)", nil, true)
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt("CREATE INDEX ON table1 (payload)", nil, true)
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt("INSERT INTO table1 (id, title, active, payload) VALUES (1, 'title1', true, x'00A1')", nil, true)
+	require.NoError(t, err)
+
+	t.Run("varchar key cases", func(t *testing.T) {
+		_, err = engine.ExecStmt("INSERT INTO table1 (id, title, active, payload) VALUES (1, 'title123456789', true, x'00A1')", nil, true)
+		require.ErrorIs(t, err, ErrMaxLengthExceeded)
+
+		_, err = engine.ExecStmt("INSERT INTO table1 (id, title, active, payload) VALUES (1, 10, true, '00A1')", nil, true)
+		require.ErrorIs(t, err, ErrInvalidValue)
+	})
+
+	t.Run("boolean key cases", func(t *testing.T) {
+		_, err = engine.ExecStmt("INSERT INTO table1 (id, title, active, payload) VALUES (1, 'title1', 'true', x'00A1')", nil, true)
+		require.ErrorIs(t, err, ErrInvalidValue)
+	})
+
+	t.Run("blob key cases", func(t *testing.T) {
+		_, err = engine.ExecStmt("INSERT INTO table1 (id, title, active, payload) VALUES (1, 'title1', true, x'00A100A2')", nil, true)
+		require.ErrorIs(t, err, ErrMaxLengthExceeded)
+
+		_, err = engine.ExecStmt("INSERT INTO table1 (id, title, active, payload) VALUES (1, 'title1', true, '00A100A2')", nil, true)
+		require.ErrorIs(t, err, ErrInvalidValue)
+	})
+
+	err = engine.Close()
+	require.NoError(t, err)
 }
 
 func TestAutoIncrementPK(t *testing.T) {
@@ -400,7 +471,7 @@ func TestAutoIncrementPK(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_auto_inc")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -429,7 +500,7 @@ func TestAutoIncrementPK(t *testing.T) {
 	require.Len(t, summary.DMTxs, 1)
 	require.Equal(t, uint64(1), summary.DMTxs[0].ID)
 	require.Len(t, summary.LastInsertedPKs, 1)
-	require.Equal(t, uint64(1), summary.LastInsertedPKs["table1"])
+	require.Equal(t, int64(1), summary.LastInsertedPKs["table1"])
 	require.Equal(t, 1, summary.UpdatedRows)
 
 	_, err = engine.ExecStmt("INSERT INTO table1(id, title) VALUES (2, 'name2')", nil, true)
@@ -450,7 +521,7 @@ func TestAutoIncrementPK(t *testing.T) {
 	require.Len(t, summary.DMTxs, 1)
 	require.Equal(t, uint64(3), summary.DMTxs[0].ID)
 	require.Len(t, summary.LastInsertedPKs, 1)
-	require.Equal(t, uint64(2), summary.LastInsertedPKs["table1"])
+	require.Equal(t, int64(2), summary.LastInsertedPKs["table1"])
 	require.Equal(t, 1, summary.UpdatedRows)
 
 	summary, err = engine.ExecStmt(`
@@ -464,7 +535,7 @@ func TestAutoIncrementPK(t *testing.T) {
 	require.Len(t, summary.DMTxs, 1)
 	require.Equal(t, uint64(4), summary.DMTxs[0].ID)
 	require.Len(t, summary.LastInsertedPKs, 1)
-	require.Equal(t, uint64(4), summary.LastInsertedPKs["table1"])
+	require.Equal(t, int64(4), summary.LastInsertedPKs["table1"])
 	require.Equal(t, 2, summary.UpdatedRows)
 }
 
@@ -477,7 +548,7 @@ func TestTransactions(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_tx")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -510,7 +581,7 @@ func TestTransactions(t *testing.T) {
 
 	_, err = engine.ExecStmt(`
 		BEGIN TRANSACTION
-			CREATE TABLE table2 (id INTEGER, title VARCHAR, age INTEGER, PRIMARY KEY id);
+			CREATE TABLE table2 (id INTEGER, title VARCHAR[100], age INTEGER, PRIMARY KEY id);
 			CREATE INDEX ON table2(title);
 		COMMIT
 		`, nil, true)
@@ -534,7 +605,7 @@ func TestUseSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_snap")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -586,146 +657,146 @@ func TestUseSnapshot(t *testing.T) {
 }
 
 func TestEncodeRawValue(t *testing.T) {
-	b, err := EncodeRawValue(uint64(1), IntegerType, true)
+	b, err := EncodeValue(int64(1), IntegerType, 0)
 	require.NoError(t, err)
 	require.EqualValues(t, []byte{0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 1}, b)
 
-	b, err = EncodeRawValue(true, IntegerType, true)
+	b, err = EncodeValue(true, IntegerType, 0)
 	require.ErrorIs(t, err, ErrInvalidValue)
 	require.Nil(t, b)
 
-	b, err = EncodeRawValue(true, BooleanType, true)
+	b, err = EncodeValue(true, BooleanType, 0)
 	require.NoError(t, err)
 	require.EqualValues(t, []byte{0, 0, 0, 1, 1}, b)
 
-	b, err = EncodeRawValue(uint64(1), BooleanType, true)
+	b, err = EncodeValue(uint64(1), BooleanType, 0)
 	require.ErrorIs(t, err, ErrInvalidValue)
 	require.Nil(t, b)
 
-	b, err = EncodeRawValue("title", VarcharType, true)
+	b, err = EncodeValue("title", VarcharType, 0)
 	require.NoError(t, err)
 	require.EqualValues(t, []byte{0, 0, 0, 5, 't', 'i', 't', 'l', 'e'}, b)
 
-	b, err = EncodeRawValue(uint64(1), VarcharType, true)
+	b, err = EncodeValue(uint64(1), VarcharType, 0)
 	require.ErrorIs(t, err, ErrInvalidValue)
 	require.Nil(t, b)
 
-	b, err = EncodeRawValue([]byte{}, BLOBType, true)
+	b, err = EncodeValue([]byte{}, BLOBType, 0)
 	require.NoError(t, err)
 	require.EqualValues(t, []byte{0, 0, 0, 0}, b)
 
-	b, err = EncodeRawValue(nil, BLOBType, true)
+	b, err = EncodeValue(nil, BLOBType, 0)
 	require.NoError(t, err)
 	require.EqualValues(t, []byte{0, 0, 0, 0}, b)
 
-	b, err = EncodeRawValue(uint64(1), BLOBType, true)
+	b, err = EncodeValue(uint64(1), BLOBType, 0)
 	require.ErrorIs(t, err, ErrInvalidValue)
 	require.Nil(t, b)
 
-	b, err = EncodeRawValue(uint64(1), "invalid type", true)
+	b, err = EncodeValue(uint64(1), "invalid type", 0)
 	require.ErrorIs(t, err, ErrInvalidValue)
 	require.Nil(t, b)
 
 	// Max allowed key size is 32 bytes
-	b, err = EncodeRawValue("012345678901234567890123456789012", VarcharType, true)
-	require.ErrorIs(t, err, ErrInvalidPK)
+	b, err = EncodeValue("012345678901234567890123456789012", VarcharType, 32)
+	require.ErrorIs(t, err, ErrMaxLengthExceeded)
 	require.Nil(t, b)
 
-	_, err = EncodeRawValue("01234567890123456789012345678902", VarcharType, true)
+	_, err = EncodeValue("01234567890123456789012345678902", VarcharType, 0)
 	require.NoError(t, err)
 
-	_, err = EncodeRawValue("012345678901234567890123456789012", VarcharType, false)
+	_, err = EncodeValue("012345678901234567890123456789012", VarcharType, 0)
 	require.NoError(t, err)
 
-	b, err = EncodeRawValue([]byte{
+	b, err = EncodeValue([]byte{
 		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
 		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2,
-	}, BLOBType, true)
-	require.ErrorIs(t, err, ErrInvalidPK)
+	}, BLOBType, 32)
+	require.ErrorIs(t, err, ErrMaxLengthExceeded)
 	require.Nil(t, b)
 
-	_, err = EncodeRawValue([]byte{
+	_, err = EncodeValue([]byte{
 		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
 		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1,
-	}, BLOBType, true)
+	}, BLOBType, 0)
 	require.NoError(t, err)
 
-	_, err = EncodeRawValue([]byte{
+	_, err = EncodeValue([]byte{
 		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
 		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2,
-	}, BLOBType, false)
+	}, BLOBType, 0)
 	require.NoError(t, err)
 }
 
 func TestEncodeValue(t *testing.T) {
-	b, err := EncodeValue(&Number{val: 1}, IntegerType, true)
+	b, err := EncodeValue((&Number{val: 1}).Value(), IntegerType, 0)
 	require.NoError(t, err)
 	require.EqualValues(t, []byte{0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 1}, b)
 
-	b, err = EncodeValue(&Bool{val: true}, IntegerType, true)
+	b, err = EncodeValue((&Bool{val: true}).Value(), IntegerType, 0)
 	require.ErrorIs(t, err, ErrInvalidValue)
 	require.Nil(t, b)
 
-	b, err = EncodeValue(&Bool{val: true}, BooleanType, true)
+	b, err = EncodeValue((&Bool{val: true}).Value(), BooleanType, 0)
 	require.NoError(t, err)
 	require.EqualValues(t, []byte{0, 0, 0, 1, 1}, b)
 
-	b, err = EncodeValue(&Number{val: 1}, BooleanType, true)
+	b, err = EncodeValue((&Number{val: 1}).Value(), BooleanType, 0)
 	require.ErrorIs(t, err, ErrInvalidValue)
 	require.Nil(t, b)
 
-	b, err = EncodeValue(&Varchar{val: "title"}, VarcharType, true)
+	b, err = EncodeValue((&Varchar{val: "title"}).Value(), VarcharType, 0)
 	require.NoError(t, err)
 	require.EqualValues(t, []byte{0, 0, 0, 5, 't', 'i', 't', 'l', 'e'}, b)
 
-	b, err = EncodeValue(&Number{val: 1}, VarcharType, true)
+	b, err = EncodeValue((&Number{val: 1}).Value(), VarcharType, 0)
 	require.ErrorIs(t, err, ErrInvalidValue)
 	require.Nil(t, b)
 
-	b, err = EncodeValue(&Blob{val: []byte{}}, BLOBType, true)
+	b, err = EncodeValue((&Blob{val: []byte{}}).Value(), BLOBType, 50)
 	require.NoError(t, err)
 	require.EqualValues(t, []byte{0, 0, 0, 0}, b)
 
-	b, err = EncodeValue(&Blob{val: nil}, BLOBType, true)
+	b, err = EncodeValue((&Blob{val: nil}).Value(), BLOBType, 50)
 	require.NoError(t, err)
 	require.EqualValues(t, []byte{0, 0, 0, 0}, b)
 
-	b, err = EncodeValue(&Number{val: 1}, BLOBType, true)
+	b, err = EncodeValue((&Number{val: 1}).Value(), BLOBType, 50)
 	require.ErrorIs(t, err, ErrInvalidValue)
 	require.Nil(t, b)
 
-	b, err = EncodeValue(&Number{val: 1}, "invalid type", true)
+	b, err = EncodeValue((&Number{val: 1}).Value(), "invalid type", 50)
 	require.ErrorIs(t, err, ErrInvalidValue)
 	require.Nil(t, b)
 
 	// Max allowed key size is 32 bytes
-	b, err = EncodeValue(&Varchar{val: "012345678901234567890123456789012"}, VarcharType, true)
-	require.ErrorIs(t, err, ErrInvalidPK)
+	b, err = EncodeValue((&Varchar{val: "012345678901234567890123456789012"}).Value(), VarcharType, 32)
+	require.ErrorIs(t, err, ErrMaxLengthExceeded)
 	require.Nil(t, b)
 
-	_, err = EncodeValue(&Varchar{val: "01234567890123456789012345678902"}, VarcharType, true)
+	_, err = EncodeValue((&Varchar{val: "01234567890123456789012345678902"}).Value(), VarcharType, 256)
 	require.NoError(t, err)
 
-	_, err = EncodeValue(&Varchar{val: "012345678901234567890123456789012"}, VarcharType, false)
+	_, err = EncodeValue((&Varchar{val: "012345678901234567890123456789012"}).Value(), VarcharType, 256)
 	require.NoError(t, err)
 
-	b, err = EncodeValue(&Blob{val: []byte{
+	b, err = EncodeValue((&Blob{val: []byte{
 		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
 		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2,
-	}}, BLOBType, true)
-	require.ErrorIs(t, err, ErrInvalidPK)
+	}}).Value(), BLOBType, 32)
+	require.ErrorIs(t, err, ErrMaxLengthExceeded)
 	require.Nil(t, b)
 
-	_, err = EncodeValue(&Blob{val: []byte{
+	_, err = EncodeValue((&Blob{val: []byte{
 		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
 		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1,
-	}}, BLOBType, true)
+	}}).Value(), BLOBType, 256)
 	require.NoError(t, err)
 
-	_, err = EncodeValue(&Blob{val: []byte{
+	_, err = EncodeValue((&Blob{val: []byte{
 		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
 		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2,
-	}}, BLOBType, false)
+	}}).Value(), BLOBType, 256)
 	require.NoError(t, err)
 }
 
@@ -741,7 +812,7 @@ func TestClosing(t *testing.T) {
 	_, err = NewEngine(nil, nil, nil)
 	require.Equal(t, ErrIllegalArguments, err)
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	err = engine.Close()
@@ -796,7 +867,7 @@ func TestQuery(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_q")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.QueryStmt("SELECT id FROM table1", nil, true)
@@ -823,7 +894,13 @@ func TestQuery(t *testing.T) {
 	_, err = engine.QueryStmt("SELECT id FROM table1", nil, true)
 	require.Equal(t, ErrTableDoesNotExist, err)
 
-	_, err = engine.ExecStmt("CREATE TABLE table1 (id INTEGER, ts INTEGER, title VARCHAR, active BOOLEAN, payload BLOB, PRIMARY KEY id)", nil, true)
+	_, err = engine.ExecStmt(`CREATE TABLE table1 (
+								id INTEGER,
+								ts INTEGER,
+								title VARCHAR,
+								active BOOLEAN,
+								payload BLOB,
+								PRIMARY KEY id)`, nil, true)
 	require.NoError(t, err)
 
 	params := make(map[string]interface{})
@@ -834,9 +911,10 @@ func TestQuery(t *testing.T) {
 
 	orderBy := r.OrderBy()
 	require.NotNil(t, orderBy)
-	require.Equal(t, "id", orderBy.Column)
-	require.Equal(t, "table1", orderBy.Table)
-	require.Equal(t, "db1", orderBy.Database)
+	require.Len(t, orderBy, 1)
+	require.Equal(t, "id", orderBy[0].Column)
+	require.Equal(t, "table1", orderBy[0].Table)
+	require.Equal(t, "db1", orderBy[0].Database)
 
 	_, err = r.Read()
 	require.Equal(t, ErrNoMoreRows, err)
@@ -866,8 +944,41 @@ func TestQuery(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	_, err = engine.QueryStmt("SELECT DISTINCT id1 FROM table1", nil, true)
-	require.Equal(t, ErrNoSupported, err)
+	t.Run("should resolve every row", func(t *testing.T) {
+		r, err = engine.QueryStmt("SELECT * FROM table1", nil, true)
+		require.NoError(t, err)
+
+		colsBySel, err := r.colsBySelector()
+		require.NoError(t, err)
+		require.Len(t, colsBySel, 5)
+
+		require.Equal(t, "db1", r.ImplicitDB())
+		require.Equal(t, "table1", r.ImplicitTable())
+
+		cols, err := r.Columns()
+		require.NoError(t, err)
+		require.Len(t, cols, 5)
+
+		for i := 0; i < rowCount; i++ {
+			row, err := r.Read()
+			require.NoError(t, err)
+			require.NotNil(t, row)
+			require.Len(t, row.Values, 5)
+			require.Less(t, int64(start), row.Values[EncodeSelector("", "db1", "table1", "ts")].Value())
+			require.Equal(t, int64(i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
+			require.Equal(t, fmt.Sprintf("title%d", i), row.Values[EncodeSelector("", "db1", "table1", "title")].Value())
+			require.Equal(t, i%2 == 0, row.Values[EncodeSelector("", "db1", "table1", "active")].Value())
+
+			encPayload := []byte(fmt.Sprintf("blob%d", i))
+			require.Equal(t, []byte(encPayload), row.Values[EncodeSelector("", "db1", "table1", "payload")].Value())
+		}
+
+		_, err = r.Read()
+		require.Equal(t, ErrNoMoreRows, err)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
 
 	t.Run("should fail reading due to non-existent column", func(t *testing.T) {
 		r, err := engine.QueryStmt("SELECT id1 FROM table1", nil, true)
@@ -903,8 +1014,8 @@ func TestQuery(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, row)
 			require.Len(t, row.Values, 5)
-			require.Less(t, uint64(start), row.Values[EncodeSelector("", "db1", "mytable1", "ts")].Value())
-			require.Equal(t, uint64(i), row.Values[EncodeSelector("", "db1", "mytable1", "id")].Value())
+			require.Less(t, int64(start), row.Values[EncodeSelector("", "db1", "mytable1", "ts")].Value())
+			require.Equal(t, int64(i), row.Values[EncodeSelector("", "db1", "mytable1", "id")].Value())
 			require.Equal(t, fmt.Sprintf("title%d", i), row.Values[EncodeSelector("", "db1", "mytable1", "title")].Value())
 			require.Equal(t, i%2 == 0, row.Values[EncodeSelector("", "db1", "mytable1", "active")].Value())
 
@@ -941,8 +1052,8 @@ func TestQuery(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, row)
 			require.Len(t, row.Values, 5)
-			require.Less(t, uint64(start), row.Values[EncodeSelector("", "db1", "mytable1", "ts")].Value())
-			require.Equal(t, uint64(i), row.Values[EncodeSelector("", "db1", "mytable1", "d")].Value())
+			require.Less(t, int64(start), row.Values[EncodeSelector("", "db1", "mytable1", "ts")].Value())
+			require.Equal(t, int64(i), row.Values[EncodeSelector("", "db1", "mytable1", "d")].Value())
 			require.Equal(t, fmt.Sprintf("title%d", i), row.Values[EncodeSelector("", "db1", "mytable1", "title")].Value())
 			require.Equal(t, i%2 == 0, row.Values[EncodeSelector("", "db1", "mytable1", "active")].Value())
 
@@ -970,7 +1081,7 @@ func TestQuery(t *testing.T) {
 		require.NotNil(t, row)
 		require.Len(t, row.Values, 4)
 
-		require.Equal(t, uint64(rowCount-1-i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
+		require.Equal(t, int64(rowCount-1-i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
 		require.Equal(t, fmt.Sprintf("title%d", rowCount-1-i), row.Values[EncodeSelector("", "db1", "table1", "title")].Value())
 		require.Equal(t, (rowCount-1-i)%2 == 0, row.Values[EncodeSelector("", "db1", "table1", "active")].Value())
 
@@ -1003,7 +1114,7 @@ func TestQuery(t *testing.T) {
 
 	row, err := r.Read()
 	require.NoError(t, err)
-	require.Equal(t, uint64(2), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
+	require.Equal(t, int64(2), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
 
 	err = r.Close()
 	require.NoError(t, err)
@@ -1025,7 +1136,7 @@ func TestQuery(t *testing.T) {
 		require.NotNil(t, row)
 		require.Len(t, row.Values, 3)
 
-		require.Equal(t, uint64(i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
+		require.Equal(t, int64(i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
 		require.Equal(t, fmt.Sprintf("title%d", i), row.Values[EncodeSelector("", "db1", "table1", "title")].Value())
 		require.Equal(t, params["some_param"], row.Values[EncodeSelector("", "db1", "table1", "active")].Value())
 	}
@@ -1114,6 +1225,762 @@ func TestQuery(t *testing.T) {
 	require.Nil(t, r)
 }
 
+func TestQueryDistinct(t *testing.T) {
+	catalogStore, err := store.Open("catalog_qd", store.DefaultOptions())
+	require.NoError(t, err)
+	defer os.RemoveAll("catalog_qd")
+
+	dataStore, err := store.Open("sqldata_qd", store.DefaultOptions())
+	require.NoError(t, err)
+	defer os.RemoveAll("sqldata_qd")
+
+	opts := DefaultOptions().WithPrefix(sqlPrefix).WithDistinctLimit(4)
+	engine, err := NewEngine(catalogStore, dataStore, opts)
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
+	require.NoError(t, err)
+
+	err = engine.UseDatabase("db1")
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt(`CREATE TABLE table1 (
+								id INTEGER AUTO_INCREMENT,
+								title VARCHAR,
+								amount INTEGER,
+								active BOOLEAN,
+								PRIMARY KEY id)`, nil, true)
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt(`INSERT INTO table1 (title, amount, active) VALUES 
+								('title1', 100, NULL),
+								('title2', 200, false),
+								('title3', 200, true),
+								('title4', 300, NULL)`, nil, true)
+	require.NoError(t, err)
+
+	t.Run("should return all titles", func(t *testing.T) {
+		params := make(map[string]interface{})
+		params["id"] = 3
+
+		r, err := engine.QueryStmt("SELECT DISTINCT title FROM table1 WHERE id <= @id", nil, true)
+		require.NoError(t, err)
+
+		r.SetParameters(params)
+
+		cols, err := r.Columns()
+		require.NoError(t, err)
+		require.Len(t, cols, 1)
+		require.Equal(t, "(db1.table1.title)", cols[0].Selector())
+
+		for i := 1; i <= 3; i++ {
+			row, err := r.Read()
+			require.NoError(t, err)
+			require.Len(t, row.Values, 1)
+			require.Equal(t, fmt.Sprintf("title%d", i), row.Values["(db1.table1.title)"].Value())
+		}
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should return two titles", func(t *testing.T) {
+		params := make(map[string]interface{})
+		params["id"] = 3
+
+		r, err := engine.QueryStmt("SELECT DISTINCT title FROM table1 WHERE id <= @id LIMIT 2", nil, true)
+		require.NoError(t, err)
+
+		r.SetParameters(params)
+
+		cols, err := r.Columns()
+		require.NoError(t, err)
+		require.Len(t, cols, 1)
+		require.Equal(t, "(db1.table1.title)", cols[0].Selector())
+
+		for i := 1; i <= 2; i++ {
+			row, err := r.Read()
+			require.NoError(t, err)
+			require.Len(t, row.Values, 1)
+			require.Equal(t, fmt.Sprintf("title%d", i), row.Values["(db1.table1.title)"].Value())
+		}
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should return two distinct amounts", func(t *testing.T) {
+		params := make(map[string]interface{})
+		params["id"] = 3
+
+		r, err := engine.QueryStmt("SELECT DISTINCT amount FROM table1 WHERE id <= @id", params, true)
+		require.NoError(t, err)
+
+		cols, err := r.Columns()
+		require.NoError(t, err)
+		require.Len(t, cols, 1)
+		require.Equal(t, "(db1.table1.amount)", cols[0].Selector())
+
+		for i := 1; i <= 2; i++ {
+			row, err := r.Read()
+			require.NoError(t, err)
+			require.Len(t, row.Values, 1)
+			require.Equal(t, int64(i*100), row.Values["(db1.table1.amount)"].Value())
+		}
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should return rows with null, false and true", func(t *testing.T) {
+		params := make(map[string]interface{})
+		params["id"] = 3
+
+		r, err := engine.QueryStmt("SELECT DISTINCT active FROM table1 WHERE id <= @id", params, true)
+		require.NoError(t, err)
+
+		cols, err := r.Columns()
+		require.NoError(t, err)
+		require.Len(t, cols, 1)
+		require.Equal(t, "(db1.table1.active)", cols[0].Selector())
+
+		for i := 0; i <= 2; i++ {
+			row, err := r.Read()
+			require.NoError(t, err)
+			require.Len(t, row.Values, 1)
+
+			if i == 0 {
+				require.Nil(t, row.Values["(db1.table1.active)"].Value())
+				continue
+			}
+
+			require.Equal(t, i == 2, row.Values["(db1.table1.active)"].Value())
+		}
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should return three rows", func(t *testing.T) {
+		params := make(map[string]interface{})
+		params["id"] = 3
+
+		r, err := engine.QueryStmt("SELECT DISTINCT amount, active FROM table1 WHERE id <= @id", params, true)
+		require.NoError(t, err)
+
+		cols, err := r.Columns()
+		require.NoError(t, err)
+		require.Len(t, cols, 2)
+		require.Equal(t, "(db1.table1.amount)", cols[0].Selector())
+		require.Equal(t, "(db1.table1.active)", cols[1].Selector())
+
+		for i := 0; i <= 2; i++ {
+			row, err := r.Read()
+			require.NoError(t, err)
+			require.Len(t, row.Values, 2)
+
+			if i == 0 {
+				require.Equal(t, int64(100), row.Values["(db1.table1.amount)"].Value())
+				require.Nil(t, row.Values["(db1.table1.active)"].Value())
+				continue
+			}
+
+			require.Equal(t, int64(200), row.Values["(db1.table1.amount)"].Value())
+			require.Equal(t, i == 2, row.Values["(db1.table1.active)"].Value())
+		}
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should return too many rows error", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT DISTINCT id FROM table1", nil, true)
+		require.NoError(t, err)
+
+		cols, err := r.Columns()
+		require.NoError(t, err)
+		require.Len(t, cols, 1)
+		require.Equal(t, "(db1.table1.id)", cols[0].Selector())
+
+		for i := 0; i < engine.distinctLimit; i++ {
+			row, err := r.Read()
+			require.NoError(t, err)
+			require.Len(t, row.Values, 1)
+
+			require.Equal(t, int64(i+1), row.Values["(db1.table1.id)"].Value())
+		}
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrTooManyRows)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	err = engine.Close()
+	require.NoError(t, err)
+
+}
+
+func TestIndexing(t *testing.T) {
+	catalogStore, err := store.Open("catalog_indexing", store.DefaultOptions())
+	require.NoError(t, err)
+	defer os.RemoveAll("catalog_indexing")
+
+	dataStore, err := store.Open("sqldata_indexing", store.DefaultOptions())
+	require.NoError(t, err)
+	defer os.RemoveAll("sqldata_indexing")
+
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
+	require.NoError(t, err)
+
+	err = engine.UseDatabase("db1")
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt(`CREATE TABLE table1 (
+								id INTEGER AUTO_INCREMENT, 
+								ts INTEGER, 
+								title VARCHAR[20], 
+								active BOOLEAN,
+								amount INTEGER,
+								payload BLOB, 
+								PRIMARY KEY id
+							)`, nil, true)
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt("CREATE INDEX ON table1 (ts)", nil, true)
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt("CREATE UNIQUE INDEX ON table1 (title, amount)", nil, true)
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt("CREATE INDEX ON table1 (active, title)", nil, true)
+	require.NoError(t, err)
+
+	_, err = engine.ExecStmt("CREATE UNIQUE INDEX ON table1 (title)", nil, true)
+	require.NoError(t, err)
+
+	t.Run("should fail due to unique index", func(t *testing.T) {
+		_, err = engine.ExecStmt("INSERT INTO table1 (ts, title, amount, active) VALUES (1, 'title1', 10, true), (2, 'title1', 10, false)", nil, true)
+		require.ErrorIs(t, err, store.ErrDuplicatedKey)
+	})
+
+	require.NoError(t, engine.EnsureCatalogReady(nil))
+
+	t.Run("should fail due non-available index", func(t *testing.T) {
+		_, err = engine.QueryStmt("SELECT * FROM table1 ORDER BY amount DESC", nil, true)
+		require.ErrorIs(t, err, ErrNoAvailableIndex)
+	})
+
+	require.NoError(t, engine.EnsureCatalogReady(nil))
+
+	t.Run("should use primary index by default", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "id", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.True(t, scanSpecs.index.IsPrimary())
+		require.Empty(t, scanSpecs.rangesByColID)
+		require.Equal(t, GreaterOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use primary index in descending order", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 ORDER BY id DESC", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "id", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.True(t, scanSpecs.index.IsPrimary())
+		require.Empty(t, scanSpecs.rangesByColID)
+		require.Equal(t, LowerOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `ts` ascending order", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 ORDER BY ts", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "ts", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.False(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 1)
+		require.Empty(t, scanSpecs.rangesByColID)
+		require.Equal(t, GreaterOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `ts` descending order", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 ORDER BY ts DESC", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "ts", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.False(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 1)
+		require.Empty(t, scanSpecs.rangesByColID)
+		require.Equal(t, LowerOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `ts` with specific value", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 WHERE ts = 1629902962 OR ts < 1629902963 ORDER BY ts", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "ts", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.False(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 1)
+		require.Len(t, scanSpecs.rangesByColID, 1)
+
+		tsRange := scanSpecs.rangesByColID[2]
+		require.Nil(t, tsRange.lRange)
+		require.NotNil(t, tsRange.hRange)
+		require.False(t, tsRange.hRange.inclusive)
+		require.Equal(t, int64(1629902963), tsRange.hRange.val.Value())
+
+		require.Equal(t, GreaterOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `ts` with specific value", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM (table1 AS t) WHERE t.ts = 1629902962 AND t.ts = 1629902963 ORDER BY t.ts", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "ts", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.False(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 1)
+		require.Len(t, scanSpecs.rangesByColID, 1)
+
+		tsRange := scanSpecs.rangesByColID[2]
+		require.NotNil(t, tsRange.lRange)
+		require.True(t, tsRange.lRange.inclusive)
+		require.Equal(t, int64(1629902963), tsRange.lRange.val.Value())
+		require.NotNil(t, tsRange.hRange)
+		require.True(t, tsRange.hRange.inclusive)
+		require.Equal(t, int64(1629902962), tsRange.hRange.val.Value())
+
+		require.Equal(t, GreaterOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `ts` with specific value", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 WHERE ts > 1629902962 AND ts < 1629902963 ORDER BY ts", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "ts", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.False(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 1)
+		require.Len(t, scanSpecs.rangesByColID, 1)
+
+		tsRange := scanSpecs.rangesByColID[2]
+		require.NotNil(t, tsRange.lRange)
+		require.False(t, tsRange.lRange.inclusive)
+		require.Equal(t, int64(1629902962), tsRange.lRange.val.Value())
+		require.NotNil(t, tsRange.hRange)
+		require.False(t, tsRange.hRange.inclusive)
+		require.Equal(t, int64(1629902963), tsRange.hRange.val.Value())
+
+		require.Equal(t, GreaterOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `title, amount` in asc order", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 USE INDEX ON (title, amount) ORDER BY title", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 2)
+		require.Equal(t, "title", orderBy[0].Column)
+		require.Equal(t, "amount", orderBy[1].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.True(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 2)
+		require.Empty(t, scanSpecs.rangesByColID)
+		require.Equal(t, GreaterOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `title` in asc order", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 USE INDEX ON (title) ORDER BY title", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "title", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.True(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 1)
+		require.Empty(t, scanSpecs.rangesByColID)
+		require.Equal(t, GreaterOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `ts` in default order", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 USE INDEX ON (ts)", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "ts", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.False(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 1)
+		require.Empty(t, scanSpecs.rangesByColID)
+		require.Equal(t, GreaterOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should fail using index on `ts` when ordering by `title`", func(t *testing.T) {
+		_, err := engine.QueryStmt("SELECT * FROM table1 USE INDEX ON (ts) ORDER BY title", nil, true)
+		require.ErrorIs(t, err, ErrNoAvailableIndex)
+	})
+
+	t.Run("should use index on `title` with max value in desc order", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 USE INDEX ON (title) WHERE title < 'title10' ORDER BY title DESC", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "title", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.True(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 1)
+		require.Len(t, scanSpecs.rangesByColID, 1)
+
+		titleRange := scanSpecs.rangesByColID[3]
+		require.Nil(t, titleRange.lRange)
+		require.NotNil(t, titleRange.hRange)
+		require.False(t, titleRange.hRange.inclusive)
+		require.Equal(t, "title10", titleRange.hRange.val.Value())
+
+		require.Equal(t, LowerOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `title,amount` in desc order", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 WHERE title = 'title1' ORDER BY amount DESC", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 2)
+		require.Equal(t, "title", orderBy[0].Column)
+		require.Equal(t, "amount", orderBy[1].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.True(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 2)
+		require.Len(t, scanSpecs.rangesByColID, 1)
+
+		titleRange := scanSpecs.rangesByColID[3]
+		require.NotNil(t, titleRange.lRange)
+		require.True(t, titleRange.lRange.inclusive)
+		require.Equal(t, "title1", titleRange.lRange.val.Value())
+		require.NotNil(t, titleRange.hRange)
+		require.True(t, titleRange.hRange.inclusive)
+		require.Equal(t, "title1", titleRange.hRange.val.Value())
+
+		require.Equal(t, LowerOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `ts` ascending order", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 WHERE title > 'title10' ORDER BY ts ASC", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "ts", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.False(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 1)
+		require.Len(t, scanSpecs.rangesByColID, 1)
+
+		titleRange := scanSpecs.rangesByColID[3]
+		require.NotNil(t, titleRange.lRange)
+		require.False(t, titleRange.lRange.inclusive)
+		require.Equal(t, "title10", titleRange.lRange.val.Value())
+		require.Nil(t, titleRange.hRange)
+
+		require.Equal(t, GreaterOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `ts` descending order", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 WHERE title > 'title10' or title = 'title1' ORDER BY ts DESC", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "ts", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.False(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 1)
+		require.Len(t, scanSpecs.rangesByColID, 1)
+
+		titleRange := scanSpecs.rangesByColID[3]
+		require.NotNil(t, titleRange.lRange)
+		require.True(t, titleRange.lRange.inclusive)
+		require.Equal(t, "title1", titleRange.lRange.val.Value())
+		require.Nil(t, titleRange.hRange)
+
+		require.Equal(t, LowerOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `title` descending order", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 WHERE title > 'title10' or title = 'title1' ORDER BY title DESC", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 2)
+		require.Equal(t, "title", orderBy[0].Column)
+		require.Equal(t, "amount", orderBy[1].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.True(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 2)
+		require.Len(t, scanSpecs.rangesByColID, 1)
+
+		titleRange := scanSpecs.rangesByColID[3]
+		require.NotNil(t, titleRange.lRange)
+		require.True(t, titleRange.lRange.inclusive)
+		require.Equal(t, "title1", titleRange.lRange.val.Value())
+		require.Nil(t, titleRange.hRange)
+
+		require.Equal(t, LowerOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `title` ascending order starting with 'title1'", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 USE INDEX ON (title) WHERE title > 'title10' or title = 'title1' ORDER BY title", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "title", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.True(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 1)
+		require.Len(t, scanSpecs.rangesByColID, 1)
+
+		titleRange := scanSpecs.rangesByColID[3]
+		require.NotNil(t, titleRange.lRange)
+		require.True(t, titleRange.lRange.inclusive)
+		require.Equal(t, "title1", titleRange.lRange.val.Value())
+		require.Nil(t, titleRange.hRange)
+
+		require.Equal(t, GreaterOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `title` ascending order", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 USE INDEX ON (title) WHERE title < 'title10' or title = 'title1' ORDER BY title", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "title", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.True(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 1)
+		require.Len(t, scanSpecs.rangesByColID, 1)
+
+		titleRange := scanSpecs.rangesByColID[3]
+		require.Nil(t, titleRange.lRange)
+		require.NotNil(t, titleRange.hRange)
+		require.False(t, titleRange.hRange.inclusive)
+		require.Equal(t, "title10", titleRange.hRange.val.Value())
+
+		require.Equal(t, GreaterOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should use index on `title` descending order", func(t *testing.T) {
+		r, err := engine.QueryStmt("SELECT * FROM table1 USE INDEX ON (title) WHERE title < 'title10' and title = 'title1' ORDER BY title DESC", nil, true)
+		require.NoError(t, err)
+
+		orderBy := r.OrderBy()
+		require.NotNil(t, orderBy)
+		require.Len(t, orderBy, 1)
+		require.Equal(t, "title", orderBy[0].Column)
+
+		scanSpecs := r.ScanSpecs()
+		require.NotNil(t, scanSpecs)
+		require.NotNil(t, scanSpecs.index)
+		require.False(t, scanSpecs.index.IsPrimary())
+		require.True(t, scanSpecs.index.IsUnique())
+		require.Len(t, scanSpecs.index.cols, 1)
+		require.Len(t, scanSpecs.rangesByColID, 1)
+
+		titleRange := scanSpecs.rangesByColID[3]
+		require.NotNil(t, titleRange.lRange)
+		require.True(t, titleRange.lRange.inclusive)
+		require.Equal(t, "title1", titleRange.lRange.val.Value())
+		require.NotNil(t, titleRange.hRange)
+		require.True(t, titleRange.hRange.inclusive)
+		require.Equal(t, "title1", titleRange.hRange.val.Value())
+
+		require.Equal(t, LowerOrEqualTo, scanSpecs.cmp)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	err = engine.Close()
+	require.NoError(t, err)
+}
+
 func TestExecCornerCases(t *testing.T) {
 	catalogStore, err := store.Open("catalog_q", store.DefaultOptions())
 	require.NoError(t, err)
@@ -1123,7 +1990,7 @@ func TestExecCornerCases(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_q")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	summary, err := engine.ExecStmt("INVALID STATEMENT", nil, false)
@@ -1147,7 +2014,7 @@ func TestQueryWithNullables(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_nullable")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -1183,8 +2050,8 @@ func TestQueryWithNullables(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, row)
 		require.Len(t, row.Values, 4)
-		require.Less(t, uint64(start), row.Values[EncodeSelector("", "db1", "table1", "ts")].Value())
-		require.Equal(t, uint64(i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
+		require.Less(t, int64(start), row.Values[EncodeSelector("", "db1", "table1", "ts")].Value())
+		require.Equal(t, int64(i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
 		require.Equal(t, fmt.Sprintf("title%d", i), row.Values[EncodeSelector("", "db1", "table1", "title")].Value())
 		require.Equal(t, &NullValue{t: BooleanType}, row.Values[EncodeSelector("", "db1", "table1", "active")])
 	}
@@ -1205,7 +2072,7 @@ func TestOrderBy(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_orderby")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -1217,7 +2084,7 @@ func TestOrderBy(t *testing.T) {
 	err = engine.UseDatabase("db1")
 	require.NoError(t, err)
 
-	_, err = engine.ExecStmt("CREATE TABLE table1 (id INTEGER, title VARCHAR, age INTEGER, PRIMARY KEY id)", nil, true)
+	_, err = engine.ExecStmt("CREATE TABLE table1 (id INTEGER, title VARCHAR[100], age INTEGER, PRIMARY KEY id)", nil, true)
 	require.NoError(t, err)
 
 	_, err = engine.QueryStmt("SELECT id, title, age FROM table1 ORDER BY id, title DESC", nil, true)
@@ -1246,10 +2113,10 @@ func TestOrderBy(t *testing.T) {
 
 	params := make(map[string]interface{}, 1)
 	params["age"] = nil
-	_, err = engine.ExecStmt("UPSERT INTO table1 (id, title, age) VALUES (1, 'title', @age)", params, true)
+	_, err = engine.ExecStmt("INSERT INTO table1 (id, title, age) VALUES (1, 'title', @age)", params, true)
 	require.Equal(t, ErrIndexedColumnCanNotBeNull, err)
 
-	_, err = engine.ExecStmt("UPSERT INTO table1 (id, title) VALUES (1, 'title')", nil, true)
+	_, err = engine.ExecStmt("INSERT INTO table1 (id, title) VALUES (1, 'title')", nil, true)
 	require.Equal(t, ErrIndexedColumnCanNotBeNull, err)
 
 	rowCount := 1
@@ -1260,7 +2127,7 @@ func TestOrderBy(t *testing.T) {
 		params["title"] = fmt.Sprintf("title%d", i)
 		params["age"] = 40 + i
 
-		_, err = engine.ExecStmt("UPSERT INTO table1 (id, title, age) VALUES (@id, @title, @age)", params, true)
+		_, err = engine.ExecStmt("INSERT INTO table1 (id, title, age) VALUES (@id, @title, @age)", params, true)
 		require.NoError(t, err)
 	}
 
@@ -1269,9 +2136,10 @@ func TestOrderBy(t *testing.T) {
 
 	orderBy := r.OrderBy()
 	require.NotNil(t, orderBy)
-	require.Equal(t, "title", orderBy.Column)
-	require.Equal(t, "table1", orderBy.Table)
-	require.Equal(t, "db1", orderBy.Database)
+	require.Len(t, orderBy, 1)
+	require.Equal(t, "title", orderBy[0].Column)
+	require.Equal(t, "table1", orderBy[0].Table)
+	require.Equal(t, "db1", orderBy[0].Database)
 
 	for i := 0; i < rowCount; i++ {
 		row, err := r.Read()
@@ -1279,9 +2147,9 @@ func TestOrderBy(t *testing.T) {
 		require.NotNil(t, row)
 		require.Len(t, row.Values, 3)
 
-		require.Equal(t, uint64(i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
+		require.Equal(t, int64(i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
 		require.Equal(t, fmt.Sprintf("title%d", i), row.Values[EncodeSelector("", "db1", "table1", "title")].Value())
-		require.Equal(t, uint64(40+i), row.Values[EncodeSelector("", "db1", "table1", "age")].Value())
+		require.Equal(t, int64(40+i), row.Values[EncodeSelector("", "db1", "table1", "age")].Value())
 	}
 
 	err = r.Close()
@@ -1296,9 +2164,9 @@ func TestOrderBy(t *testing.T) {
 		require.NotNil(t, row)
 		require.Len(t, row.Values, 3)
 
-		require.Equal(t, uint64(i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
+		require.Equal(t, int64(i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
 		require.Equal(t, fmt.Sprintf("title%d", i), row.Values[EncodeSelector("", "db1", "table1", "title")].Value())
-		require.Equal(t, uint64(40+i), row.Values[EncodeSelector("", "db1", "table1", "age")].Value())
+		require.Equal(t, int64(40+i), row.Values[EncodeSelector("", "db1", "table1", "age")].Value())
 	}
 
 	err = r.Close()
@@ -1313,9 +2181,9 @@ func TestOrderBy(t *testing.T) {
 		require.NotNil(t, row)
 		require.Len(t, row.Values, 3)
 
-		require.Equal(t, uint64(rowCount-1-i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
+		require.Equal(t, int64(rowCount-1-i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
 		require.Equal(t, fmt.Sprintf("title%d", rowCount-1-i), row.Values[EncodeSelector("", "db1", "table1", "title")].Value())
-		require.Equal(t, uint64(40-(rowCount-1-i)), row.Values[EncodeSelector("", "db1", "table1", "age")].Value())
+		require.Equal(t, int64(40-(rowCount-1-i)), row.Values[EncodeSelector("", "db1", "table1", "age")].Value())
 	}
 
 	err = r.Close()
@@ -1334,7 +2202,7 @@ func TestQueryWithRowFiltering(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_where")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -1467,7 +2335,7 @@ func TestAggregations(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_agg")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -1491,7 +2359,7 @@ func TestAggregations(t *testing.T) {
 		params["title"] = fmt.Sprintf("title%d", i)
 		params["age"] = base + i
 
-		_, err = engine.ExecStmt("UPSERT INTO table1 (id, title, age) VALUES (@id, @title, @age)", params, true)
+		_, err = engine.ExecStmt("INSERT INTO table1 (id, title, age) VALUES (@id, @title, @age)", params, true)
 		require.NoError(t, err)
 	}
 
@@ -1521,11 +2389,11 @@ func TestAggregations(t *testing.T) {
 
 	row, err = r.Read()
 	require.NoError(t, err)
-	require.Equal(t, uint64(0), row.Values[EncodeSelector("", "db1", "table1", "col0")].Value())
-	require.Equal(t, uint64(0), row.Values[EncodeSelector("", "db1", "table1", "col1")].Value())
+	require.Equal(t, int64(0), row.Values[EncodeSelector("", "db1", "table1", "col0")].Value())
+	require.Equal(t, int64(0), row.Values[EncodeSelector("", "db1", "table1", "col1")].Value())
 	require.Equal(t, "", row.Values[EncodeSelector("", "db1", "table1", "col2")].Value())
-	require.Equal(t, uint64(0), row.Values[EncodeSelector("", "db1", "table1", "col3")].Value())
-	require.Equal(t, uint64(0), row.Values[EncodeSelector("", "db1", "table1", "col4")].Value())
+	require.Equal(t, int64(0), row.Values[EncodeSelector("", "db1", "table1", "col3")].Value())
+	require.Equal(t, int64(0), row.Values[EncodeSelector("", "db1", "table1", "col4")].Value())
 
 	err = r.Close()
 	require.NoError(t, err)
@@ -1542,15 +2410,15 @@ func TestAggregations(t *testing.T) {
 	require.NotNil(t, row)
 	require.Len(t, row.Values, 5)
 
-	require.Equal(t, uint64(rowCount), row.Values[EncodeSelector("", "db1", "t1", "c")].Value())
+	require.Equal(t, int64(rowCount), row.Values[EncodeSelector("", "db1", "t1", "c")].Value())
 
-	require.Equal(t, uint64((1+2*base+rowCount)*rowCount/2), row.Values[EncodeSelector("", "db1", "t1", "col1")].Value())
+	require.Equal(t, int64((1+2*base+rowCount)*rowCount/2), row.Values[EncodeSelector("", "db1", "t1", "col1")].Value())
 
-	require.Equal(t, uint64(1+base), row.Values[EncodeSelector("", "db1", "t1", "col2")].Value())
+	require.Equal(t, int64(1+base), row.Values[EncodeSelector("", "db1", "t1", "col2")].Value())
 
-	require.Equal(t, uint64(base+rowCount), row.Values[EncodeSelector("", "db1", "t1", "col3")].Value())
+	require.Equal(t, int64(base+rowCount), row.Values[EncodeSelector("", "db1", "t1", "col3")].Value())
 
-	require.Equal(t, uint64(base+rowCount/2), row.Values[EncodeSelector("", "db1", "t1", "col4")].Value())
+	require.Equal(t, int64(base+rowCount/2), row.Values[EncodeSelector("", "db1", "t1", "col4")].Value())
 
 	_, err = r.Read()
 	require.Equal(t, ErrNoMoreRows, err)
@@ -1571,7 +2439,7 @@ func TestCount(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_agg")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -1631,7 +2499,7 @@ func TestGroupByHaving(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_having")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -1656,7 +2524,7 @@ func TestGroupByHaving(t *testing.T) {
 		params["age"] = base + i
 		params["active"] = i%2 == 0
 
-		_, err = engine.ExecStmt("UPSERT INTO table1 (id, title, age, active) VALUES (@id, @title, @age, @active)", params, true)
+		_, err = engine.ExecStmt("INSERT INTO table1 (id, title, age, active) VALUES (@id, @title, @age, @active)", params, true)
 		require.NoError(t, err)
 	}
 
@@ -1739,14 +2607,14 @@ func TestGroupByHaving(t *testing.T) {
 
 		require.Equal(t, i == 0, row.Values[EncodeSelector("", "db1", "table1", "active")].Value())
 
-		require.Equal(t, uint64(rowCount/2), row.Values[EncodeSelector("", "db1", "table1", "c")].Value())
+		require.Equal(t, int64(rowCount/2), row.Values[EncodeSelector("", "db1", "table1", "c")].Value())
 
 		if i%2 == 0 {
-			require.Equal(t, uint64(base), row.Values[EncodeSelector("", "db1", "table1", "col2")].Value())
-			require.Equal(t, uint64(base+rowCount-2), row.Values[EncodeSelector("", "db1", "table1", "col3")].Value())
+			require.Equal(t, int64(base), row.Values[EncodeSelector("", "db1", "table1", "col2")].Value())
+			require.Equal(t, int64(base+rowCount-2), row.Values[EncodeSelector("", "db1", "table1", "col3")].Value())
 		} else {
-			require.Equal(t, uint64(base+1), row.Values[EncodeSelector("", "db1", "table1", "col2")].Value())
-			require.Equal(t, uint64(base+rowCount-1), row.Values[EncodeSelector("", "db1", "table1", "col3")].Value())
+			require.Equal(t, int64(base+1), row.Values[EncodeSelector("", "db1", "table1", "col2")].Value())
+			require.Equal(t, int64(base+rowCount-1), row.Values[EncodeSelector("", "db1", "table1", "col3")].Value())
 		}
 	}
 
@@ -1766,7 +2634,7 @@ func TestJoins(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_innerjoin")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -1802,7 +2670,7 @@ func TestJoins(t *testing.T) {
 		r, err := engine.QueryStmt(`
 		SELECT table1.title, table2.amount, table3.age
 		FROM (SELECT * FROM table2 WHERE amount = 1)
-		INNER JOIN table1 ON table2.id = table1.fkid1 AND table2.amount > 0
+		INNER JOIN table1 ON table2.id = table1.fkid1 AND (table2.amount > 0 OR table2.amount > 0+1)
 		INNER JOIN table3 ON table1.fkid2 = table3.id AND table3.age < 30`, nil, true)
 		require.NoError(t, err)
 
@@ -1853,11 +2721,25 @@ func TestJoins(t *testing.T) {
 			require.NotNil(t, row)
 			require.Len(t, row.Values, 4)
 
-			require.Equal(t, uint64(rowCount-1-i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
+			require.Equal(t, int64(rowCount-1-i), row.Values[EncodeSelector("", "db1", "table1", "id")].Value())
 			require.Equal(t, fmt.Sprintf("title%d", rowCount-1-i), row.Values[EncodeSelector("", "db1", "table1", "title")].Value())
-			require.Equal(t, uint64((rowCount-1-i)*(rowCount-1-i)), row.Values[EncodeSelector("", "db1", "table2", "amount")].Value())
-			require.Equal(t, uint64(30+(rowCount-1-i)), row.Values[EncodeSelector("", "db1", "table3", "age")].Value())
+			require.Equal(t, int64((rowCount-1-i)*(rowCount-1-i)), row.Values[EncodeSelector("", "db1", "table2", "amount")].Value())
+			require.Equal(t, int64(30+(rowCount-1-i)), row.Values[EncodeSelector("", "db1", "table3", "age")].Value())
 		}
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should return error when joining nonexistent table", func(t *testing.T) {
+		r, err := engine.QueryStmt(`
+		SELECT title
+		FROM table1
+		INNER JOIN table22 ON table1.id = table11.fkid1`, nil, true)
+		require.NoError(t, err)
+
+		_, err = r.Read()
+		require.Equal(t, ErrTableDoesNotExist, err)
 
 		err = r.Close()
 		require.NoError(t, err)
@@ -1876,7 +2758,7 @@ func TestJoinsWithJointTable(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_innerjoin_joint")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -1929,7 +2811,7 @@ func TestJoinsWithJointTable(t *testing.T) {
 		require.Len(t, row.Values, 3)
 
 		require.Equal(t, "name1", row.Values[EncodeSelector("", "db1", "q", "name")].Value())
-		require.Equal(t, uint64(20+i*10), row.Values[EncodeSelector("", "db1", "q", "amount")].Value())
+		require.Equal(t, int64(20+i*10), row.Values[EncodeSelector("", "db1", "q", "amount")].Value())
 		require.Equal(t, true, row.Values[EncodeSelector("", "db1", "q", "active")].Value())
 	}
 
@@ -1949,7 +2831,7 @@ func TestNestedJoins(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_nestedjoins")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -1998,10 +2880,10 @@ func TestNestedJoins(t *testing.T) {
 		require.NotNil(t, row)
 		require.Len(t, row.Values, 4)
 
-		require.Equal(t, uint64(rowCount-1-i), row.Values[EncodeSelector("", "db1", "t1", "id")].Value())
+		require.Equal(t, int64(rowCount-1-i), row.Values[EncodeSelector("", "db1", "t1", "id")].Value())
 		require.Equal(t, fmt.Sprintf("title%d", rowCount-1-i), row.Values[EncodeSelector("", "db1", "t1", "title")].Value())
-		require.Equal(t, uint64((rowCount-1-i)*(rowCount-1-i)), row.Values[EncodeSelector("", "db1", "t2", "total_amount")].Value())
-		require.Equal(t, uint64(30+(rowCount-1-i)), row.Values[EncodeSelector("", "db1", "t3", "age")].Value())
+		require.Equal(t, int64((rowCount-1-i)*(rowCount-1-i)), row.Values[EncodeSelector("", "db1", "t2", "total_amount")].Value())
+		require.Equal(t, int64(30+(rowCount-1-i)), row.Values[EncodeSelector("", "db1", "t3", "age")].Value())
 	}
 
 	err = r.Close()
@@ -2020,19 +2902,19 @@ func TestReOpening(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_reopening")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
 	require.NoError(t, err)
 
-	_, err = engine.ExecStmt("USE DATABASE db1; CREATE TABLE table1 (id INTEGER, name VARCHAR, PRIMARY KEY id)", nil, true)
+	_, err = engine.ExecStmt("USE DATABASE db1; CREATE TABLE table1 (id INTEGER, name VARCHAR[30], PRIMARY KEY id)", nil, true)
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("USE DATABASE db1; CREATE INDEX ON table1(name)", nil, true)
 	require.NoError(t, err)
 
-	engine, err = NewEngine(catalogStore, dataStore, prefix)
+	engine, err = NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExistDatabase("db1")
@@ -2059,8 +2941,10 @@ func TestReOpening(t *testing.T) {
 
 	table, err := db.GetTableByName("table1")
 	require.NoError(t, err)
-	require.Equal(t, "id", table.pk.colName)
-	require.Len(t, table.ColsByID(), 2)
+	require.NotNil(t, table.primaryIndex)
+	require.Len(t, table.primaryIndex.cols, 1)
+	require.Equal(t, "id", table.primaryIndex.cols[0].colName)
+	require.Len(t, table.Cols(), 2)
 
 	col, err := table.GetColumnByName("id")
 	require.NoError(t, err)
@@ -2069,9 +2953,9 @@ func TestReOpening(t *testing.T) {
 	col, err = table.GetColumnByName("name")
 	require.NoError(t, err)
 	require.Equal(t, VarcharType, col.colType)
-	require.Len(t, table.indexes, 1)
 
-	_, indexed := table.indexes[col.id]
+	indexed, err := table.IsIndexed(col.colName)
+	require.NoError(t, err)
 	require.True(t, indexed)
 
 	err = engine.Close()
@@ -2087,7 +2971,7 @@ func TestSubQuery(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_subq")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -2125,7 +3009,7 @@ func TestSubQuery(t *testing.T) {
 		require.NotNil(t, row)
 		require.Len(t, row.Values, 2)
 
-		require.Equal(t, uint64(i), row.Values[EncodeSelector("", "db1", "t2", "id")].Value())
+		require.Equal(t, int64(i), row.Values[EncodeSelector("", "db1", "t2", "id")].Value())
 		require.Equal(t, fmt.Sprintf("title%d", i), row.Values[EncodeSelector("", "db1", "t2", "t")].Value())
 	}
 
@@ -2166,7 +3050,7 @@ func TestInferParameters(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("catalog_infer_params")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	stmt := "CREATE DATABASE db1"
@@ -2311,7 +3195,7 @@ func TestInferParametersPrepared(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("catalog_infer_params_prepared")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -2344,7 +3228,7 @@ func TestInferParametersUnbounded(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("catalog_infer_params_unbounded")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -2401,7 +3285,7 @@ func TestInferParametersInvalidCases(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("catalog_infer_params_invalid")
 
-	engine, err := NewEngine(catalogStore, dataStore, prefix)
+	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
 	_, err = engine.ExecStmt("CREATE DATABASE db1", nil, true)
@@ -2424,9 +3308,6 @@ func TestInferParametersInvalidCases(t *testing.T) {
 
 	_, err = engine.InferParameters("INSERT INTO mytable(id, note) VALUES (@param1, @param2)")
 	require.Equal(t, ErrColumnDoesNotExist, err)
-
-	_, err = engine.InferParameters("SELECT DISTINCT title FROM mytable")
-	require.Error(t, err)
 
 	_, err = engine.InferParameters("SELECT * FROM mytable WHERE id > @param1 AND (@param1 OR active)")
 	require.Equal(t, ErrInferredMultipleTypes, err)
@@ -2508,37 +3389,23 @@ func TestDecodeValueSuccess(t *testing.T) {
 		},
 		{
 			"zero integer",
-			[]byte{0, 0, 0, 0},
+			[]byte{0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0},
 			IntegerType,
 			&Number{val: 0},
-			4,
-		},
-		{
-			"byte",
-			[]byte{0, 0, 0, 1, 123},
-			IntegerType,
-			&Number{val: 123},
-			5,
-		},
-		{
-			"byte padded",
-			[]byte{0, 0, 0, 1, 123, 45, 6},
-			IntegerType,
-			&Number{val: 123},
-			5,
+			12,
 		},
 		{
 			"large integer",
-			[]byte{0, 0, 0, 8, 1, 2, 3, 4, 5, 6, 7, 8},
+			[]byte{0, 0, 0, 8, 0, 0, 0, 0, 127, 255, 255, 255},
 			IntegerType,
-			&Number{val: 0x102030405060708},
+			&Number{val: math.MaxInt32},
 			12,
 		},
 		{
 			"large integer padded",
-			[]byte{0, 0, 0, 8, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1},
+			[]byte{0, 0, 0, 8, 0, 0, 0, 0, 127, 255, 255, 255, 1, 1, 1},
 			IntegerType,
-			&Number{val: 0x100000000000000},
+			&Number{val: math.MaxInt32},
 			12,
 		},
 		{
@@ -2604,7 +3471,7 @@ func TestTrimPrefix(t *testing.T) {
 		k string
 	}{
 		{"empty key", ""},
-		{"no engine prefix", "no-e-prefix"},
+		{"no engine prefix", "no-e-prefix)"},
 		{"no mapping prefix", "e-prefix-no-mapping-prefix"},
 		{"short mapping prefix", "e-prefix-mapping"},
 	} {
@@ -2627,7 +3494,7 @@ func TestTrimPrefix(t *testing.T) {
 			prefix, err := e.trimPrefix([]byte(d.k), []byte("-mapping-prefix"))
 			require.NoError(t, err)
 			require.NotNil(t, prefix)
-			require.EqualValues(t, prefix, []byte(d.p))
+			require.EqualValues(t, []byte(d.p), prefix)
 		})
 	}
 }
@@ -2652,46 +3519,42 @@ func TestUnmapDatabaseId(t *testing.T) {
 	require.Zero(t, id)
 
 	id, err = e.unmapDatabaseID([]byte(
-		"e-prefix.CATALOG.DATABASE.a",
+		"e-prefix.CTL.DATABASE.a",
 	))
 	require.ErrorIs(t, err, ErrCorruptedData)
 	require.Zero(t, id)
 
 	id, err = e.unmapDatabaseID(append(
-		[]byte("e-prefix.CATALOG.DATABASE."),
-		1, 2, 3, 4, 5, 6, 7, 8,
+		[]byte("e-prefix.CTL.DATABASE."),
+		1, 2, 3, 4,
 	))
 	require.NoError(t, err)
-	require.EqualValues(t, 0x0102030405060708, id)
+	require.EqualValues(t, 0x01020304, id)
 }
 
 func TestUnmapTableId(t *testing.T) {
 	e := Engine{prefix: []byte("e-prefix.")}
 
-	dbID, tableID, pkID, err := e.unmapTableID(nil)
+	dbID, tableID, err := e.unmapTableID(nil)
 	require.ErrorIs(t, err, ErrIllegalMappedKey)
 	require.Zero(t, dbID)
 	require.Zero(t, tableID)
-	require.Zero(t, pkID)
 
-	dbID, tableID, pkID, err = e.unmapTableID([]byte(
-		"e-prefix.CATALOG.TABLE.a",
+	dbID, tableID, err = e.unmapTableID([]byte(
+		"e-prefix.CTL.TABLE.a",
 	))
 	require.ErrorIs(t, err, ErrCorruptedData)
 	require.Zero(t, dbID)
 	require.Zero(t, tableID)
-	require.Zero(t, pkID)
 
-	dbID, tableID, pkID, err = e.unmapTableID(append(
-		[]byte("e-prefix.CATALOG.TABLE."),
-		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-		0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+	dbID, tableID, err = e.unmapTableID(append(
+		[]byte("e-prefix.CTL.TABLE."),
+		0x01, 0x02, 0x03, 0x04,
+		0x11, 0x12, 0x13, 0x14,
 	))
 	require.NoError(t, err)
-	require.EqualValues(t, 0x0102030405060708, dbID)
-	require.EqualValues(t, 0x1112131415161718, tableID)
-	require.EqualValues(t, 0x2122232425262728, pkID)
+	require.EqualValues(t, 0x01020304, dbID)
+	require.EqualValues(t, 0x11121314, tableID)
 }
 
 func TestUnmapColSpec(t *testing.T) {
@@ -2705,7 +3568,7 @@ func TestUnmapColSpec(t *testing.T) {
 	require.Zero(t, colType)
 
 	dbID, tableID, colID, colType, err = e.unmapColSpec([]byte(
-		"e-prefix.CATALOG.COLUMN.a",
+		"e-prefix.CTL.COLUMN.a",
 	))
 	require.ErrorIs(t, err, ErrCorruptedData)
 	require.Zero(t, dbID)
@@ -2714,10 +3577,10 @@ func TestUnmapColSpec(t *testing.T) {
 	require.Zero(t, colType)
 
 	dbID, tableID, colID, colType, err = e.unmapColSpec(append(
-		[]byte("e-prefix.CATALOG.COLUMN."),
-		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-		0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+		[]byte("e-prefix.CTL.COLUMN."),
+		0x01, 0x02, 0x03, 0x04,
+		0x11, 0x12, 0x13, 0x14,
+		0x21, 0x22, 0x23, 0x24,
 		0x00,
 	))
 	require.ErrorIs(t, err, ErrCorruptedData)
@@ -2727,17 +3590,17 @@ func TestUnmapColSpec(t *testing.T) {
 	require.Zero(t, colType)
 
 	dbID, tableID, colID, colType, err = e.unmapColSpec(append(
-		[]byte("e-prefix.CATALOG.COLUMN."),
-		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-		0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+		[]byte("e-prefix.CTL.COLUMN."),
+		0x01, 0x02, 0x03, 0x04,
+		0x11, 0x12, 0x13, 0x14,
+		0x21, 0x22, 0x23, 0x24,
 		'I', 'N', 'T', 'E', 'G', 'E', 'R',
 	))
 
 	require.NoError(t, err)
-	require.EqualValues(t, 0x0102030405060708, dbID)
-	require.EqualValues(t, 0x1112131415161718, tableID)
-	require.EqualValues(t, 0x2122232425262728, colID)
+	require.EqualValues(t, 0x01020304, dbID)
+	require.EqualValues(t, 0x11121314, tableID)
+	require.EqualValues(t, 0x21222324, colID)
 	require.Equal(t, "INTEGER", colType)
 }
 
@@ -2751,7 +3614,7 @@ func TestUnmapIndex(t *testing.T) {
 	require.Zero(t, colID)
 
 	dbID, tableID, colID, err = e.unmapIndex([]byte(
-		"e-prefix.CATALOG.INDEX.a",
+		"e-prefix.CTL.INDEX.a",
 	))
 	require.ErrorIs(t, err, ErrCorruptedData)
 	require.Zero(t, dbID)
@@ -2759,87 +3622,108 @@ func TestUnmapIndex(t *testing.T) {
 	require.Zero(t, colID)
 
 	dbID, tableID, colID, err = e.unmapIndex(append(
-		[]byte("e-prefix.CATALOG.INDEX."),
-		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-		0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+		[]byte("e-prefix.CTL.INDEX."),
+		0x01, 0x02, 0x03, 0x04,
+		0x11, 0x12, 0x13, 0x14,
+		0x21, 0x22, 0x23, 0x24,
 	))
 
 	require.NoError(t, err)
-	require.EqualValues(t, 0x0102030405060708, dbID)
-	require.EqualValues(t, 0x1112131415161718, tableID)
-	require.EqualValues(t, 0x2122232425262728, colID)
+	require.EqualValues(t, 0x01020304, dbID)
+	require.EqualValues(t, 0x11121314, tableID)
+	require.EqualValues(t, 0x21222324, colID)
 }
 
-func TestUnmapRow(t *testing.T) {
+func TestUnmapIndexEntry(t *testing.T) {
 	e := Engine{prefix: []byte("e-prefix.")}
 
-	dbID, tableID, colID, encVal, encPKVal, err := e.unmapRow(nil)
-	require.ErrorIs(t, err, ErrIllegalMappedKey)
-	require.Zero(t, dbID)
-	require.Zero(t, tableID)
-	require.Zero(t, colID)
-	require.Nil(t, encVal)
-	require.Nil(t, encPKVal)
+	encPKVals, err := e.unmapIndexEntry(&Index{id: PKIndexID, unique: true}, nil)
+	require.ErrorIs(t, err, ErrCorruptedData)
+	require.Nil(t, encPKVals)
 
-	dbID, tableID, colID, encVal, encPKVal, err = e.unmapRow([]byte(
-		"e-prefix.ROW.a",
+	encPKVals, err = e.unmapIndexEntry(&Index{id: PKIndexID, unique: true}, []byte(
+		"e-prefix.P.a",
 	))
 	require.ErrorIs(t, err, ErrCorruptedData)
-	require.Zero(t, dbID)
-	require.Zero(t, tableID)
-	require.Zero(t, colID)
-	require.Nil(t, encVal)
-	require.Nil(t, encPKVal)
+	require.Nil(t, encPKVals)
 
 	fullValue := append(
-		[]byte("e-prefix.ROW."),
-		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-		0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+		[]byte("e-prefix.S."),
+		0x01, 0x02, 0x03, 0x04,
+		0x11, 0x12, 0x13, 0x14,
+		0x00, 0x00, 0x00, 0x02,
+		'a', 'b', 'c', 0, 0, 0, 0, 0, 0, 0,
 		0, 0, 0, 3,
-		'a', 'b', 'c',
-	)
-
-	for i := 13; i < len(fullValue); i++ {
-		dbID, tableID, colID, encVal, encPKVal, err = e.unmapRow(fullValue[:i])
-		require.ErrorIs(t, err, ErrCorruptedData)
-		require.Zero(t, dbID)
-		require.Zero(t, tableID)
-		require.Zero(t, colID)
-		require.Nil(t, encVal)
-		require.Nil(t, encPKVal)
-	}
-
-	fullIndexedValue := append(
-		fullValue,
+		'w', 'x', 'y', 'z',
 		0, 0, 0, 4,
-		'd', 'e', 'f', 'g',
 	)
 
-	for i := len(fullValue) + 1; i < len(fullIndexedValue); i++ {
-		dbID, tableID, colID, encVal, encPKVal, err = e.unmapRow(fullIndexedValue[:i])
-		require.ErrorIs(t, err, ErrCorruptedData)
-		require.Zero(t, dbID)
-		require.Zero(t, tableID)
-		require.Zero(t, colID)
-		require.Nil(t, encVal)
-		require.Nil(t, encPKVal)
+	sIndex := &Index{
+		table: &Table{
+			db: &Database{
+				id: 0x01020304,
+			},
+			id: 0x11121314,
+		},
+		id:     2,
+		unique: false,
+		cols: []*Column{
+			{id: 3, colType: VarcharType, maxLen: 10},
+		},
 	}
 
-	dbID, tableID, colID, encVal, encPKVal, err = e.unmapRow(append(fullValue, 0))
-	require.ErrorIs(t, err, ErrCorruptedData)
-	require.Zero(t, dbID)
-	require.Zero(t, tableID)
-	require.Zero(t, colID)
-	require.Nil(t, encVal)
-	require.Nil(t, encPKVal)
+	encPKLen := 8
 
-	dbID, tableID, colID, encVal, encPKVal, err = e.unmapRow(fullIndexedValue)
+	for i := 13; i < len(fullValue)-encPKLen; i++ {
+		encPKVals, err = e.unmapIndexEntry(sIndex, fullValue[:i])
+		require.ErrorIs(t, err, ErrCorruptedData)
+		require.Nil(t, encPKVals)
+	}
+
+	encPKVals, err = e.unmapIndexEntry(sIndex, fullValue)
 	require.NoError(t, err)
-	require.EqualValues(t, 0x0102030405060708, dbID)
-	require.EqualValues(t, 0x1112131415161718, tableID)
-	require.EqualValues(t, 0x2122232425262728, colID)
-	require.EqualValues(t, []byte{0, 0, 0, 3, 'a', 'b', 'c'}, encVal)
-	require.EqualValues(t, []byte{0, 0, 0, 4, 'd', 'e', 'f', 'g'}, encPKVal)
+	require.EqualValues(t, []byte{'w', 'x', 'y', 'z', 0, 0, 0, 4}, encPKVals)
+}
+
+func TestEncodeAsKeyEdgeCases(t *testing.T) {
+	_, err := EncodeAsKey(nil, IntegerType, 0)
+	require.ErrorIs(t, err, ErrInvalidValue)
+
+	_, err = EncodeAsKey("a", VarcharType, maxKeyLen+1)
+	require.ErrorIs(t, err, ErrMaxKeyLengthExceeded)
+
+	_, err = EncodeAsKey("a", "NOTATYPE", maxKeyLen)
+	require.ErrorIs(t, err, ErrInvalidValue)
+
+	t.Run("varchar cases", func(t *testing.T) {
+		_, err = EncodeAsKey(true, VarcharType, 10)
+		require.ErrorIs(t, err, ErrInvalidValue)
+
+		_, err = EncodeAsKey("abc", VarcharType, 1)
+		require.ErrorIs(t, err, ErrMaxLengthExceeded)
+	})
+
+	t.Run("integer cases", func(t *testing.T) {
+		_, err = EncodeAsKey(true, IntegerType, 8)
+		require.ErrorIs(t, err, ErrInvalidValue)
+
+		_, err = EncodeAsKey(int64(10), IntegerType, 4)
+		require.ErrorIs(t, err, ErrCorruptedData)
+	})
+
+	t.Run("boolean cases", func(t *testing.T) {
+		_, err = EncodeAsKey("abc", BooleanType, 1)
+		require.ErrorIs(t, err, ErrInvalidValue)
+
+		_, err = EncodeAsKey(true, BooleanType, 2)
+		require.ErrorIs(t, err, ErrCorruptedData)
+	})
+
+	t.Run("blob cases", func(t *testing.T) {
+		_, err = EncodeAsKey("abc", BLOBType, 3)
+		require.ErrorIs(t, err, ErrInvalidValue)
+
+		_, err = EncodeAsKey([]byte{1, 2, 3}, BLOBType, 2)
+		require.ErrorIs(t, err, ErrMaxLengthExceeded)
+	})
 }

@@ -16,9 +16,10 @@ export GO111MODULE=on
 
 SHELL=/bin/bash -o pipefail
 
-VERSION=1.0.5
+VERSION=1.1.0
+DEFAULT_WEBCONSOLE_VERSION=1.0.11
 SERVICES=immudb immuadmin immuclient
-TARGETS=linux/amd64 windows/amd64 darwin/amd64 linux/s390x linux/arm64 freebsd/amd64
+TARGETS=linux/amd64 windows/amd64 darwin/amd64 linux/s390x linux/arm64 freebsd/amd64 darwin/arm64
 
 PWD = $(shell pwd)
 GO ?= go
@@ -171,7 +172,7 @@ CHANGELOG.md.next-tag:
 clean/dist:
 	rm -Rf ./dist
 
-# WEBCONSOLE=1 SIGNCODE_PVK_PASSWORD='secret' SIGNCODE_PVK={path to pvk file} SIGNCODE_SPC={path to spc file} make dist
+# WEBCONSOLE=default SIGNCODE_PVK_PASSWORD='secret' SIGNCODE_PVK={path to pvk file} SIGNCODE_SPC={path to spc file} make dist
 # it enables by default webconsole
 .PHONY: dist
 dist: webconsole dist/binaries dist/winsign
@@ -222,6 +223,21 @@ dist/binary.md:
 	done
 
 ./webconsole/dist:
+ifeq (${WEBCONSOLE}, default)
+	@echo "Using webconsole version: ${DEFAULT_WEBCONSOLE_VERSION}"
+	curl -L https://github.com/codenotary/immudb-webconsole/releases/download/v${DEFAULT_WEBCONSOLE_VERSION}/immudb-webconsole.tar.gz | tar -xvz -C webconsole
+else ifeq (${WEBCONSOLE}, latest)
+	@echo "Using webconsole version: latest"
 	curl -L https://github.com/codenotary/immudb-webconsole/releases/latest/download/immudb-webconsole.tar.gz | tar -xvz -C webconsole
+else ifeq (${WEBCONSOLE}, 1)
+	@echo "The meaning of the 'WEBCONSOLE' variable has changed, please specify one of:"
+	@echo "  default   - to use the default version of the webconsole for this immudb release"
+	@echo "  latest    - to use the latest version of the webconsole"
+	@echo "  <version> - to use a specific version of the webconsole"
+	@exit 1
+else
+	@echo "Using webconsole version: ${WEBCONSOLE}"
+	curl -L https://github.com/codenotary/immudb-webconsole/releases/download/v${WEBCONSOLE}/immudb-webconsole.tar.gz | tar -xvz -C webconsole
+endif
 
 ########################## releases scripts end ########################################################################

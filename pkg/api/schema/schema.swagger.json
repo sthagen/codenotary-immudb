@@ -1402,20 +1402,20 @@
         "replica": {
           "type": "boolean"
         },
-        "srcDatabase": {
+        "masterDatabase": {
           "type": "string"
         },
-        "srcAddress": {
+        "masterAddress": {
           "type": "string"
         },
-        "srcPort": {
+        "masterPort": {
           "type": "integer",
           "format": "int64"
         },
-        "followerUsr": {
+        "followerUsername": {
           "type": "string"
         },
-        "followerPwd": {
+        "followerPassword": {
           "type": "string"
         },
         "fileSize": {
@@ -1866,8 +1866,11 @@
         "table": {
           "type": "string"
         },
-        "pkValue": {
-          "$ref": "#/definitions/schemaSQLValue"
+        "pkValues": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/schemaSQLValue"
+          }
         },
         "atTx": {
           "type": "string",
@@ -1921,7 +1924,7 @@
         },
         "n": {
           "type": "string",
-          "format": "uint64"
+          "format": "int64"
         },
         "s": {
           "type": "string"
@@ -2202,15 +2205,19 @@
           "$ref": "#/definitions/schemaInclusionProof"
         },
         "DatabaseId": {
-          "type": "string",
-          "format": "uint64"
+          "type": "integer",
+          "format": "int64"
         },
         "TableId": {
-          "type": "string",
-          "format": "uint64"
+          "type": "integer",
+          "format": "int64"
         },
-        "PKName": {
-          "type": "string"
+        "PKIDs": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int64"
+          }
         },
         "ColNamesById": {
           "type": "object",
@@ -2221,14 +2228,21 @@
         "ColIdsByName": {
           "type": "object",
           "additionalProperties": {
-            "type": "string",
-            "format": "uint64"
+            "type": "integer",
+            "format": "int64"
           }
         },
         "ColTypesById": {
           "type": "object",
           "additionalProperties": {
             "type": "string"
+          }
+        },
+        "ColLenById": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int32"
           }
         }
       }

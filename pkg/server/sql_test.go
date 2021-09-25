@@ -28,7 +28,11 @@ import (
 )
 
 func TestSQLInteraction(t *testing.T) {
-	serverOptions := DefaultOptions().WithMetricsServer(false).WithAdminPassword(auth.SysAdminPassword)
+	serverOptions := DefaultOptions().
+		WithMetricsServer(false).
+		WithAdminPassword(auth.SysAdminPassword).
+		WithSigningKey("./../../test/signer/ec1.key")
+
 	s := DefaultServer().WithOptions(serverOptions).(*ImmuServer)
 	defer os.RemoveAll(s.Options.Dir)
 
@@ -94,9 +98,15 @@ func TestSQLInteraction(t *testing.T) {
 	require.Len(t, res.Rows, 3)
 
 	e, err := s.VerifiableSQLGet(ctx, &schema.VerifiableSQLGetRequest{
-		SqlGetRequest: &schema.SQLGetRequest{Table: "table1", PkValue: &schema.SQLValue{Value: &schema.SQLValue_N{N: 1}}},
+		SqlGetRequest: &schema.SQLGetRequest{Table: "table1", PkValues: []*schema.SQLValue{{Value: &schema.SQLValue_N{N: 1}}}},
 		ProveSinceTx:  0,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, e)
+
+	_, err = s.VerifiableSQLGet(ctx, &schema.VerifiableSQLGetRequest{
+		SqlGetRequest: &schema.SQLGetRequest{Table: "table1", PkValues: []*schema.SQLValue{{Value: &schema.SQLValue_N{N: 1}}}},
+		ProveSinceTx:  100,
+	})
+	require.Error(t, err)
 }
