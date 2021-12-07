@@ -16,35 +16,40 @@ limitations under the License.
 package sql
 
 type limitRowReader struct {
-	e *Engine
-
 	rowReader RowReader
 
 	limit int
 	read  int
 }
 
-func (e *Engine) newLimitRowReader(rowReader RowReader, limit int) (*limitRowReader, error) {
+func newLimitRowReader(rowReader RowReader, limit int) (*limitRowReader, error) {
 	return &limitRowReader{
-		e:         e,
 		rowReader: rowReader,
 		limit:     limit,
 	}, nil
 }
 
-func (lr *limitRowReader) ImplicitDB() string {
-	return lr.rowReader.ImplicitDB()
+func (lr *limitRowReader) onClose(callback func()) {
+	lr.rowReader.onClose(callback)
 }
 
-func (lr *limitRowReader) ImplicitTable() string {
-	return lr.rowReader.ImplicitTable()
+func (lr *limitRowReader) Tx() *SQLTx {
+	return lr.rowReader.Tx()
 }
 
-func (lr *limitRowReader) SetParameters(params map[string]interface{}) {
-	lr.rowReader.SetParameters(params)
+func (lr *limitRowReader) Database() *Database {
+	return lr.rowReader.Database()
 }
 
-func (lr *limitRowReader) OrderBy() []*ColDescriptor {
+func (lr *limitRowReader) TableAlias() string {
+	return lr.rowReader.TableAlias()
+}
+
+func (lr *limitRowReader) SetParameters(params map[string]interface{}) error {
+	return lr.rowReader.SetParameters(params)
+}
+
+func (lr *limitRowReader) OrderBy() []ColDescriptor {
 	return lr.rowReader.OrderBy()
 }
 
@@ -52,11 +57,11 @@ func (lr *limitRowReader) ScanSpecs() *ScanSpecs {
 	return lr.rowReader.ScanSpecs()
 }
 
-func (lr *limitRowReader) Columns() ([]*ColDescriptor, error) {
+func (lr *limitRowReader) Columns() ([]ColDescriptor, error) {
 	return lr.rowReader.Columns()
 }
 
-func (lr *limitRowReader) colsBySelector() (map[string]*ColDescriptor, error) {
+func (lr *limitRowReader) colsBySelector() (map[string]ColDescriptor, error) {
 	return lr.rowReader.colsBySelector()
 }
 

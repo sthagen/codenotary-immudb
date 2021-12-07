@@ -18,8 +18,6 @@ package sql
 import "fmt"
 
 type projectedRowReader struct {
-	e *Engine
-
 	rowReader RowReader
 
 	tableAlias string
@@ -27,7 +25,7 @@ type projectedRowReader struct {
 	selectors []Selector
 }
 
-func (e *Engine) newProjectedRowReader(rowReader RowReader, tableAlias string, selectors []Selector) (*projectedRowReader, error) {
+func newProjectedRowReader(rowReader RowReader, tableAlias string, selectors []Selector) (*projectedRowReader, error) {
 	// case: SELECT *
 	if len(selectors) == 0 {
 		cols, err := rowReader.Columns()
@@ -46,26 +44,33 @@ func (e *Engine) newProjectedRowReader(rowReader RowReader, tableAlias string, s
 	}
 
 	return &projectedRowReader{
-		e:          e,
 		rowReader:  rowReader,
 		tableAlias: tableAlias,
 		selectors:  selectors,
 	}, nil
 }
 
-func (pr *projectedRowReader) ImplicitDB() string {
-	return pr.rowReader.ImplicitDB()
+func (pr *projectedRowReader) onClose(callback func()) {
+	pr.rowReader.onClose(callback)
 }
 
-func (pr *projectedRowReader) ImplicitTable() string {
+func (pr *projectedRowReader) Tx() *SQLTx {
+	return pr.rowReader.Tx()
+}
+
+func (pr *projectedRowReader) Database() *Database {
+	return pr.rowReader.Database()
+}
+
+func (pr *projectedRowReader) TableAlias() string {
 	if pr.tableAlias == "" {
-		return pr.rowReader.ImplicitTable()
+		return pr.rowReader.TableAlias()
 	}
 
 	return pr.tableAlias
 }
 
-func (pr *projectedRowReader) OrderBy() []*ColDescriptor {
+func (pr *projectedRowReader) OrderBy() []ColDescriptor {
 	return pr.rowReader.OrderBy()
 }
 
@@ -73,19 +78,19 @@ func (pr *projectedRowReader) ScanSpecs() *ScanSpecs {
 	return pr.rowReader.ScanSpecs()
 }
 
-func (pr *projectedRowReader) Columns() ([]*ColDescriptor, error) {
+func (pr *projectedRowReader) Columns() ([]ColDescriptor, error) {
 	colsBySel, err := pr.colsBySelector()
 	if err != nil {
 		return nil, err
 	}
 
-	colsByPos := make([]*ColDescriptor, len(pr.selectors))
+	colsByPos := make([]ColDescriptor, len(pr.selectors))
 
 	for i, sel := range pr.selectors {
-		aggFn, db, table, col := sel.resolve(pr.rowReader.ImplicitDB(), pr.rowReader.ImplicitTable())
+		aggFn, db, table, col := sel.resolve(pr.rowReader.Database().Name(), pr.rowReader.TableAlias())
 
 		if pr.tableAlias != "" {
-			db = pr.ImplicitDB()
+			db = pr.Database().Name()
 			table = pr.tableAlias
 		}
 
@@ -101,7 +106,7 @@ func (pr *projectedRowReader) Columns() ([]*ColDescriptor, error) {
 			}
 		}
 
-		colsByPos[i] = &ColDescriptor{
+		colsByPos[i] = ColDescriptor{
 			AggFn:    aggFn,
 			Database: db,
 			Table:    table,
@@ -116,16 +121,16 @@ func (pr *projectedRowReader) Columns() ([]*ColDescriptor, error) {
 	return colsByPos, nil
 }
 
-func (pr *projectedRowReader) colsBySelector() (map[string]*ColDescriptor, error) {
+func (pr *projectedRowReader) colsBySelector() (map[string]ColDescriptor, error) {
 	dsColDescriptors, err := pr.rowReader.colsBySelector()
 	if err != nil {
 		return nil, err
 	}
 
-	colDescriptors := make(map[string]*ColDescriptor, len(pr.selectors))
+	colDescriptors := make(map[string]ColDescriptor, len(pr.selectors))
 
 	for i, sel := range pr.selectors {
-		aggFn, db, table, col := sel.resolve(pr.rowReader.ImplicitDB(), pr.rowReader.ImplicitTable())
+		aggFn, db, table, col := sel.resolve(pr.rowReader.Database().Name(), pr.rowReader.TableAlias())
 
 		encSel := EncodeSelector(aggFn, db, table, col)
 
@@ -135,7 +140,7 @@ func (pr *projectedRowReader) colsBySelector() (map[string]*ColDescriptor, error
 		}
 
 		if pr.tableAlias != "" {
-			db = pr.ImplicitDB()
+			db = pr.Database().Name()
 			table = pr.tableAlias
 		}
 
@@ -151,7 +156,7 @@ func (pr *projectedRowReader) colsBySelector() (map[string]*ColDescriptor, error
 			}
 		}
 
-		des := &ColDescriptor{
+		des := ColDescriptor{
 			AggFn:    aggFn,
 			Database: db,
 			Table:    table,
@@ -169,8 +174,8 @@ func (pr *projectedRowReader) InferParameters(params map[string]SQLValueType) er
 	return pr.rowReader.InferParameters(params)
 }
 
-func (pr *projectedRowReader) SetParameters(params map[string]interface{}) {
-	pr.rowReader.SetParameters(params)
+func (pr *projectedRowReader) SetParameters(params map[string]interface{}) error {
+	return pr.rowReader.SetParameters(params)
 }
 
 func (pr *projectedRowReader) Read() (*Row, error) {
@@ -184,7 +189,7 @@ func (pr *projectedRowReader) Read() (*Row, error) {
 	}
 
 	for i, sel := range pr.selectors {
-		aggFn, db, table, col := sel.resolve(pr.rowReader.ImplicitDB(), pr.rowReader.ImplicitTable())
+		aggFn, db, table, col := sel.resolve(pr.rowReader.Database().Name(), pr.rowReader.TableAlias())
 
 		encSel := EncodeSelector(aggFn, db, table, col)
 
@@ -194,7 +199,7 @@ func (pr *projectedRowReader) Read() (*Row, error) {
 		}
 
 		if pr.tableAlias != "" {
-			db = pr.ImplicitDB()
+			db = pr.Database().Name()
 			table = pr.tableAlias
 		}
 

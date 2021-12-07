@@ -49,14 +49,14 @@ func TestStats_Status(t *testing.T) {
 		grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 	}
 	cliopt := Options()
-	cliopt.DialOptions = &dialOptions
+	cliopt.DialOptions = dialOptions
 	clientb, _ := client.NewImmuClient(cliopt)
 	cl := commandline{
 		options:        cliopt,
 		immuClient:     clientb,
 		passwordReader: &clienttest.PasswordReaderMock{},
 		context:        context.Background(),
-		ts:             client.NewTokenService().WithHds(&clienttest.HomedirServiceMock{}).WithTokenFileName("tokenFileName"),
+		ts:             tokenservice.NewTokenService().WithHds(&clienttest.HomedirServiceMock{}).WithTokenFileName("tokenFileName"),
 	}
 	cmd, _ := cl.NewCmd()
 
@@ -103,7 +103,7 @@ func TestStats_StatsText(t *testing.T) {
 		grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 	}
 	cliopt := Options()
-	cliopt.DialOptions = &dialOptions
+	cliopt.DialOptions = dialOptions
 	cliopt.Address = "127.0.0.1"
 	clientb, _ := client.NewImmuClient(cliopt)
 	cl := commandline{
@@ -111,7 +111,7 @@ func TestStats_StatsText(t *testing.T) {
 		immuClient:     clientb,
 		passwordReader: &clienttest.PasswordReaderMock{},
 		context:        context.Background(),
-		ts:             client.NewTokenService().WithHds(&clienttest.HomedirServiceMock{}).WithTokenFileName("tokenFileName"),
+		ts:             tokenservice.NewTokenService().WithHds(&clienttest.HomedirServiceMock{}).WithTokenFileName("tokenFileName"),
 	}
 	cmd, _ := cl.NewCmd()
 
@@ -157,7 +157,7 @@ func TestStats_StatsRaw(t *testing.T) {
 		grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 	}
 	cliopt := Options()
-	cliopt.DialOptions = &dialOptions
+	cliopt.DialOptions = dialOptions
 	cliopt.Address = "127.0.0.1"
 	clientb, _ := client.NewImmuClient(cliopt)
 	cl := commandline{
@@ -165,7 +165,7 @@ func TestStats_StatsRaw(t *testing.T) {
 		immuClient:     clientb,
 		passwordReader: &clienttest.PasswordReaderMock{},
 		context:        context.Background(),
-		ts:             client.NewTokenService().WithHds(&clienttest.HomedirServiceMock{}).WithTokenFileName("tokenFileName"),
+		ts:             tokenservice.NewTokenService().WithHds(&clienttest.HomedirServiceMock{}).WithTokenFileName("tokenFileName"),
 	}
 	cmd, _ := cl.NewCmd()
 	cl.stats(cmd)

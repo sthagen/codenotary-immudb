@@ -32,10 +32,10 @@ func TestGetByIndex(t *testing.T) {
 	bs := servertest.NewBufconnServer(options)
 	bs.Start()
 defer bs.Stop()
-	ts := client.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
+	ts := tokenservice.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
 	ic := test.NewClientTest(&test.PasswordReader{
 		Pass: []string{"immudb"},
-	}, ts).WithOptions(client.DefaultOptions())
+	}, ts)
 ic.
 Connect(bs.Dialer)
 	ic.Login("immudb")
@@ -58,10 +58,10 @@ func TestGetKey(t *testing.T) {
 	bs := servertest.NewBufconnServer(options)
 	bs.Start()
 defer bs.Stop()
-	ts := client.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
+	ts := tokenservice.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
 	ic := test.NewClientTest(&test.PasswordReader{
 		Pass: []string{"immudb"},
-	}, ts).WithOptions(client.DefaultOptions())
+	}, ts)
 ic.
 Connect(bs.Dialer)
 	ic.Login("immudb")
@@ -83,10 +83,10 @@ func TestRawSafeGetKey(t *testing.T) {
 	bs := servertest.NewBufconnServer(options)
 	bs.Start()
 defer bs.Stop()
-	ts := client.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
+	ts := tokenservice.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
 	ic := test.NewClientTest(&test.PasswordReader{
 		Pass: []string{"immudb"},
-	}, ts).WithOptions(client.DefaultOptions())
+	}, ts)
 ic.
 Connect(bs.Dialer)
 	ic.Login("immudb")
@@ -108,10 +108,10 @@ func TestSafeGetKey(t *testing.T) {
 	bs := servertest.NewBufconnServer(options)
 	bs.Start()
 defer bs.Stop()
-	ts := client.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
+	ts := tokenservice.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
 	ic := test.NewClientTest(&test.PasswordReader{
 		Pass: []string{"immudb"},
-	}, ts).WithOptions(client.DefaultOptions())
+	}, ts)
 ic.
 Connect(bs.Dialer)
 	ic.Login("immudb")
@@ -134,10 +134,10 @@ func TestGetRawBySafeIndex(t *testing.T) {
 	bs := servertest.NewBufconnServer(options)
 	bs.Start()
 defer bs.Stop()
-	ts := client.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
+	ts := tokenservice.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
 	ic := test.NewClientTest(&test.PasswordReader{
 		Pass: []string{"immudb"},
-	}, ts).WithOptions(client.DefaultOptions())
+	}, ts)
 ic.
 Connect(bs.Dialer)
 	ic.Login("immudb")

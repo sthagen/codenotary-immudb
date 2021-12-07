@@ -40,10 +40,10 @@ func TestConsistency(t *testing.T) {
 	bs.Start()
 defer bs.Stop()
 
-	ts := client.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
+	ts := tokenservice.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
 	ic := test.NewClientTest(&test.PasswordReader{
 		Pass: []string{"immudb"},
-	}, ts).WithOptions(client.DefaultOptions())
+	}, ts)
 ic.
 Connect(bs.Dialer)
 	ic.Login("immudb")
@@ -89,10 +89,10 @@ func TestInclusion(t *testing.T) {
 	bs.Start()
 defer bs.Stop()
 
-	ts := client.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
+	ts := tokenservice.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
 	ic := test.NewClientTest(&test.PasswordReader{
 		Pass: []string{"immudb"},
-	}, ts).WithOptions(client.DefaultOptions())
+	}, ts)
 ic.
 Connect(bs.Dialer)
 	ic.Login("immudb")

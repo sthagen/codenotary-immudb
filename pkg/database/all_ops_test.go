@@ -151,14 +151,14 @@ func TestSetBatch(t *testing.T) {
 			}
 		}
 
-		md, err := db.Set(&schema.SetRequest{KVs: kvList})
+		txhdr, err := db.Set(&schema.SetRequest{KVs: kvList})
 		require.NoError(t, err)
-		require.Equal(t, uint64(b+2), md.Id)
+		require.Equal(t, uint64(b+2), txhdr.Id)
 
 		for i := 0; i < batchSize; i++ {
 			key := []byte(strconv.FormatUint(uint64(i), 10))
 			value := []byte(strconv.FormatUint(uint64(b*batchSize+batchSize+i), 10))
-			entry, err := db.Get(&schema.KeyRequest{Key: key, SinceTx: md.Id})
+			entry, err := db.Get(&schema.KeyRequest{Key: key, SinceTx: txhdr.Id})
 			require.NoError(t, err)
 			require.Equal(t, value, entry.Value)
 			require.Equal(t, uint64(b+2), entry.Tx)
@@ -169,13 +169,19 @@ func TestSetBatch(t *testing.T) {
 			require.Equal(t, value, vitem.Entry.Value)
 			require.Equal(t, entry.Tx, vitem.Entry.Tx)
 
-			tx := schema.TxFrom(vitem.VerifiableTx.Tx)
+			tx := schema.TxFromProto(vitem.VerifiableTx.Tx)
 
-			inclusionProof := schema.InclusionProofFrom(vitem.InclusionProof)
+			entrySpec := EncodeEntrySpec(vitem.Entry.Key, schema.KVMetadataFromProto(vitem.Entry.Metadata), vitem.Entry.Value)
+
+			entrySpecDigest, err := store.EntrySpecDigestFor(int(txhdr.Version))
+			require.NoError(t, err)
+			require.NotNil(t, entrySpecDigest)
+
+			inclusionProof := schema.InclusionProofFromProto(vitem.InclusionProof)
 			verifies := store.VerifyInclusion(
 				inclusionProof,
-				EncodeKV(vitem.Entry.Key, vitem.Entry.Value),
-				tx.Eh(),
+				entrySpecDigest(entrySpec),
+				tx.Header().Eh,
 			)
 			require.True(t, verifies)
 		}
@@ -212,7 +218,7 @@ func TestSetBatchDuplicatedKey(t *testing.T) {
 			},
 		}},
 	)
-	require.Equal(t, store.ErrDuplicatedKey, err)
+	require.Equal(t, schema.ErrDuplicatedKeysNotSupported, err)
 }
 
 func TestExecAllOps(t *testing.T) {
@@ -235,9 +241,10 @@ func TestExecAllOps(t *testing.T) {
 	})
 	require.Error(t, err)
 
+	batchCount := 10
 	batchSize := 100
 
-	for b := 0; b < 10; b++ {
+	for b := 0; b < batchCount; b++ {
 		atomicOps := make([]*schema.Op, batchSize*2)
 
 		for i := 0; i < batchSize; i++ {
@@ -257,10 +264,10 @@ func TestExecAllOps(t *testing.T) {
 			atomicOps[i+batchSize] = &schema.Op{
 				Operation: &schema.Op_ZAdd{
 					ZAdd: &schema.ZAddRequest{
-						Set:   []byte(`mySet`),
-						Score: 0.6,
-						Key:   atomicOps[i].Operation.(*schema.Op_Kv).Kv.Key,
-						AtTx:  0,
+						Set:      []byte(`mySet`),
+						Score:    0.6,
+						Key:      atomicOps[i].Operation.(*schema.Op_Kv).Kv.Key,
+						BoundRef: true,
 					},
 				},
 			}
@@ -277,7 +284,7 @@ func TestExecAllOps(t *testing.T) {
 	zList, err := db.ZScan(zScanOpt)
 	require.NoError(t, err)
 	println(len(zList.Entries))
-	require.Len(t, zList.Entries, batchSize)
+	require.Len(t, zList.Entries, batchCount*batchSize)
 }
 
 func TestExecAllOpsZAddOnMixedAlreadyPersitedNotPersistedItems(t *testing.T) {
@@ -410,7 +417,6 @@ func TestExecAllOpsInvalidKvKey(t *testing.T) {
 					Ref: &schema.ReferenceRequest{
 						Key:           []byte("rkey"),
 						ReferencedKey: []byte("key"),
-						AtTx:          0,
 						BoundRef:      true,
 					},
 				},

@@ -17,6 +17,7 @@ package store
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -56,7 +57,10 @@ func TestImmudbStoreConcurrency(t *testing.T) {
 
 	go func() {
 		for i := 0; i < txCount; i++ {
-			kvs := make([]*KV, eCount)
+			tx, err := immuStore.NewWriteOnlyTx()
+			if err != nil {
+				panic(err)
+			}
 
 			for j := 0; j < eCount; j++ {
 				k := make([]byte, 8)
@@ -65,16 +69,19 @@ func TestImmudbStoreConcurrency(t *testing.T) {
 				v := make([]byte, 8)
 				binary.BigEndian.PutUint64(v, uint64(i))
 
-				kvs[j] = &KV{Key: k, Value: v}
+				err = tx.Set(k, nil, v)
+				if err != nil {
+					panic(err)
+				}
 			}
 
-			txMetadata, err := immuStore.Commit(kvs, false)
+			txhdr, err := tx.AsyncCommit()
 			if err != nil {
 				panic(err)
 			}
 
-			if uint64(i+1) != txMetadata.ID {
-				panic(fmt.Errorf("expected %v but actual %v", uint64(i+1), txMetadata.ID))
+			if uint64(i+1) != txhdr.ID {
+				panic(fmt.Errorf("expected %v but actual %v", uint64(i+1), txhdr.ID))
 			}
 		}
 
@@ -83,7 +90,7 @@ func TestImmudbStoreConcurrency(t *testing.T) {
 
 	go func() {
 		txID := uint64(1)
-		tx := immuStore.NewTx()
+		tx := immuStore.NewTxHolder()
 
 		for {
 			time.Sleep(time.Duration(100) * time.Millisecond)
@@ -104,12 +111,12 @@ func TestImmudbStoreConcurrency(t *testing.T) {
 					panic(err)
 				}
 
-				if tx.ID == uint64(txCount) {
+				if tx.header.ID == uint64(txCount) {
 					wg.Done()
 					return
 				}
 
-				txID = tx.ID
+				txID = tx.header.ID
 			}
 		}
 	}()
@@ -136,13 +143,16 @@ func TestImmudbStoreConcurrentCommits(t *testing.T) {
 
 	txs := make([]*Tx, 10)
 	for c := 0; c < 10; c++ {
-		txs[c] = immuStore.NewTx()
+		txs[c] = immuStore.NewTxHolder()
 	}
 
 	for c := 0; c < 10; c++ {
-		go func(tx *Tx) {
+		go func(txHolder *Tx) {
 			for c := 0; c < txCount; {
-				kvs := make([]*KV, eCount)
+				tx, err := immuStore.NewWriteOnlyTx()
+				if err != nil {
+					panic(err)
+				}
 
 				for j := 0; j < eCount; j++ {
 					k := make([]byte, 8)
@@ -151,10 +161,13 @@ func TestImmudbStoreConcurrentCommits(t *testing.T) {
 					v := make([]byte, 8)
 					binary.BigEndian.PutUint64(v, uint64(c))
 
-					kvs[j] = &KV{Key: k, Value: v}
+					err = tx.Set(k, nil, v)
+					if err != nil {
+						panic(err)
+					}
 				}
 
-				md, err := immuStore.Commit(kvs, false)
+				hdr, err := tx.AsyncCommit()
 				if err == ErrMaxConcurrencyLimitExceeded {
 					time.Sleep(1 * time.Millisecond)
 					continue
@@ -163,13 +176,13 @@ func TestImmudbStoreConcurrentCommits(t *testing.T) {
 					panic(err)
 				}
 
-				err = immuStore.ReadTx(md.ID, tx)
+				err = immuStore.ReadTx(hdr.ID, txHolder)
 				if err != nil {
 					panic(err)
 				}
 
-				for _, e := range tx.Entries() {
-					_, err := immuStore.ReadValue(tx, e.key())
+				for _, e := range txHolder.Entries() {
+					_, _, err := immuStore.ReadValue(txHolder, e.key())
 					if err != nil {
 						panic(err)
 					}
@@ -210,7 +223,9 @@ func TestImmudbStoreOnClosedStore(t *testing.T) {
 	err = immuStore.Sync()
 	require.Equal(t, ErrAlreadyClosed, err)
 
-	_, err = immuStore.Commit(nil, false)
+	_, err = immuStore.commit(&OngoingTx{entries: []*EntrySpec{
+		{Key: []byte("key1")},
+	}}, nil, false)
 	require.Equal(t, ErrAlreadyClosed, err)
 
 	err = immuStore.ReadTx(1, nil)
@@ -563,10 +578,10 @@ func TestImmudbStoreEdgeCases(t *testing.T) {
 	_, err = immuStore.DualProof(nil, nil)
 	require.Equal(t, ErrIllegalArguments, err)
 
-	sourceTx := NewTx(1, 1)
-	sourceTx.ID = 2
-	targetTx := NewTx(1, 1)
-	targetTx.ID = 1
+	sourceTx := newTx(1, 1)
+	sourceTx.header.ID = 2
+	targetTx := newTx(1, 1)
+	targetTx.header.ID = 1
 	_, err = immuStore.DualProof(sourceTx, targetTx)
 	require.Equal(t, ErrSourceTxNewerThanTargetTx, err)
 
@@ -576,25 +591,25 @@ func TestImmudbStoreEdgeCases(t *testing.T) {
 	_, err = immuStore.LinearProof(1, uint64(1+immuStore.maxLinearProofLen))
 	require.Equal(t, ErrLinearProofMaxLenExceeded, err)
 
-	_, err = immuStore.ReadValue(sourceTx, []byte{1, 2, 3})
+	_, _, err = immuStore.ReadValue(sourceTx, []byte{1, 2, 3})
 	require.Equal(t, ErrKeyNotFound, err)
 
 	err = immuStore.validateEntries(nil)
 	require.Equal(t, ErrorNoEntriesProvided, err)
 
-	err = immuStore.validateEntries(make([]*KV, immuStore.maxTxEntries+1))
+	err = immuStore.validateEntries(make([]*EntrySpec, immuStore.maxTxEntries+1))
 	require.Equal(t, ErrorMaxTxEntriesLimitExceeded, err)
 
-	entry := &KV{Key: nil, Value: nil}
-	err = immuStore.validateEntries([]*KV{entry})
+	entry := &EntrySpec{Key: nil, Value: nil}
+	err = immuStore.validateEntries([]*EntrySpec{entry})
 	require.Equal(t, ErrNullKey, err)
 
-	entry = &KV{Key: make([]byte, immuStore.maxKeyLen+1), Value: make([]byte, 1)}
-	err = immuStore.validateEntries([]*KV{entry})
+	entry = &EntrySpec{Key: make([]byte, immuStore.maxKeyLen+1), Value: make([]byte, 1)}
+	err = immuStore.validateEntries([]*EntrySpec{entry})
 	require.Equal(t, ErrorMaxKeyLenExceeded, err)
 
-	entry = &KV{Key: make([]byte, 1), Value: make([]byte, immuStore.maxValueLen+1)}
-	err = immuStore.validateEntries([]*KV{entry})
+	entry = &EntrySpec{Key: make([]byte, 1), Value: make([]byte, immuStore.maxValueLen+1)}
+	err = immuStore.validateEntries([]*EntrySpec{entry})
 	require.Equal(t, ErrorMaxValueLenExceeded, err)
 }
 
@@ -628,23 +643,14 @@ func TestImmudbStoreIndexing(t *testing.T) {
 	immuStore, err := Open("data_indexing", opts)
 	require.NoError(t, err)
 	defer os.RemoveAll("data_indexing")
-
 	require.NotNil(t, immuStore)
-
-	_, err = immuStore.Commit(nil, false)
-	require.Equal(t, ErrorNoEntriesProvided, err)
-
-	_, err = immuStore.Commit([]*KV{
-		{Key: []byte("key"), Value: []byte("value")},
-		{Key: []byte("key"), Value: []byte("value")},
-	}, false)
-	require.Equal(t, ErrDuplicatedKey, err)
 
 	txCount := 1000
 	eCount := 10
 
 	for i := 0; i < txCount; i++ {
-		kvs := make([]*KV, eCount)
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
 
 		for j := 0; j < eCount; j++ {
 			k := make([]byte, 8)
@@ -653,12 +659,13 @@ func TestImmudbStoreIndexing(t *testing.T) {
 			v := make([]byte, 8)
 			binary.BigEndian.PutUint64(v, uint64(i))
 
-			kvs[j] = &KV{Key: k, Value: v}
+			err = tx.Set(k, nil, v)
+			require.NoError(t, err)
 		}
 
-		txMetadata, err := immuStore.Commit(kvs, false)
+		txhdr, err := tx.AsyncCommit()
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), txMetadata.ID)
+		require.Equal(t, uint64(i+1), txhdr.ID)
 	}
 
 	var wg sync.WaitGroup
@@ -682,11 +689,16 @@ func TestImmudbStoreIndexing(t *testing.T) {
 						v := make([]byte, 8)
 						binary.BigEndian.PutUint64(v, snap.Ts()-1)
 
-						val, _, _, err := snap.Get(k)
+						valRef, err := snap.Get(k)
 						if err != nil {
 							if err != tbtree.ErrKeyNotFound {
 								panic(err)
 							}
+						}
+
+						val, err := valRef.Resolve()
+						if err != nil {
+							panic(err)
 						}
 
 						if err == nil {
@@ -701,12 +713,22 @@ func TestImmudbStoreIndexing(t *testing.T) {
 					k := make([]byte, 8)
 					binary.BigEndian.PutUint64(k, uint64(eCount-1))
 
-					v1, tx1, _, err := immuStore.Get(k)
+					valRef1, err := immuStore.Get(k)
 					if err != nil {
 						panic(err)
 					}
 
-					v2, tx2, _, err := snap.Get(k)
+					v1, err := valRef1.Resolve()
+					if err != nil {
+						panic(err)
+					}
+
+					valRef2, err := snap.Get(k)
+					if err != nil {
+						panic(err)
+					}
+
+					v2, err := valRef2.Resolve()
 					if err != nil {
 						panic(err)
 					}
@@ -715,8 +737,8 @@ func TestImmudbStoreIndexing(t *testing.T) {
 						panic(fmt.Errorf("expected %v actual %v", v1, v2))
 					}
 
-					if tx1 != tx2 {
-						panic(fmt.Errorf("expected %d actual %d", tx1, tx2))
+					if valRef1.Tx() != valRef2.Tx() {
+						panic(fmt.Errorf("expected %d actual %d", valRef1.Tx(), valRef2.Tx()))
 					}
 
 					txs, err := immuStore.History(k, 0, false, txCount)
@@ -741,42 +763,325 @@ func TestImmudbStoreIndexing(t *testing.T) {
 
 	wg.Wait()
 
+	t.Run("latest set value should be committed", func(t *testing.T) {
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
+
+		err = tx.Set([]byte("key"), nil, []byte("value1"))
+		require.NoError(t, err)
+
+		err = tx.Set([]byte("key"), nil, []byte("value2"))
+		require.NoError(t, err)
+
+		_, err = tx.Commit()
+		require.NoError(t, err)
+
+		valRef, err := immuStore.Get([]byte("key"))
+		require.NoError(t, err)
+
+		val, err := valRef.Resolve()
+		require.NoError(t, err)
+		require.Equal(t, []byte("value2"), val)
+	})
+
 	err = immuStore.Close()
 	require.NoError(t, err)
 }
 
-func TestImmudbStoreKVConstraints(t *testing.T) {
+func TestImmudbStoreRWTransactions(t *testing.T) {
 	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, _ := Open("data_kv_constraints", opts)
-	defer os.RemoveAll("data_kv_constraints")
+	immuStore, _ := Open("data_tx", opts)
+	defer os.RemoveAll("data_tx")
 
-	_, err := immuStore.Commit([]*KV{{Key: []byte{1, 2, 3}, Value: []byte{3, 2, 1}, Constraint: NoConstraint}}, true)
+	t.Run("after closing write-only tx edge cases", func(t *testing.T) {
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
+
+		require.Nil(t, tx.Metadata())
+
+		err = tx.Set(nil, nil, []byte{3, 2, 1})
+		require.ErrorIs(t, err, ErrNullKey)
+
+		err = tx.Set(make([]byte, immuStore.maxKeyLen+1), nil, []byte{3, 2, 1})
+		require.ErrorIs(t, err, ErrorMaxKeyLenExceeded)
+
+		err = tx.Set([]byte{1, 2, 3}, nil, make([]byte, immuStore.maxValueLen+1))
+		require.ErrorIs(t, err, ErrorMaxValueLenExceeded)
+
+		err = tx.Set([]byte{1, 2, 3}, nil, []byte{3, 2, 1})
+		require.NoError(t, err)
+
+		err = tx.Set([]byte{1, 2, 3}, nil, []byte{3, 2, 1, 0})
+		require.NoError(t, err)
+
+		_, err = tx.Get([]byte{1, 2, 3})
+		require.ErrorIs(t, err, ErrWriteOnlyTx)
+
+		_, err = tx.ExistKeyWith([]byte{1}, []byte{1})
+		require.ErrorIs(t, err, ErrWriteOnlyTx)
+
+		err = tx.Delete([]byte{1, 2, 3})
+		require.ErrorIs(t, err, ErrWriteOnlyTx)
+
+		_, err = tx.NewKeyReader(&KeyReaderSpec{})
+		require.ErrorIs(t, err, ErrWriteOnlyTx)
+
+		_, err = tx.Commit()
+		require.NoError(t, err)
+
+		err = tx.Set([]byte{1, 2, 3}, nil, []byte{3, 2, 1, 0})
+		require.ErrorIs(t, err, ErrAlreadyClosed)
+
+		_, err = tx.NewKeyReader(&KeyReaderSpec{})
+		require.ErrorIs(t, err, ErrAlreadyClosed)
+
+		_, err = tx.Commit()
+		require.ErrorIs(t, err, ErrAlreadyClosed)
+
+		err = tx.Cancel()
+		require.ErrorIs(t, err, ErrAlreadyClosed)
+	})
+
+	t.Run("cancelled transaction should not produce effects", func(t *testing.T) {
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
+
+		_, err = tx.Get([]byte{1, 2, 3})
+		require.ErrorIs(t, err, ErrWriteOnlyTx)
+
+		err = tx.Cancel()
+		require.NoError(t, err)
+
+		err = tx.Cancel()
+		require.ErrorIs(t, err, ErrAlreadyClosed)
+
+		_, err = tx.Commit()
+		require.ErrorIs(t, err, ErrAlreadyClosed)
+
+		valRef, err := immuStore.Get([]byte{1, 2, 3})
+		require.NoError(t, err)
+		require.Equal(t, uint64(1), valRef.Tx())
+		require.Equal(t, uint64(1), valRef.HC())
+		require.Equal(t, uint32(4), valRef.Len())
+		require.Nil(t, valRef.KVMetadata())
+		require.Nil(t, valRef.TxMetadata())
+		require.Equal(t, sha256.Sum256([]byte{3, 2, 1, 0}), valRef.HVal())
+
+		v, err := valRef.Resolve()
+		require.NoError(t, err)
+		require.Equal(t, []byte{3, 2, 1, 0}, v)
+	})
+
+	t.Run("read-your-own-writes should be possible before commit", func(t *testing.T) {
+		_, err := immuStore.Get([]byte("key1"))
+		require.ErrorIs(t, err, ErrKeyNotFound)
+
+		tx, err := immuStore.NewTx()
+		require.NoError(t, err)
+
+		_, err = tx.Get([]byte("key1"))
+		require.ErrorIs(t, err, ErrKeyNotFound)
+
+		err = tx.Set([]byte("key1"), nil, []byte("value1"))
+		require.NoError(t, err)
+
+		exists, err := tx.ExistKeyWith([]byte("key1"), []byte("key"))
+		require.NoError(t, err)
+		require.True(t, exists)
+
+		r, err := tx.NewKeyReader(&KeyReaderSpec{Prefix: []byte("key")})
+		require.NoError(t, err)
+		require.NotNil(t, r)
+
+		k, _, err := r.Read()
+		require.NoError(t, err)
+		require.Equal(t, []byte("key1"), k)
+
+		_, err = tx.Commit()
+		require.ErrorIs(t, err, tbtree.ErrReadersNotClosed)
+
+		err = r.Close()
+		require.NoError(t, err)
+
+		valRef, err := tx.Get([]byte("key1"))
+		require.NoError(t, err)
+		require.Equal(t, uint64(0), valRef.Tx())
+		require.Equal(t, uint64(1), valRef.HC())
+		require.Equal(t, uint32(6), valRef.Len())
+		require.Nil(t, valRef.KVMetadata())
+		require.Nil(t, valRef.TxMetadata())
+		require.Equal(t, sha256.Sum256([]byte("value1")), valRef.HVal())
+
+		v, err := valRef.Resolve()
+		require.NoError(t, err)
+		require.Equal(t, []byte("value1"), v)
+
+		_, err = immuStore.Get([]byte("key1"))
+		require.ErrorIs(t, err, ErrKeyNotFound)
+
+		_, err = tx.Commit()
+		require.NoError(t, err)
+
+		_, err = tx.ExistKeyWith([]byte("key1"), []byte("key1"))
+		require.ErrorIs(t, err, ErrAlreadyClosed)
+
+		valRef, err = immuStore.Get([]byte("key1"))
+		require.NoError(t, err)
+		require.NotNil(t, valRef)
+		require.Equal(t, uint64(2), valRef.Tx())
+
+		v, err = valRef.Resolve()
+		require.NoError(t, err)
+		require.Equal(t, []byte("value1"), v)
+	})
+
+	t.Run("second ongoing tx after the first commit should fail", func(t *testing.T) {
+		tx1, err := immuStore.NewTx()
+		require.NoError(t, err)
+
+		tx2, err := immuStore.NewTx()
+		require.NoError(t, err)
+
+		err = tx1.Set([]byte("key1"), nil, []byte("value1_tx1"))
+		require.NoError(t, err)
+
+		err = tx2.Set([]byte("key1"), nil, []byte("value1_tx2"))
+		require.NoError(t, err)
+
+		_, err = tx1.Commit()
+		require.NoError(t, err)
+
+		_, err = tx2.Commit()
+		require.ErrorIs(t, err, ErrTxReadConflict)
+
+		valRef, err := immuStore.Get([]byte("key1"))
+		require.NoError(t, err)
+		require.NotNil(t, valRef)
+		require.Equal(t, uint64(3), valRef.Tx())
+
+		v, err := valRef.Resolve()
+		require.NoError(t, err)
+		require.Equal(t, []byte("value1_tx1"), v)
+	})
+
+	t.Run("second ongoing tx after the first cancelation should succeed", func(t *testing.T) {
+		tx1, err := immuStore.NewTx()
+		require.NoError(t, err)
+
+		tx2, err := immuStore.NewTx()
+		require.NoError(t, err)
+
+		err = tx1.Set([]byte("key1"), nil, []byte("value1_tx1"))
+		require.NoError(t, err)
+
+		err = tx2.Set([]byte("key1"), nil, []byte("value1_tx2"))
+		require.NoError(t, err)
+
+		err = tx1.Cancel()
+		require.NoError(t, err)
+
+		_, err = tx2.Commit()
+		require.NoError(t, err)
+
+		valRef, err := immuStore.Get([]byte("key1"))
+		require.NoError(t, err)
+		require.NotNil(t, valRef)
+		require.Equal(t, uint64(4), valRef.Tx())
+
+		v, err := valRef.Resolve()
+		require.NoError(t, err)
+		require.Equal(t, []byte("value1_tx2"), v)
+	})
+
+	t.Run("deleted keys should not be reachable", func(t *testing.T) {
+		tx, err := immuStore.NewTx()
+		require.NoError(t, err)
+
+		err = tx.Delete([]byte{1, 2, 3})
+		require.NoError(t, err)
+
+		err = tx.Delete([]byte{1, 2, 3})
+		require.ErrorIs(t, err, ErrKeyNotFound)
+
+		_, err = tx.Commit()
+		require.NoError(t, err)
+
+		_, err = immuStore.Get([]byte{1, 2, 3})
+		require.ErrorIs(t, err, ErrKeyNotFound)
+
+		_, err = immuStore.GetWith([]byte{1, 2, 3}, nil)
+		require.ErrorIs(t, err, ErrIllegalArguments)
+
+		valRef, err := immuStore.GetWith([]byte{1, 2, 3})
+		require.NoError(t, err)
+		require.NotNil(t, valRef)
+		require.True(t, valRef.KVMetadata().Deleted())
+	})
+}
+
+func TestImmudbStoreKVMetadata(t *testing.T) {
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
+	immuStore, _ := Open("data_kv_metadata", opts)
+	defer os.RemoveAll("data_kv_metadata")
+
+	tx, err := immuStore.NewTx()
+	require.NoError(t, err)
+	require.NotNil(t, tx)
+
+	tx.WithMetadata(NewTxMetadata())
+
+	err = tx.Set([]byte{1, 2, 3}, nil, []byte{3, 2, 1})
 	require.NoError(t, err)
 
-	_, err = immuStore.Commit([]*KV{{Key: []byte{1, 2, 3}, Value: []byte{1, 1, 1}, Constraint: MustNotExist}}, true)
-	require.ErrorIs(t, err, ErrKeyAlreadyExists)
+	err = tx.Set([]byte{1, 2, 3}, NewKVMetadata().AsDeleted(true), []byte{3, 2, 1})
+	require.NoError(t, err)
 
-	v, tx, _, err := immuStore.Get([]byte{1, 2, 3})
+	_, err = tx.Commit()
+	require.NoError(t, err)
+
+	_, err = immuStore.Get([]byte{1, 2, 3})
+	require.ErrorIs(t, err, ErrKeyNotFound)
+
+	valRef, err := immuStore.GetWith([]byte{1, 2, 3})
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), valRef.Tx())
+	require.True(t, valRef.KVMetadata().Deleted())
+	require.Equal(t, uint64(1), valRef.HC())
+	require.Equal(t, uint32(3), valRef.Len())
+	require.Equal(t, sha256.Sum256([]byte{3, 2, 1}), valRef.HVal())
+	require.True(t, NewTxMetadata().Equal(valRef.TxMetadata()))
+
+	v, err := valRef.Resolve()
 	require.NoError(t, err)
 	require.Equal(t, []byte{3, 2, 1}, v)
-	require.Equal(t, uint64(1), tx)
 
-	_, err = immuStore.Commit([]*KV{{Key: []byte{1}, Value: []byte{1}, Constraint: MustExist}}, true)
-	require.ErrorIs(t, err, ErrKeyNotFound)
+	t.Run("read deleted key from snapshot should return key not found", func(t *testing.T) {
+		snap, err := immuStore.Snapshot()
+		require.NoError(t, err)
+		require.NotNil(t, snap)
 
-	_, _, _, err = immuStore.Get([]byte{1})
-	require.ErrorIs(t, err, ErrKeyNotFound)
+		_, err = snap.Get([]byte{1, 2, 3})
+		require.ErrorIs(t, err, ErrKeyNotFound)
+	})
 
-	_, err = immuStore.Commit([]*KV{{Key: []byte{0, 0, 0}, Value: []byte{1, 1, 1}, Constraint: MustNotExist}}, true)
+	tx, err = immuStore.NewTx()
 	require.NoError(t, err)
 
-	v, tx, _, err = immuStore.Get([]byte{0, 0, 0})
+	_, err = tx.Get([]byte{1, 2, 3})
+	require.ErrorIs(t, err, ErrKeyNotFound)
+
+	err = tx.Set([]byte{1, 2, 3}, nil, []byte{1, 1, 1})
+	require.NoError(t, err)
+
+	_, err = tx.Commit()
+	require.NoError(t, err)
+	valRef, err = immuStore.Get([]byte{1, 2, 3})
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), valRef.Tx())
+
+	v, err = valRef.Resolve()
 	require.NoError(t, err)
 	require.Equal(t, []byte{1, 1, 1}, v)
-	require.Equal(t, uint64(2), tx)
-
-	_, err = immuStore.Commit([]*KV{{Key: []byte{1, 0, 0}, Value: []byte{0, 0, 1}, Constraint: MustNotExist}, {Key: []byte{1, 0, 0}, Value: []byte{0, 1, 1}, Constraint: MustNotExist}}, true)
-	require.Equal(t, ErrDuplicatedKey, err)
 }
 
 func TestImmudbStoreCommitWith(t *testing.T) {
@@ -791,33 +1096,33 @@ func TestImmudbStoreCommitWith(t *testing.T) {
 	_, err = immuStore.CommitWith(nil, false)
 	require.Equal(t, ErrIllegalArguments, err)
 
-	callback := func(txID uint64, index KeyIndex) ([]*KV, error) {
+	callback := func(txID uint64, index KeyIndex) ([]*EntrySpec, error) {
 		return nil, nil
 	}
 	_, err = immuStore.CommitWith(callback, false)
 	require.Equal(t, ErrorNoEntriesProvided, err)
 
-	callback = func(txID uint64, index KeyIndex) ([]*KV, error) {
+	callback = func(txID uint64, index KeyIndex) ([]*EntrySpec, error) {
 		return nil, errors.New("error")
 	}
 	_, err = immuStore.CommitWith(callback, false)
 	require.Error(t, err)
 
-	callback = func(txID uint64, index KeyIndex) ([]*KV, error) {
-		return []*KV{
+	callback = func(txID uint64, index KeyIndex) ([]*EntrySpec, error) {
+		return []*EntrySpec{
 			{Key: []byte(fmt.Sprintf("keyInsertedAtTx%d", txID)), Value: []byte("value")},
 		}, nil
 	}
 
-	md, err := immuStore.CommitWith(callback, true)
+	hdr, err := immuStore.CommitWith(callback, true)
 	require.NoError(t, err)
 
 	require.Equal(t, uint64(1), immuStore.IndexInfo())
 
-	tx := immuStore.NewTx()
-	immuStore.ReadTx(md.ID, tx)
+	tx := immuStore.NewTxHolder()
+	immuStore.ReadTx(hdr.ID, tx)
 
-	val, err := immuStore.ReadValue(tx, []byte(fmt.Sprintf("keyInsertedAtTx%d", md.ID)))
+	_, val, err := immuStore.ReadValue(tx, []byte(fmt.Sprintf("keyInsertedAtTx%d", hdr.ID)))
 	require.NoError(t, err)
 	require.Equal(t, []byte("value"), val)
 }
@@ -835,17 +1140,9 @@ func TestImmudbStoreHistoricalValues(t *testing.T) {
 	txCount := 10
 	eCount := 10
 
-	_, err = immuStore.Commit(nil, false)
-	require.Equal(t, ErrorNoEntriesProvided, err)
-
-	_, err = immuStore.Commit([]*KV{
-		{Key: []byte("key"), Value: []byte("value")},
-		{Key: []byte("key"), Value: []byte("value")},
-	}, false)
-	require.Equal(t, ErrDuplicatedKey, err)
-
 	for i := 0; i < txCount; i++ {
-		kvs := make([]*KV, eCount)
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
 
 		for j := 0; j < eCount; j++ {
 			k := make([]byte, 8)
@@ -854,12 +1151,13 @@ func TestImmudbStoreHistoricalValues(t *testing.T) {
 			v := make([]byte, 8)
 			binary.BigEndian.PutUint64(v, uint64(i))
 
-			kvs[j] = &KV{Key: k, Value: v}
+			err = tx.Set(k, nil, v)
+			require.NoError(t, err)
 		}
 
-		txMetadata, err := immuStore.Commit(kvs, false)
+		txhdr, err := tx.AsyncCommit()
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), txMetadata.ID)
+		require.Equal(t, uint64(i+1), txhdr.ID)
 	}
 
 	time.Sleep(100 * time.Millisecond)
@@ -875,7 +1173,7 @@ func TestImmudbStoreHistoricalValues(t *testing.T) {
 
 	for f := 0; f < 1; f++ {
 		go func() {
-			tx := immuStore.NewTx()
+			tx := immuStore.NewTxHolder()
 
 			for {
 				snap, err := immuStore.Snapshot()
@@ -902,7 +1200,7 @@ func TestImmudbStoreHistoricalValues(t *testing.T) {
 
 							immuStore.ReadTx(txID, tx)
 
-							val, err := immuStore.ReadValue(tx, k)
+							_, val, err := immuStore.ReadValue(tx, k)
 							if err != nil {
 								panic(err)
 							}
@@ -954,11 +1252,12 @@ func TestImmudbStoreInclusionProof(t *testing.T) {
 	txCount := 100
 	eCount := 100
 
-	_, err = immuStore.Commit(nil, false)
-	require.Equal(t, ErrorNoEntriesProvided, err)
-
 	for i := 0; i < txCount; i++ {
-		kvs := make([]*KV, eCount)
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
+
+		summary := fmt.Sprintf("summary%d", i)
+		tx.WithMetadata(NewTxMetadata().WithSummary([]byte(summary)))
 
 		for j := 0; j < eCount; j++ {
 			k := make([]byte, 8)
@@ -967,12 +1266,13 @@ func TestImmudbStoreInclusionProof(t *testing.T) {
 			v := make([]byte, 8)
 			binary.BigEndian.PutUint64(v, uint64(i<<4+(eCount-j)))
 
-			kvs[j] = &KV{Key: k, Value: v}
+			err = tx.Set(k, NewKVMetadata(), v)
+			require.NoError(t, err)
 		}
 
-		txMetadata, err := immuStore.Commit(kvs, false)
+		txhdr, err := tx.AsyncCommit()
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), txMetadata.ID)
+		require.Equal(t, uint64(i+1), txhdr.ID)
 	}
 
 	err = immuStore.Sync()
@@ -981,11 +1281,8 @@ func TestImmudbStoreInclusionProof(t *testing.T) {
 	err = immuStore.Close()
 	require.NoError(t, err)
 
-	_, err = immuStore.Commit([]*KV{{Key: []byte{}, Value: []byte{}}}, false)
-	require.Equal(t, ErrAlreadyClosed, err)
-
-	_, err = immuStore.CommitWith(func(txID uint64, index KeyIndex) ([]*KV, error) {
-		return []*KV{
+	_, err = immuStore.CommitWith(func(txID uint64, index KeyIndex) ([]*EntrySpec, error) {
+		return []*EntrySpec{
 			{Key: []byte(fmt.Sprintf("keyInsertedAtTx%d", txID)), Value: nil},
 		}, nil
 	}, false)
@@ -994,13 +1291,17 @@ func TestImmudbStoreInclusionProof(t *testing.T) {
 	immuStore, err = Open("data_inclusion_proof", opts)
 	require.NoError(t, err)
 
-	r, err := immuStore.NewTxReader(1, false, immuStore.NewTx())
+	r, err := immuStore.NewTxReader(1, false, immuStore.NewTxHolder())
 	require.NoError(t, err)
 
 	for i := 0; i < txCount; i++ {
 		tx, err := r.Read()
 		require.NoError(t, err)
 		require.NotNil(t, tx)
+
+		entrySpecDigest, err := EntrySpecDigestFor(tx.header.Version)
+		require.NoError(t, err)
+		require.NotNil(t, entrySpecDigest)
 
 		txEntries := tx.Entries()
 		assert.Equal(t, eCount, len(txEntries))
@@ -1028,12 +1329,13 @@ func TestImmudbStoreInclusionProof(t *testing.T) {
 			require.Equal(t, k, key)
 			require.Equal(t, v, value)
 
-			kv := &KV{Key: key, Value: value}
+			e := &EntrySpec{Key: key, Metadata: NewKVMetadata(), Value: value}
 
-			verifies := htree.VerifyInclusion(proof, kv.Digest(), tx.Eh())
+			verifies := htree.VerifyInclusion(proof, entrySpecDigest(e), tx.header.Eh)
 			require.True(t, verifies)
 
-			v, err = immuStore.ReadValue(tx, key)
+			_, v, err = immuStore.ReadValue(tx, key)
+			require.NoError(t, err)
 			require.Equal(t, value, v)
 		}
 	}
@@ -1053,11 +1355,9 @@ func TestLeavesMatchesAHTSync(t *testing.T) {
 	txCount := 1000
 	eCount := 10
 
-	_, err = immuStore.Commit(nil, false)
-	require.Equal(t, ErrorNoEntriesProvided, err)
-
 	for i := 0; i < txCount; i++ {
-		kvs := make([]*KV, eCount)
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
 
 		for j := 0; j < eCount; j++ {
 			k := make([]byte, 8)
@@ -1066,20 +1366,22 @@ func TestLeavesMatchesAHTSync(t *testing.T) {
 			v := make([]byte, 8)
 			binary.BigEndian.PutUint64(v, uint64(i<<4+(eCount-j)))
 
-			kvs[j] = &KV{Key: k, Value: v}
+			err = tx.Set(k, nil, v)
+			require.NoError(t, err)
 		}
 
-		txMetadata, err := immuStore.Commit(kvs, false)
+		txhdr, err := tx.AsyncCommit()
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), txMetadata.ID)
+		require.Equal(t, uint64(i+1), txhdr.ID)
 
-		err = immuStore.WaitForTx(txMetadata.ID, nil)
-		require.NoError(t, err)
-
-		err = immuStore.WaitForIndexingUpto(txMetadata.ID, nil)
+		err = immuStore.WaitForTx(txhdr.ID, nil)
 		require.NoError(t, err)
 
-		exists, err := immuStore.ExistKeyWith(kvs[0].Key, nil, false)
+		err = immuStore.WaitForIndexingUpto(txhdr.ID, nil)
+		require.NoError(t, err)
+
+		var k0 [8]byte
+		exists, err := immuStore.ExistKeyWith(k0[:], nil)
 		require.NoError(t, err)
 		require.True(t, exists)
 	}
@@ -1093,17 +1395,17 @@ func TestLeavesMatchesAHTSync(t *testing.T) {
 		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 
-	tx := immuStore.NewTx()
+	tx := immuStore.NewTxHolder()
 
 	for i := 0; i < txCount; i++ {
 		err := immuStore.ReadTx(uint64(i+1), tx)
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), tx.ID)
+		require.Equal(t, uint64(i+1), tx.header.ID)
 
 		p, err := immuStore.aht.DataAt(uint64(i + 1))
 		require.NoError(t, err)
 
-		alh := tx.Alh
+		alh := tx.header.Alh()
 		require.Equal(t, alh[:], p)
 	}
 }
@@ -1119,11 +1421,9 @@ func TestLeavesMatchesAHTASync(t *testing.T) {
 	txCount := 1000
 	eCount := 10
 
-	_, err = immuStore.Commit(nil, false)
-	require.Equal(t, ErrorNoEntriesProvided, err)
-
 	for i := 0; i < txCount; i++ {
-		kvs := make([]*KV, eCount)
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
 
 		for j := 0; j < eCount; j++ {
 			k := make([]byte, 8)
@@ -1132,12 +1432,13 @@ func TestLeavesMatchesAHTASync(t *testing.T) {
 			v := make([]byte, 8)
 			binary.BigEndian.PutUint64(v, uint64(i<<4+(eCount-j)))
 
-			kvs[j] = &KV{Key: k, Value: v}
+			err = tx.Set(k, nil, v)
+			require.NoError(t, err)
 		}
 
-		txMetadata, err := immuStore.Commit(kvs, false)
+		txhdr, err := tx.AsyncCommit()
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), txMetadata.ID)
+		require.Equal(t, uint64(i+1), txhdr.ID)
 	}
 
 	for {
@@ -1149,17 +1450,17 @@ func TestLeavesMatchesAHTASync(t *testing.T) {
 		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 
-	tx := immuStore.NewTx()
+	tx := immuStore.NewTxHolder()
 
 	for i := 0; i < txCount; i++ {
 		err := immuStore.ReadTx(uint64(i+1), tx)
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), tx.ID)
+		require.Equal(t, uint64(i+1), tx.header.ID)
 
 		p, err := immuStore.aht.DataAt(uint64(i + 1))
 		require.NoError(t, err)
 
-		alh := tx.Alh
+		alh := tx.header.Alh()
 		require.Equal(t, alh[:], p)
 	}
 }
@@ -1175,11 +1476,12 @@ func TestImmudbStoreConsistencyProof(t *testing.T) {
 	txCount := 16
 	eCount := 10
 
-	_, err = immuStore.Commit(nil, false)
-	require.Equal(t, ErrorNoEntriesProvided, err)
-
 	for i := 0; i < txCount; i++ {
-		kvs := make([]*KV, eCount)
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
+
+		summary := fmt.Sprintf("summary%d", i)
+		tx.WithMetadata(NewTxMetadata().WithSummary([]byte(summary)))
 
 		for j := 0; j < eCount; j++ {
 			k := make([]byte, 8)
@@ -1188,35 +1490,39 @@ func TestImmudbStoreConsistencyProof(t *testing.T) {
 			v := make([]byte, 8)
 			binary.BigEndian.PutUint64(v, uint64(i<<4+(eCount-j)))
 
-			kvs[j] = &KV{Key: k, Value: v}
+			err = tx.Set(k, nil, v)
+			require.NoError(t, err)
 		}
 
-		txMetadata, err := immuStore.Commit(kvs, false)
+		txhdr, err := tx.Commit()
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), txMetadata.ID)
+		require.Equal(t, uint64(i+1), txhdr.ID)
 	}
 
-	sourceTx := immuStore.NewTx()
-	targetTx := immuStore.NewTx()
+	sourceTx := immuStore.NewTxHolder()
+	targetTx := immuStore.NewTxHolder()
 
 	for i := 0; i < txCount; i++ {
 		sourceTxID := uint64(i + 1)
 
 		err := immuStore.ReadTx(sourceTxID, sourceTx)
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), sourceTx.ID)
+		require.Equal(t, uint64(i+1), sourceTx.header.ID)
+
+		summary := fmt.Sprintf("summary%d", i)
+		require.Equal(t, []byte(summary), sourceTx.header.Metadata.Summary())
 
 		for j := i; j < txCount; j++ {
 			targetTxID := uint64(j + 1)
 
 			err := immuStore.ReadTx(targetTxID, targetTx)
 			require.NoError(t, err)
-			require.Equal(t, uint64(j+1), targetTx.ID)
+			require.Equal(t, uint64(j+1), targetTx.header.ID)
 
 			dproof, err := immuStore.DualProof(sourceTx, targetTx)
 			require.NoError(t, err)
 
-			verifies := VerifyDualProof(dproof, sourceTxID, targetTxID, sourceTx.Alh, targetTx.Alh)
+			verifies := VerifyDualProof(dproof, sourceTxID, targetTxID, sourceTx.header.Alh(), targetTx.header.Alh())
 			require.True(t, verifies)
 		}
 	}
@@ -1236,11 +1542,9 @@ func TestImmudbStoreConsistencyProofAgainstLatest(t *testing.T) {
 	txCount := 32
 	eCount := 10
 
-	_, err = immuStore.Commit(nil, false)
-	require.Equal(t, ErrorNoEntriesProvided, err)
-
 	for i := 0; i < txCount; i++ {
-		kvs := make([]*KV, eCount)
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
 
 		for j := 0; j < eCount; j++ {
 			k := make([]byte, 8)
@@ -1249,12 +1553,13 @@ func TestImmudbStoreConsistencyProofAgainstLatest(t *testing.T) {
 			v := make([]byte, 8)
 			binary.BigEndian.PutUint64(v, uint64(i<<4+(eCount-j)))
 
-			kvs[j] = &KV{Key: k, Value: v}
+			err = tx.Set(k, nil, v)
+			require.NoError(t, err)
 		}
 
-		txMetadata, err := immuStore.Commit(kvs, false)
+		txhdr, err := tx.AsyncCommit()
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), txMetadata.ID)
+		require.Equal(t, uint64(i+1), txhdr.ID)
 	}
 
 	for {
@@ -1266,25 +1571,25 @@ func TestImmudbStoreConsistencyProofAgainstLatest(t *testing.T) {
 		time.Sleep(time.Duration(10) * time.Millisecond)
 	}
 
-	sourceTx := immuStore.NewTx()
-	targetTx := immuStore.NewTx()
+	sourceTx := immuStore.NewTxHolder()
+	targetTx := immuStore.NewTxHolder()
 
 	targetTxID := uint64(txCount)
 	err = immuStore.ReadTx(targetTxID, targetTx)
 	require.NoError(t, err)
-	require.Equal(t, uint64(txCount), targetTx.ID)
+	require.Equal(t, uint64(txCount), targetTx.header.ID)
 
 	for i := 0; i < txCount-1; i++ {
 		sourceTxID := uint64(i + 1)
 
 		err := immuStore.ReadTx(sourceTxID, sourceTx)
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), sourceTx.ID)
+		require.Equal(t, uint64(i+1), sourceTx.header.ID)
 
 		dproof, err := immuStore.DualProof(sourceTx, targetTx)
 		require.NoError(t, err)
 
-		verifies := VerifyDualProof(dproof, sourceTxID, targetTxID, sourceTx.Alh, targetTx.Alh)
+		verifies := VerifyDualProof(dproof, sourceTxID, targetTxID, sourceTx.header.Alh(), targetTx.header.Alh())
 		require.True(t, verifies)
 	}
 
@@ -1303,11 +1608,15 @@ func TestImmudbStoreConsistencyProofReopened(t *testing.T) {
 	txCount := 16
 	eCount := 100
 
-	_, err = immuStore.Commit(nil, false)
+	tx, err := immuStore.NewWriteOnlyTx()
+	require.NoError(t, err)
+
+	_, err = tx.Commit()
 	require.Equal(t, ErrorNoEntriesProvided, err)
 
 	for i := 0; i < txCount; i++ {
-		kvs := make([]*KV, eCount)
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
 
 		for j := 0; j < eCount; j++ {
 			k := make([]byte, 8)
@@ -1316,16 +1625,17 @@ func TestImmudbStoreConsistencyProofReopened(t *testing.T) {
 			v := make([]byte, 8)
 			binary.BigEndian.PutUint64(v, uint64(i<<4+(eCount-j)))
 
-			kvs[j] = &KV{Key: k, Value: v}
+			err = tx.Set(k, nil, v)
+			require.NoError(t, err)
 		}
 
-		txMetadata, err := immuStore.Commit(kvs, false)
+		txhdr, err := tx.AsyncCommit()
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), txMetadata.ID)
+		require.Equal(t, uint64(i+1), txhdr.ID)
 
 		currentID, currentAlh := immuStore.Alh()
-		require.Equal(t, txMetadata.ID, currentID)
-		require.Equal(t, txMetadata.Alh(), currentAlh)
+		require.Equal(t, txhdr.ID, currentID)
+		require.Equal(t, txhdr.Alh(), currentAlh)
 	}
 
 	err = immuStore.Sync()
@@ -1334,54 +1644,51 @@ func TestImmudbStoreConsistencyProofReopened(t *testing.T) {
 	err = immuStore.Close()
 	require.NoError(t, err)
 
-	_, err = immuStore.Commit([]*KV{{Key: []byte{}, Value: []byte{}}}, false)
-	require.Equal(t, ErrAlreadyClosed, err)
-
 	os.RemoveAll("data_consistency_proof_reopen/aht")
 
 	immuStore, err = Open("data_consistency_proof_reopen", opts.WithMaxValueLen(opts.MaxValueLen-1))
 	require.NoError(t, err)
 
-	tx := immuStore.NewTx()
+	txholder := immuStore.NewTxHolder()
 
 	for i := 0; i < txCount; i++ {
 		txID := uint64(i + 1)
 
-		ri, err := immuStore.NewTxReader(txID, false, tx)
+		ri, err := immuStore.NewTxReader(txID, false, txholder)
 		require.NoError(t, err)
 
 		txi, err := ri.Read()
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), txi.ID)
+		require.Equal(t, uint64(i+1), txi.header.ID)
 	}
 
-	sourceTx := immuStore.NewTx()
-	targetTx := immuStore.NewTx()
+	sourceTx := immuStore.NewTxHolder()
+	targetTx := immuStore.NewTxHolder()
 
 	for i := 0; i < txCount; i++ {
 		sourceTxID := uint64(i + 1)
 
 		err := immuStore.ReadTx(sourceTxID, sourceTx)
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), sourceTx.ID)
+		require.Equal(t, uint64(i+1), sourceTx.header.ID)
 
 		for j := i + 1; j < txCount; j++ {
 			targetTxID := uint64(j + 1)
 
 			err := immuStore.ReadTx(targetTxID, targetTx)
 			require.NoError(t, err)
-			require.Equal(t, uint64(j+1), targetTx.ID)
+			require.Equal(t, uint64(j+1), targetTx.header.ID)
 
 			lproof, err := immuStore.LinearProof(sourceTxID, targetTxID)
 			require.NoError(t, err)
 
-			verifies := VerifyLinearProof(lproof, sourceTxID, targetTxID, sourceTx.Alh, targetTx.Alh)
+			verifies := VerifyLinearProof(lproof, sourceTxID, targetTxID, sourceTx.header.Alh(), targetTx.header.Alh())
 			require.True(t, verifies)
 
 			dproof, err := immuStore.DualProof(sourceTx, targetTx)
 			require.NoError(t, err)
 
-			verifies = VerifyDualProof(dproof, sourceTxID, targetTxID, sourceTx.Alh, targetTx.Alh)
+			verifies = VerifyDualProof(dproof, sourceTxID, targetTxID, sourceTx.header.Alh(), targetTx.header.Alh())
 			require.True(t, verifies)
 		}
 	}
@@ -1403,7 +1710,8 @@ func TestReOpenningImmudbStore(t *testing.T) {
 		require.NoError(t, err)
 
 		for i := 0; i < txCount; i++ {
-			kvs := make([]*KV, eCount)
+			tx, err := immuStore.NewWriteOnlyTx()
+			require.NoError(t, err)
 
 			for j := 0; j < eCount; j++ {
 				k := make([]byte, 8)
@@ -1412,12 +1720,13 @@ func TestReOpenningImmudbStore(t *testing.T) {
 				v := make([]byte, 8)
 				binary.BigEndian.PutUint64(v, uint64(i<<4+(eCount-j)))
 
-				kvs[j] = &KV{Key: k, Value: v}
+				err = tx.Set(k, nil, v)
+				require.NoError(t, err)
 			}
 
-			txMetadata, err := immuStore.Commit(kvs, false)
+			txhdr, err := tx.AsyncCommit()
 			require.NoError(t, err)
-			require.Equal(t, uint64(it*txCount+i+1), txMetadata.ID)
+			require.Equal(t, uint64(it*txCount+i+1), txhdr.ID)
 		}
 
 		err = immuStore.Close()
@@ -1443,7 +1752,8 @@ func TestReOpenningWithCompressionEnabledImmudbStore(t *testing.T) {
 		require.NoError(t, err)
 
 		for i := 0; i < txCount; i++ {
-			kvs := make([]*KV, eCount)
+			tx, err := immuStore.NewWriteOnlyTx()
+			require.NoError(t, err)
 
 			for j := 0; j < eCount; j++ {
 				k := make([]byte, 8)
@@ -1452,12 +1762,13 @@ func TestReOpenningWithCompressionEnabledImmudbStore(t *testing.T) {
 				v := make([]byte, 8)
 				binary.BigEndian.PutUint64(v, uint64(i<<4+(eCount-j)))
 
-				kvs[j] = &KV{Key: k, Value: v}
+				err = tx.Set(k, nil, v)
+				require.NoError(t, err)
 			}
 
-			txMetadata, err := immuStore.Commit(kvs, false)
+			txhdr, err := tx.AsyncCommit()
 			require.NoError(t, err)
-			require.Equal(t, uint64(it*txCount+i+1), txMetadata.ID)
+			require.Equal(t, uint64(it*txCount+i+1), txhdr.ID)
 		}
 
 		err = immuStore.Close()
@@ -1507,7 +1818,7 @@ func TestUncommittedTxOverwriting(t *testing.T) {
 	immuStore, err := OpenWith(path, []appendable.Appendable{failingVLog}, failingTxLog, failingCLog, opts)
 	require.NoError(t, err)
 
-	txReader, err := immuStore.NewTxReader(1, false, immuStore.NewTx())
+	txReader, err := immuStore.NewTxReader(1, false, immuStore.NewTxHolder())
 	require.NoError(t, err)
 
 	_, err = txReader.Read()
@@ -1519,7 +1830,8 @@ func TestUncommittedTxOverwriting(t *testing.T) {
 	emulatedFailures := 0
 
 	for i := 0; i < txCount; i++ {
-		kvs := make([]*KV, eCount)
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
 
 		for j := 0; j < eCount; j++ {
 			k := make([]byte, 4)
@@ -1528,15 +1840,16 @@ func TestUncommittedTxOverwriting(t *testing.T) {
 			v := make([]byte, 8)
 			binary.BigEndian.PutUint64(v, uint64(j+1))
 
-			kvs[j] = &KV{Key: k, Value: v}
+			err = tx.Set(k, nil, v)
+			require.NoError(t, err)
 		}
 
-		txMetadata, err := immuStore.Commit(kvs, false)
+		txhdr, err := tx.Commit()
 		if err != nil {
 			require.Equal(t, errEmulatedAppendableError, err)
 			emulatedFailures++
 		} else {
-			require.Equal(t, uint64(i+1-emulatedFailures), txMetadata.ID)
+			require.Equal(t, uint64(i+1-emulatedFailures), txhdr.ID)
 		}
 	}
 
@@ -1546,7 +1859,7 @@ func TestUncommittedTxOverwriting(t *testing.T) {
 	immuStore, err = Open(path, opts)
 	require.NoError(t, err)
 
-	r, err := immuStore.NewTxReader(1, false, immuStore.NewTx())
+	r, err := immuStore.NewTxReader(1, false, immuStore.NewTxHolder())
 	require.NoError(t, err)
 
 	for i := 0; i < txCount-emulatedFailures; i++ {
@@ -1554,20 +1867,24 @@ func TestUncommittedTxOverwriting(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, tx)
 
+		entrySpecDigest, err := EntrySpecDigestFor(tx.header.Version)
+		require.NoError(t, err)
+		require.NotNil(t, entrySpecDigest)
+
 		txEntries := tx.Entries()
 		assert.Equal(t, eCount, len(txEntries))
 
-		for _, e := range txEntries {
-			proof, err := tx.Proof(e.key())
+		for _, txe := range txEntries {
+			proof, err := tx.Proof(txe.key())
 			require.NoError(t, err)
 
-			value := make([]byte, e.vLen)
-			_, err = immuStore.ReadValueAt(value, e.vOff, e.hVal)
+			value := make([]byte, txe.vLen)
+			_, err = immuStore.ReadValueAt(value, txe.vOff, txe.hVal)
 			require.NoError(t, err)
 
-			kv := &KV{Key: e.key(), Value: value}
+			e := &EntrySpec{Key: txe.key(), Value: value}
 
-			verifies := htree.VerifyInclusion(proof, kv.Digest(), tx.Eh())
+			verifies := htree.VerifyInclusion(proof, entrySpecDigest(e), tx.header.Eh)
 			require.True(t, verifies)
 		}
 	}
@@ -1590,20 +1907,28 @@ func TestExportAndReplicateTx(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll("data_replica_export_replicate")
 
-	md, err := masterStore.Commit([]*KV{{Key: []byte("key1"), Value: []byte("value1")}}, false)
-	require.NoError(t, err)
-	require.NotNil(t, md)
-
-	tx := masterStore.NewTx()
-	etx, err := masterStore.ExportTx(1, tx)
+	tx, err := masterStore.NewWriteOnlyTx()
 	require.NoError(t, err)
 
-	rmd, err := replicaStore.ReplicateTx(etx, false)
-	require.NoError(t, err)
-	require.NotNil(t, rmd)
+	tx.WithMetadata(NewTxMetadata())
 
-	require.Equal(t, md.ID, rmd.ID)
-	require.Equal(t, md.Alh(), rmd.Alh())
+	err = tx.Set([]byte("key1"), nil, []byte("value1"))
+	require.NoError(t, err)
+
+	hdr, err := tx.Commit()
+	require.NoError(t, err)
+	require.NotNil(t, hdr)
+
+	txholder := masterStore.NewTxHolder()
+	etx, err := masterStore.ExportTx(1, txholder)
+	require.NoError(t, err)
+
+	rhdr, err := replicaStore.ReplicateTx(etx, false)
+	require.NoError(t, err)
+	require.NotNil(t, rhdr)
+
+	require.Equal(t, hdr.ID, rhdr.ID)
+	require.Equal(t, hdr.Alh(), rhdr.Alh())
 
 	_, err = replicaStore.ReplicateTx(nil, false)
 	require.Equal(t, ErrIllegalArguments, err)
@@ -1634,7 +1959,10 @@ func BenchmarkSyncedAppend(b *testing.B) {
 		eCount := 100
 
 		for i := 0; i < txCount; i++ {
-			kvs := make([]*KV, eCount)
+			tx, err := immuStore.NewWriteOnlyTx()
+			if err != nil {
+				panic(err)
+			}
 
 			for j := 0; j < eCount; j++ {
 				k := make([]byte, 8)
@@ -1643,10 +1971,13 @@ func BenchmarkSyncedAppend(b *testing.B) {
 				v := make([]byte, 8)
 				binary.BigEndian.PutUint64(v, uint64(i<<4+(eCount-j)))
 
-				kvs[j] = &KV{Key: k, Value: v}
+				err = tx.Set(k, nil, v)
+				if err != nil {
+					panic(err)
+				}
 			}
 
-			_, err := immuStore.Commit(kvs, false)
+			_, err = tx.Commit()
 			if err != nil {
 				panic(err)
 			}
@@ -1664,7 +1995,10 @@ func BenchmarkAppend(b *testing.B) {
 		eCount := 1000
 
 		for i := 0; i < txCount; i++ {
-			kvs := make([]*KV, eCount)
+			tx, err := immuStore.NewWriteOnlyTx()
+			if err != nil {
+				panic(err)
+			}
 
 			for j := 0; j < eCount; j++ {
 				k := make([]byte, 8)
@@ -1673,10 +2007,13 @@ func BenchmarkAppend(b *testing.B) {
 				v := make([]byte, 8)
 				binary.BigEndian.PutUint64(v, uint64(i<<4+(eCount-j)))
 
-				kvs[j] = &KV{Key: k, Value: v}
+				err = tx.Set(k, nil, v)
+				if err != nil {
+					panic(err)
+				}
 			}
 
-			_, err := immuStore.Commit(kvs, false)
+			_, err = tx.Commit()
 			if err != nil {
 				panic(err)
 			}
@@ -1692,9 +2029,13 @@ func TestImmudbStoreIncompleteCommitWrite(t *testing.T) {
 	immuStore, err := Open(dir, DefaultOptions())
 	require.NoError(t, err)
 
-	txMeta, err := immuStore.Commit([]*KV{
-		{Key: []byte("key1"), Value: []byte("val1")},
-	}, true)
+	tx, err := immuStore.NewWriteOnlyTx()
+	require.NoError(t, err)
+
+	err = tx.Set([]byte("key1"), nil, []byte("val1"))
+	require.NoError(t, err)
+
+	hdr, err := tx.Commit()
 	require.NoError(t, err)
 
 	err = immuStore.Close()
@@ -1727,10 +2068,13 @@ func TestImmudbStoreIncompleteCommitWrite(t *testing.T) {
 	immuStore, err = Open(dir, DefaultOptions())
 	require.NoError(t, err)
 
-	value, tx, _, err := immuStore.Get([]byte("key1"))
+	valRef, err := immuStore.Get([]byte("key1"))
+	require.NoError(t, err)
+	require.Equal(t, hdr.ID, valRef.Tx())
+
+	value, err := valRef.Resolve()
 	require.NoError(t, err)
 	require.EqualValues(t, []byte("val1"), value)
-	require.Equal(t, txMeta.ID, tx)
 
 	err = immuStore.Close()
 	require.NoError(t, err)
@@ -1745,16 +2089,26 @@ func TestImmudbStoreTruncatedCommitLog(t *testing.T) {
 	immuStore, err := Open(dir, DefaultOptions())
 	require.NoError(t, err)
 
-	txMeta, err := immuStore.Commit([]*KV{
-		{Key: []byte("key1"), Value: []byte("val1")},
-	}, true)
+	tx, err := immuStore.NewWriteOnlyTx()
 	require.NoError(t, err)
 
-	txMeta2, err := immuStore.Commit([]*KV{
-		{Key: []byte("key1"), Value: []byte("val2")},
-	}, true)
+	err = tx.Set([]byte("key1"), nil, []byte("val1"))
 	require.NoError(t, err)
-	require.NotEqual(t, txMeta.ID, txMeta2.ID)
+
+	hdr1, err := tx.Commit()
+	require.NoError(t, err)
+	require.NotNil(t, hdr1)
+
+	tx, err = immuStore.NewWriteOnlyTx()
+	require.NoError(t, err)
+
+	err = tx.Set([]byte("key1"), nil, []byte("val2"))
+	require.NoError(t, err)
+
+	hdr2, err := tx.Commit()
+	require.NoError(t, err)
+	require.NotNil(t, hdr2)
+	require.NotEqual(t, hdr1.ID, hdr2.ID)
 
 	err = immuStore.Close()
 	require.NoError(t, err)
@@ -1778,24 +2132,34 @@ func TestImmudbStoreTruncatedCommitLog(t *testing.T) {
 	immuStore, err = Open(dir, DefaultOptions())
 	require.NoError(t, err)
 
-	err = immuStore.WaitForIndexingUpto(txMeta.ID, make(<-chan struct{}))
+	err = immuStore.WaitForIndexingUpto(hdr1.ID, make(<-chan struct{}))
 	require.NoError(t, err)
 
-	value, tx, _, err := immuStore.Get([]byte("key1"))
+	valRef, err := immuStore.Get([]byte("key1"))
+	require.NoError(t, err)
+	require.Equal(t, hdr1.ID, valRef.Tx())
+
+	value, err := valRef.Resolve()
 	require.NoError(t, err)
 	require.EqualValues(t, []byte("val1"), value)
-	require.Equal(t, txMeta.ID, tx)
 
 	// ensure we can correctly write more data into the store
-	txMeta2, err = immuStore.Commit([]*KV{
-		{Key: []byte("key1"), Value: []byte("val2")},
-	}, true)
+	tx, err = immuStore.NewWriteOnlyTx()
 	require.NoError(t, err)
 
-	value, tx, _, err = immuStore.Get([]byte("key1"))
+	err = tx.Set([]byte("key1"), nil, []byte("val2"))
+	require.NoError(t, err)
+
+	_, err = tx.Commit()
+	require.NoError(t, err)
+
+	valRef, err = immuStore.Get([]byte("key1"))
+	require.NoError(t, err)
+	require.Equal(t, hdr2.ID, valRef.Tx())
+
+	value, err = valRef.Resolve()
 	require.NoError(t, err)
 	require.EqualValues(t, []byte("val2"), value)
-	require.Equal(t, txMeta2.ID, tx)
 
 	// test after reopening the store
 	err = immuStore.Close()
@@ -1804,10 +2168,13 @@ func TestImmudbStoreTruncatedCommitLog(t *testing.T) {
 	immuStore, err = Open(dir, DefaultOptions())
 	require.NoError(t, err)
 
-	value, tx, _, err = immuStore.Get([]byte("key1"))
+	valRef, err = immuStore.Get([]byte("key1"))
+	require.NoError(t, err)
+	require.Equal(t, hdr2.ID, valRef.Tx())
+
+	value, err = valRef.Resolve()
 	require.NoError(t, err)
 	require.EqualValues(t, []byte("val2"), value)
-	require.Equal(t, txMeta2.ID, tx)
 
 	err = immuStore.Close()
 	require.NoError(t, err)

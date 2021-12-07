@@ -84,7 +84,6 @@ type TBtree struct {
 	root node
 
 	maxNodeSize           int
-	keyHistorySpace       uint64
 	insertionCount        int
 	flushThld             int
 	maxActiveSnapshots    int
@@ -111,8 +110,8 @@ type TBtree struct {
 
 	compacting bool
 
-	closed bool
-	mutex  sync.Mutex
+	closed  bool
+	rwmutex sync.RWMutex
 }
 
 type path []*innerNode
@@ -712,8 +711,8 @@ func (t *TBtree) readLeafNodeFrom(r *appendable.Reader) (*leafNode, error) {
 }
 
 func (t *TBtree) Get(key []byte) (value []byte, ts uint64, hc uint64, err error) {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwmutex.RLock()
+	defer t.rwmutex.RUnlock()
 
 	if t.closed {
 		return nil, 0, 0, ErrAlreadyClosed
@@ -728,8 +727,8 @@ func (t *TBtree) Get(key []byte) (value []byte, ts uint64, hc uint64, err error)
 }
 
 func (t *TBtree) History(key []byte, offset uint64, descOrder bool, limit int) (tss []uint64, err error) {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwmutex.RLock()
+	defer t.rwmutex.RUnlock()
 
 	if t.closed {
 		return nil, ErrAlreadyClosed
@@ -746,15 +745,15 @@ func (t *TBtree) History(key []byte, offset uint64, descOrder bool, limit int) (
 	return t.root.history(key, offset, descOrder, limit)
 }
 
-func (t *TBtree) ExistKeyWith(prefix []byte, neq []byte, smaller bool) (bool, error) {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+func (t *TBtree) ExistKeyWith(prefix []byte, neq []byte) (bool, error) {
+	t.rwmutex.RLock()
+	defer t.rwmutex.RUnlock()
 
 	if t.closed {
 		return false, ErrAlreadyClosed
 	}
 
-	_, leaf, off, err := t.root.findLeafNode(prefix, nil, neq, smaller)
+	_, leaf, off, err := t.root.findLeafNode(prefix, nil, neq, false)
 	if err == ErrKeyNotFound {
 		return false, nil
 	}
@@ -772,8 +771,8 @@ func (t *TBtree) ExistKeyWith(prefix []byte, neq []byte, smaller bool) (bool, er
 }
 
 func (t *TBtree) Sync() error {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwmutex.Lock()
+	defer t.rwmutex.Unlock()
 
 	if t.closed {
 		return ErrAlreadyClosed
@@ -797,8 +796,8 @@ func (t *TBtree) sync() error {
 }
 
 func (t *TBtree) Flush() (wN, wH int64, err error) {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwmutex.Lock()
+	defer t.rwmutex.Unlock()
 
 	if t.closed {
 		return 0, 0, ErrAlreadyClosed
@@ -909,8 +908,8 @@ func (t *TBtree) currentSnapshot() (*Snapshot, error) {
 // SnapshotCount returns the number of stored snapshots
 // Note: snapshotCount(compact(t)) = 1
 func (t *TBtree) SnapshotCount() (uint64, error) {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwmutex.RLock()
+	defer t.rwmutex.RUnlock()
 
 	if t.closed {
 		return 0, ErrAlreadyClosed
@@ -924,8 +923,8 @@ func (t *TBtree) snapshotCount() uint64 {
 }
 
 func (t *TBtree) Compact() (uint64, error) {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwmutex.Lock()
+	defer t.rwmutex.Unlock()
 
 	if t.closed {
 		return 0, ErrAlreadyClosed
@@ -951,9 +950,9 @@ func (t *TBtree) Compact() (uint64, error) {
 
 	t.compacting = true
 
-	t.mutex.Unlock()
+	t.rwmutex.Unlock()
 	err = t.fullDump(snapshot)
-	t.mutex.Lock()
+	t.rwmutex.Lock()
 
 	t.compacting = false
 
@@ -1042,8 +1041,8 @@ func (t *TBtree) fullDumpTo(snapshot *Snapshot, nLog, cLog appendable.Appendable
 }
 
 func (t *TBtree) Close() error {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwmutex.Lock()
+	defer t.rwmutex.Unlock()
 
 	if t.closed {
 		return ErrAlreadyClosed
@@ -1071,11 +1070,7 @@ func (t *TBtree) Close() error {
 	err = t.cLog.Close()
 	merrors.Append(err)
 
-	if merrors.HasErrors() {
-		return merrors
-	}
-
-	return nil
+	return merrors.Reduce()
 }
 
 type KV struct {
@@ -1088,7 +1083,7 @@ func (t *TBtree) Insert(key []byte, value []byte) error {
 }
 
 func (t *TBtree) BulkInsert(kvs []*KV) error {
-	t.mutex.Lock()
+	t.rwmutex.Lock()
 
 	defer func() {
 		slowDown := false
@@ -1097,7 +1092,7 @@ func (t *TBtree) BulkInsert(kvs []*KV) error {
 			slowDown = true
 		}
 
-		t.mutex.Unlock()
+		t.rwmutex.Unlock()
 
 		if slowDown {
 			time.Sleep(t.delayDuringCompaction)
@@ -1124,9 +1119,9 @@ func (t *TBtree) BulkInsert(kvs []*KV) error {
 		}
 
 		k := make([]byte, len(kv.K))
-		v := make([]byte, len(kv.V))
-
 		copy(k, kv.K)
+
+		v := make([]byte, len(kv.V))
 		copy(v, kv.V)
 
 		n1, n2, err := t.root.insertAt(k, v, ts)
@@ -1162,8 +1157,8 @@ func (t *TBtree) BulkInsert(kvs []*KV) error {
 }
 
 func (t *TBtree) Ts() uint64 {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwmutex.RLock()
+	defer t.rwmutex.RUnlock()
 
 	return t.root.ts()
 }
@@ -1173,8 +1168,8 @@ func (t *TBtree) Snapshot() (*Snapshot, error) {
 }
 
 func (t *TBtree) SnapshotSince(ts uint64) (*Snapshot, error) {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwmutex.Lock()
+	defer t.rwmutex.Unlock()
 
 	if t.closed {
 		return nil, ErrAlreadyClosed
@@ -1217,8 +1212,8 @@ func (t *TBtree) newSnapshot(snapshotID uint64, root node) *Snapshot {
 }
 
 func (t *TBtree) snapshotClosed(snapshot *Snapshot) error {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.rwmutex.Lock()
+	defer t.rwmutex.Unlock()
 
 	delete(t.snapshots, snapshot.id)
 
@@ -1506,7 +1501,6 @@ func (n *innerNode) updateTs() {
 			n._ts = n.nodes[i].ts()
 		}
 	}
-	return
 }
 
 ////////////////////////////////////////////////////////////
@@ -1955,53 +1949,54 @@ func (l *leafNode) updateTs() {
 			l._ts = l.values[i].ts
 		}
 	}
-
-	return
 }
 
 func (lv *leafValue) size() int {
 	return 16 + len(lv.key) + len(lv.value)
 }
 
-func (lv *leafValue) asBefore(hLog appendable.Appendable, beforeTs uint64) (uint64, error) {
+func (lv *leafValue) asBefore(hLog appendable.Appendable, beforeTs uint64) (ts, hc uint64, err error) {
 	if lv.ts < beforeTs {
-		return lv.ts, nil
+		return lv.ts, lv.hCount, nil
 	}
 
 	for _, ts := range lv.tss {
 		if ts < beforeTs {
-			return ts, nil
+			return ts, lv.hCount, nil
 		}
 	}
 
 	hOff := lv.hOff
+	skippedUpdates := uint64(0)
 
 	for i := uint64(0); i < lv.hCount; i++ {
 		r := appendable.NewReaderFrom(hLog, hOff, DefaultMaxNodeSize)
 
 		hc, err := r.ReadUint32()
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 
-		for i := 0; i < int(hc); i++ {
+		for j := 0; j < int(hc); j++ {
 			ts, err := r.ReadUint64()
 			if err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 
 			if ts < beforeTs {
-				return ts, nil
+				return ts, lv.hCount - skippedUpdates, nil
 			}
+
+			skippedUpdates++
 		}
 
 		prevOff, err := r.ReadUint64()
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 
 		hOff = int64(prevOff)
 	}
 
-	return 0, ErrKeyNotFound
+	return 0, 0, ErrKeyNotFound
 }

@@ -154,6 +154,38 @@
         ]
       }
     },
+    "/db/delete": {
+      "post": {
+        "operationId": "ImmuService_Delete",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/schemaTxHeader"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/schemaDeleteKeysRequest"
+            }
+          }
+        ],
+        "tags": [
+          "ImmuService"
+        ]
+      }
+    },
     "/db/execall": {
       "post": {
         "operationId": "ImmuService_ExecAll",
@@ -161,7 +193,7 @@
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/schemaTxMetadata"
+              "$ref": "#/definitions/schemaTxHeader"
             }
           },
           "default": {
@@ -366,7 +398,7 @@
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/schemaTxMetadata"
+              "$ref": "#/definitions/schemaTxHeader"
             }
           },
           "default": {
@@ -398,7 +430,7 @@
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/schemaTxMetadata"
+              "$ref": "#/definitions/schemaTxHeader"
             }
           },
           "default": {
@@ -689,45 +721,6 @@
         ]
       }
     },
-    "/db/usesnapshot": {
-      "get": {
-        "summary": "SQL",
-        "operationId": "ImmuService_UseSnapshot",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "properties": {}
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/runtimeError"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "sinceTx",
-            "in": "query",
-            "required": false,
-            "type": "string",
-            "format": "uint64"
-          },
-          {
-            "name": "asBeforeTx",
-            "in": "query",
-            "required": false,
-            "type": "string",
-            "format": "uint64"
-          }
-        ],
-        "tags": [
-          "ImmuService"
-        ]
-      }
-    },
     "/db/verifiable/get": {
       "post": {
         "operationId": "ImmuService_VerifiableGet",
@@ -933,7 +926,7 @@
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/schemaTxMetadata"
+              "$ref": "#/definitions/schemaTxHeader"
             }
           },
           "default": {
@@ -1235,7 +1228,7 @@
       "properties": {
         "type_url": {
           "type": "string",
-          "description": "A URL/resource name that uniquely identifies the type of the serialized\nprotocol buffer message. This string must contain at least\none \"/\" character. The last segment of the URL's path must represent\nthe fully qualified name of the type (as in\n`path/google.protobuf.Duration`). The name should be in a canonical form\n(e.g., leading \".\" is not accepted).\n\nIn practice, teams usually precompile into the binary all types that they\nexpect it to use in the context of Any. However, for URLs which use the\nscheme `http`, `https`, or no scheme, one can optionally set up a type\nserver that maps type URLs to message definitions as follows:\n\n* If no scheme is provided, `https` is assumed.\n* An HTTP GET on the URL must yield a [google.protobuf.Type][]\n  value in binary format, or produce an error.\n* Applications are allowed to cache lookup results based on the\n  URL, or have them precompiled into a binary to avoid any\n  lookup. Therefore, binary compatibility needs to be preserved\n  on changes to types. (Use versioned type names to manage\n  breaking changes.)\n\nNote: this functionality is not currently available in the official\nprotobuf release, and it is not used for type URLs beginning with\ntype.googleapis.com.\n\nSchemes other than `http`, `https` (or the empty scheme) might be\nused with implementation specific semantics."
+          "description": "A URL/resource name that uniquely identifies the type of the serialized\nprotocol buffer message. The last segment of the URL's path must represent\nthe fully qualified name of the type (as in\n`path/google.protobuf.Duration`). The name should be in a canonical form\n(e.g., leading \".\" is not accepted).\n\nIn practice, teams usually precompile into the binary all types that they\nexpect it to use in the context of Any. However, for URLs which use the\nscheme `http`, `https`, or no scheme, one can optionally set up a type\nserver that maps type URLs to message definitions as follows:\n\n* If no scheme is provided, `https` is assumed.\n* An HTTP GET on the URL must yield a [google.protobuf.Type][]\n  value in binary format, or produce an error.\n* Applications are allowed to cache lookup results based on the\n  URL, or have them precompiled into a binary to avoid any\n  lookup. Therefore, binary compatibility needs to be preserved\n  on changes to types. (Use versioned type names to manage\n  breaking changes.)\n\nNote: this functionality is not currently available in the official\nprotobuf release, and it is not used for type URLs beginning with\ntype.googleapis.com.\n\nSchemes other than `http`, `https` (or the empty scheme) might be\nused with implementation specific semantics."
         },
         "value": {
           "type": "string",
@@ -1354,6 +1347,24 @@
         }
       }
     },
+    "schemaCommittedSQLTx": {
+      "type": "object",
+      "properties": {
+        "header": {
+          "$ref": "#/definitions/schemaTxHeader"
+        },
+        "updatedRows": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "lastInsertedPKs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/schemaSQLValue"
+          }
+        }
+      }
+    },
     "schemaCreateUserRequest": {
       "type": "object",
       "properties": {
@@ -1439,14 +1450,33 @@
         }
       }
     },
+    "schemaDeleteKeysRequest": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "byte"
+          }
+        },
+        "sinceTx": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "noWait": {
+          "type": "boolean"
+        }
+      }
+    },
     "schemaDualProof": {
       "type": "object",
       "properties": {
-        "sourceTxMetadata": {
-          "$ref": "#/definitions/schemaTxMetadata"
+        "sourceTxHeader": {
+          "$ref": "#/definitions/schemaTxHeader"
         },
-        "targetTxMetadata": {
-          "$ref": "#/definitions/schemaTxMetadata"
+        "targetTxHeader": {
+          "$ref": "#/definitions/schemaTxHeader"
         },
         "inclusionProof": {
           "type": "array",
@@ -1506,6 +1536,9 @@
         },
         "referencedBy": {
           "$ref": "#/definitions/schemaReference"
+        },
+        "metadata": {
+          "$ref": "#/definitions/schemaKVMetadata"
         }
       }
     },
@@ -1606,6 +1639,14 @@
         }
       }
     },
+    "schemaKVMetadata": {
+      "type": "object",
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        }
+      }
+    },
     "schemaKeyListRequest": {
       "type": "object",
       "properties": {
@@ -1649,6 +1690,9 @@
         "value": {
           "type": "string",
           "format": "byte"
+        },
+        "metadata": {
+          "$ref": "#/definitions/schemaKVMetadata"
         }
       }
     },
@@ -1708,6 +1752,14 @@
         }
       }
     },
+    "schemaNewTxResponse": {
+      "type": "object",
+      "properties": {
+        "transactionID": {
+          "type": "string"
+        }
+      }
+    },
     "schemaOp": {
       "type": "object",
       "properties": {
@@ -1719,6 +1771,17 @@
         },
         "ref": {
           "$ref": "#/definitions/schemaReferenceRequest"
+        }
+      }
+    },
+    "schemaOpenSessionResponse": {
+      "type": "object",
+      "properties": {
+        "sessionID": {
+          "type": "string"
+        },
+        "serverUUID": {
+          "type": "string"
         }
       }
     },
@@ -1756,6 +1819,9 @@
         "atTx": {
           "type": "string",
           "format": "uint64"
+        },
+        "metadata": {
+          "$ref": "#/definitions/schemaKVMetadata"
         }
       }
     },
@@ -1813,6 +1879,9 @@
         "value": {
           "type": "string",
           "format": "byte"
+        },
+        "metadata": {
+          "$ref": "#/definitions/schemaKVMetadata"
         }
       }
     },
@@ -1836,27 +1905,14 @@
     "schemaSQLExecResult": {
       "type": "object",
       "properties": {
-        "ctxs": {
+        "txs": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/schemaTxMetadata"
+            "$ref": "#/definitions/schemaCommittedSQLTx"
           }
         },
-        "dtxs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/schemaTxMetadata"
-          }
-        },
-        "updatedRows": {
-          "type": "integer",
-          "format": "int64"
-        },
-        "lastInsertedPKs": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/definitions/schemaSQLValue"
-          }
+        "ongoingTx": {
+          "type": "boolean"
         }
       }
     },
@@ -1935,6 +1991,10 @@
         "bs": {
           "type": "string",
           "format": "byte"
+        },
+        "ts": {
+          "type": "string",
+          "format": "int64"
         }
       }
     },
@@ -2023,8 +2083,8 @@
     "schemaTx": {
       "type": "object",
       "properties": {
-        "metadata": {
-          "$ref": "#/definitions/schemaTxMetadata"
+        "header": {
+          "$ref": "#/definitions/schemaTxHeader"
         },
         "entries": {
           "type": "array",
@@ -2048,21 +2108,13 @@
         "vLen": {
           "type": "integer",
           "format": "int32"
+        },
+        "metadata": {
+          "$ref": "#/definitions/schemaKVMetadata"
         }
       }
     },
-    "schemaTxList": {
-      "type": "object",
-      "properties": {
-        "txs": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/schemaTx"
-          }
-        }
-      }
-    },
-    "schemaTxMetadata": {
+    "schemaTxHeader": {
       "type": "object",
       "properties": {
         "id": {
@@ -2076,6 +2128,13 @@
         "ts": {
           "type": "string",
           "format": "int64"
+        },
+        "version": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "metadata": {
+          "$ref": "#/definitions/schemaTxMD"
         },
         "nentries": {
           "type": "integer",
@@ -2094,6 +2153,35 @@
           "format": "byte"
         }
       }
+    },
+    "schemaTxList": {
+      "type": "object",
+      "properties": {
+        "txs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/schemaTx"
+          }
+        }
+      }
+    },
+    "schemaTxMD": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "schemaTxMode": {
+      "type": "string",
+      "enum": [
+        "ReadOnly",
+        "WriteOnly",
+        "ReadWrite"
+      ],
+      "default": "ReadOnly"
     },
     "schemaTxScanRequest": {
       "type": "object",

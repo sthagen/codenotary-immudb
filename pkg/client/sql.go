@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"time"
 
 	"github.com/codenotary/immudb/pkg/client/errors"
 
@@ -42,15 +43,6 @@ func (c *immuClient) SQLExec(ctx context.Context, sql string, params map[string]
 	}
 
 	return c.ServiceClient.SQLExec(ctx, &schema.SQLExecRequest{Sql: sql, Params: namedParams})
-}
-
-func (c *immuClient) UseSnapshot(ctx context.Context, sinceTx, asBeforeTx uint64) error {
-	if !c.IsConnected() {
-		return ErrNotConnected
-	}
-
-	_, err := c.ServiceClient.UseSnapshot(ctx, &schema.UseSnapshotRequest{SinceTx: sinceTx, AsBeforeTx: asBeforeTx})
-	return err
 }
 
 func (c *immuClient) SQLQuery(ctx context.Context, sql string, params map[string]interface{}, renewSnapshot bool) (*schema.SQLQueryResult, error) {
@@ -116,8 +108,13 @@ func (c *immuClient) VerifyRow(ctx context.Context, row *schema.Row, table strin
 		return ErrIllegalArguments
 	}
 
-	inclusionProof := schema.InclusionProofFrom(vEntry.InclusionProof)
-	dualProof := schema.DualProofFrom(vEntry.VerifiableTx.DualProof)
+	entrySpecDigest, err := store.EntrySpecDigestFor(int(vEntry.VerifiableTx.Tx.Header.Version))
+	if err != nil {
+		return err
+	}
+
+	inclusionProof := schema.InclusionProofFromProto(vEntry.InclusionProof)
+	dualProof := schema.DualProofFromProto(vEntry.VerifiableTx.DualProof)
 
 	var eh [sha256.Size]byte
 
@@ -173,27 +170,27 @@ func (c *immuClient) VerifyRow(ctx context.Context, row *schema.Row, table strin
 		return err
 	}
 
-	kv := &store.KV{Key: pkKey, Value: vEntry.SqlEntry.Value}
+	e := &store.EntrySpec{Key: pkKey, Value: vEntry.SqlEntry.Value}
 
 	if state.TxId <= vTx {
-		eh = schema.DigestFrom(vEntry.VerifiableTx.DualProof.TargetTxMetadata.EH)
+		eh = schema.DigestFromProto(vEntry.VerifiableTx.DualProof.TargetTxHeader.EH)
 
 		sourceID = state.TxId
-		sourceAlh = schema.DigestFrom(state.TxHash)
+		sourceAlh = schema.DigestFromProto(state.TxHash)
 		targetID = vTx
-		targetAlh = dualProof.TargetTxMetadata.Alh()
+		targetAlh = dualProof.TargetTxHeader.Alh()
 	} else {
-		eh = schema.DigestFrom(vEntry.VerifiableTx.DualProof.SourceTxMetadata.EH)
+		eh = schema.DigestFromProto(vEntry.VerifiableTx.DualProof.SourceTxHeader.EH)
 
 		sourceID = vTx
-		sourceAlh = dualProof.SourceTxMetadata.Alh()
+		sourceAlh = dualProof.SourceTxHeader.Alh()
 		targetID = state.TxId
-		targetAlh = schema.DigestFrom(state.TxHash)
+		targetAlh = schema.DigestFromProto(state.TxHash)
 	}
 
 	verifies := store.VerifyInclusion(
 		inclusionProof,
-		kv,
+		entrySpecDigest(e),
 		eh)
 	if !verifies {
 		return store.ErrCorruptedData
@@ -329,6 +326,10 @@ func typedValueToRowValue(tv sql.TypedValue) *schema.SQLValue {
 	case sql.BLOBType:
 		{
 			return &schema.SQLValue{Value: &schema.SQLValue_Bs{Bs: tv.Value().([]byte)}}
+		}
+	case sql.TimestampType:
+		{
+			return &schema.SQLValue{Value: &schema.SQLValue_Ts{Ts: tv.Value().(time.Time).UnixNano()}}
 		}
 	}
 	return nil

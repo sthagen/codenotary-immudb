@@ -18,7 +18,6 @@ package immuc
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
@@ -30,7 +29,7 @@ func (i *immuc) ZScan(args []string) (string, error) {
 	ctx := context.Background()
 
 	response, err := i.Execute(func(immuClient client.ImmuClient) (interface{}, error) {
-		return immuClient.ZScan(ctx, &schema.ZScanRequest{Set: set, SinceTx: math.MaxUint64, NoWait: true})
+		return immuClient.ZScan(ctx, &schema.ZScanRequest{Set: set, NoWait: true})
 	})
 	if err != nil {
 		rpcerrors := strings.SplitAfter(err.Error(), "=")
@@ -46,7 +45,7 @@ func (i *immuc) ZScan(args []string) (string, error) {
 
 	zEntries := response.(*schema.ZEntries)
 	if len(zEntries.Entries) == 0 {
-		str.WriteString("0")
+		str.WriteString("no entries")
 		return str.String(), nil
 	}
 
@@ -54,7 +53,7 @@ func (i *immuc) ZScan(args []string) (string, error) {
 		if j > 0 {
 			str.WriteString("\n")
 		}
-		str.WriteString(PrintKV(entry.Entry.Key, entry.Entry.Value, entry.Entry.Tx, false, i.valueOnly))
+		str.WriteString(PrintKV(entry.Entry.Key, entry.Entry.Metadata, entry.Entry.Value, entry.Entry.Tx, false, i.valueOnly))
 	}
 
 	return str.String(), nil
@@ -66,7 +65,7 @@ func (i *immuc) Scan(args []string) (res string, err error) {
 	ctx := context.Background()
 
 	response, err := i.Execute(func(immuClient client.ImmuClient) (interface{}, error) {
-		return immuClient.Scan(ctx, &schema.ScanRequest{Prefix: prefix, SinceTx: math.MaxUint64, NoWait: true})
+		return immuClient.Scan(ctx, &schema.ScanRequest{Prefix: prefix, NoWait: true})
 	})
 	if err != nil {
 		rpcerrors := strings.SplitAfter(err.Error(), "=")
@@ -80,7 +79,7 @@ func (i *immuc) Scan(args []string) (res string, err error) {
 
 	entries := response.(*schema.Entries)
 	if len(entries.Entries) == 0 {
-		str.WriteString("0")
+		str.WriteString("no entries")
 		return str.String(), nil
 	}
 
@@ -88,7 +87,7 @@ func (i *immuc) Scan(args []string) (res string, err error) {
 		if j > 0 {
 			str.WriteString("\n")
 		}
-		str.WriteString(PrintKV(entry.Key, entry.Value, entry.Tx, false, i.valueOnly))
+		str.WriteString(PrintKV(entry.Key, entry.Metadata, entry.Value, entry.Tx, false, i.valueOnly))
 	}
 
 	return str.String(), nil

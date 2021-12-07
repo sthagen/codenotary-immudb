@@ -16,7 +16,7 @@ export GO111MODULE=on
 
 SHELL=/bin/bash -o pipefail
 
-VERSION=1.1.0
+VERSION=1.2.0-RC1
 DEFAULT_WEBCONSOLE_VERSION=1.0.11
 SERVICES=immudb immuadmin immuclient
 TARGETS=linux/amd64 windows/amd64 darwin/amd64 linux/s390x linux/arm64 freebsd/amd64 darwin/arm64
@@ -53,10 +53,10 @@ rebuild: clean build/codegen all
 .PHONY: webconsole
 ifdef WEBCONSOLE
 webconsole: ./webconsole/dist
-	$(GO) generate $(IMMUDB_BUILD_TAGS) ./webconsole
+	env -u GOOS -u GOARCH $(GO) generate $(IMMUDB_BUILD_TAGS) ./webconsole
 else
 webconsole:
-	$(GO) generate $(IMMUDB_BUILD_TAGS) ./webconsole
+	env -u GOOS -u GOARCH $(GO) generate $(IMMUDB_BUILD_TAGS) ./webconsole
 endif
 
 # To be called manually to update the default webconsole
@@ -121,26 +121,26 @@ coverage:
 build/codegen:
 	$(PROTOC) -I pkg/api/schema/ pkg/api/schema/schema.proto \
 	-I$(GOPATH)/pkg/mod \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.14.4/third_party/googleapis \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.14.4 \
+	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0/third_party/googleapis \
+	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0 \
 	--go_out=plugins=grpc,paths=source_relative:pkg/api/schema
 
 	$(PROTOC) -I pkg/api/schema/ pkg/api/schema/schema.proto \
 	-I$(GOPATH)/pkg/mod \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.14.4/third_party/googleapis \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.14.4 \
+	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0/third_party/googleapis \
+	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0 \
   	--grpc-gateway_out=logtostderr=true,paths=source_relative:pkg/api/schema \
 
 	$(PROTOC) -I pkg/api/schema/ pkg/api/schema/schema.proto \
 	-I$(GOPATH)/pkg/mod \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.14.4/third_party/googleapis \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.14.4 \
+	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0/third_party/googleapis \
+	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0 \
   	--swagger_out=logtostderr=true:pkg/api/schema
 
 	$(PROTOC) -I pkg/api/schema/ pkg/api/schema/schema.proto \
 	-I$(GOPATH)/pkg/mod \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.14.4/third_party/googleapis \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.14.4 \
+	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0/third_party/googleapis \
+	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0 \
 	--doc_out=pkg/api/schema --doc_opt=markdown,docs.md \
 
 .PHONY: clean

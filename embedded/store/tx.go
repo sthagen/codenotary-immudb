@@ -19,41 +19,41 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 
 	"github.com/codenotary/immudb/embedded/appendable"
 	"github.com/codenotary/immudb/embedded/htree"
 )
 
 type Tx struct {
+	header *TxHeader
+
+	entries []*TxEntry
+
+	htree *htree.HTree
+}
+
+type TxHeader struct {
 	ID      uint64
 	Ts      int64
 	BlTxID  uint64
 	BlRoot  [sha256.Size]byte
 	PrevAlh [sha256.Size]byte
 
-	nentries int
-	entries  []*TxEntry
+	Version int
 
-	htree *htree.HTree
+	Metadata *TxMetadata
 
-	Alh       [sha256.Size]byte
-	InnerHash [sha256.Size]byte
-}
-
-type TxMetadata struct {
-	ID       uint64
-	PrevAlh  [sha256.Size]byte
-	Ts       int64
 	NEntries int
 	Eh       [sha256.Size]byte
-	BlTxID   uint64
-	BlRoot   [sha256.Size]byte
 }
 
-func NewTx(nentries int, maxKeyLen int) *Tx {
+func newTx(nentries int, maxKeyLen int) *Tx {
 	entries := make([]*TxEntry, nentries)
 	for i := 0; i < nentries; i++ {
-		entries[i] = &TxEntry{k: make([]byte, maxKeyLen)}
+		entries[i] = &TxEntry{
+			k: make([]byte, maxKeyLen),
+		}
 	}
 
 	return NewTxWithEntries(entries)
@@ -63,151 +63,258 @@ func NewTxWithEntries(entries []*TxEntry) *Tx {
 	htree, _ := htree.New(len(entries))
 
 	return &Tx{
-		ID:       0,
-		entries:  entries,
-		nentries: len(entries),
-		htree:    htree,
+		header:  &TxHeader{NEntries: len(entries)},
+		entries: entries,
+		htree:   htree,
 	}
 }
 
-func (tx *Tx) Metadata() *TxMetadata {
-	var prevAlh, blRoot [sha256.Size]byte
-
-	copy(prevAlh[:], tx.PrevAlh[:])
-	copy(blRoot[:], tx.BlRoot[:])
-
-	return &TxMetadata{
-		ID:       tx.ID,
-		PrevAlh:  prevAlh,
-		Ts:       tx.Ts,
-		NEntries: tx.nentries,
-		Eh:       tx.Eh(),
-		BlTxID:   tx.BlTxID,
-		BlRoot:   blRoot,
-	}
+func (tx *Tx) Header() *TxHeader {
+	return tx.header
 }
 
-func (md *TxMetadata) serialize() []byte {
-	var b [txIDSize + 3*sha256.Size + tsSize + 12]byte
+func (hdr *TxHeader) Bytes() []byte {
+	// ID + PrevAlh + Ts + Version + MDLen + MD + NEntries + Eh + BlTxID + BlRoot
+	var b [txIDSize + sha256.Size + tsSize + sszSize + (sszSize + maxTxMetadataLen) + sszSize + sha256.Size + txIDSize + sha256.Size]byte
 	i := 0
 
-	binary.BigEndian.PutUint64(b[i:], md.ID)
+	binary.BigEndian.PutUint64(b[i:], hdr.ID)
 	i += txIDSize
 
-	copy(b[i:], md.PrevAlh[:])
+	copy(b[i:], hdr.PrevAlh[:])
 	i += sha256.Size
 
-	binary.BigEndian.PutUint64(b[i:], uint64(md.Ts))
+	binary.BigEndian.PutUint64(b[i:], uint64(hdr.Ts))
 	i += tsSize
 
-	binary.BigEndian.PutUint32(b[i:], uint32(md.NEntries))
-	i += 4
+	binary.BigEndian.PutUint16(b[i:], uint16(hdr.Version))
+	i += sszSize
 
-	copy(b[i:], md.Eh[:])
+	switch hdr.Version {
+	case 0:
+		{
+			binary.BigEndian.PutUint16(b[i:], uint16(hdr.NEntries))
+			i += sszSize
+		}
+	case 1:
+		{
+			var mdbs []byte
+
+			if hdr.Metadata != nil {
+				mdbs = hdr.Metadata.Bytes()
+			}
+
+			binary.BigEndian.PutUint16(b[i:], uint16(len(mdbs)))
+			i += sszSize
+
+			copy(b[i:], mdbs)
+			i += len(mdbs)
+
+			binary.BigEndian.PutUint32(b[i:], uint32(hdr.NEntries))
+			i += lszSize
+		}
+	default:
+		{
+			panic(fmt.Errorf("missing tx header serialization method for version %d", hdr.Version))
+		}
+	}
+
+	// following records are currently common in versions 0 and 1
+	copy(b[i:], hdr.Eh[:])
 	i += sha256.Size
 
-	binary.BigEndian.PutUint64(b[i:], uint64(md.BlTxID))
+	binary.BigEndian.PutUint64(b[i:], hdr.BlTxID)
 	i += txIDSize
 
-	copy(b[i:], md.BlRoot[:])
+	copy(b[i:], hdr.BlRoot[:])
 	i += sha256.Size
 
-	return b[:]
+	return b[:i]
 }
 
-func (md *TxMetadata) readFrom(b []byte) error {
-	if len(b) != txIDSize+3*sha256.Size+tsSize+12 {
+func (hdr *TxHeader) ReadFrom(b []byte) error {
+	// Minimum length with version record
+	if len(b) < txIDSize+sha256.Size+tsSize+2*sszSize+sha256.Size+txIDSize+sha256.Size {
 		return ErrIllegalArguments
 	}
 
 	i := 0
 
-	md.ID = binary.BigEndian.Uint64(b[i:])
+	hdr.ID = binary.BigEndian.Uint64(b[i:])
 	i += txIDSize
 
-	copy(md.PrevAlh[:], b[i:])
+	copy(hdr.PrevAlh[:], b[i:])
 	i += sha256.Size
 
-	md.Ts = int64(binary.BigEndian.Uint64(b[i:]))
+	hdr.Ts = int64(binary.BigEndian.Uint64(b[i:]))
 	i += tsSize
 
-	md.NEntries = int(binary.BigEndian.Uint32(b[i:]))
-	i += 4
+	hdr.Version = int(binary.BigEndian.Uint16(b[i:]))
+	i += sszSize
 
-	copy(md.Eh[:], b[i:])
+	switch hdr.Version {
+	case 0:
+		{
+
+			hdr.NEntries = int(binary.BigEndian.Uint16(b[i:]))
+			i += sszSize
+		}
+	case 1:
+		{
+			// version includes metadata record and a greater max number of entries
+
+			mdLen := int(binary.BigEndian.Uint16(b[i:]))
+			i += sszSize
+
+			// nentries follows metadata
+			if len(b) < i+mdLen+sszSize || mdLen > maxTxMetadataLen {
+				return ErrCorruptedData
+			}
+
+			if mdLen > 0 {
+				hdr.Metadata = &TxMetadata{}
+
+				err := hdr.Metadata.ReadFrom(b[i : i+mdLen])
+				if err != nil {
+					return err
+				}
+				i += mdLen
+			}
+
+			hdr.NEntries = int(binary.BigEndian.Uint32(b[i:]))
+			i += lszSize
+		}
+	default:
+		{
+			return ErrNewerVersionOrCorruptedData
+		}
+	}
+
+	// following records are currently common in versions 0 and 1
+	copy(hdr.Eh[:], b[i:])
 	i += sha256.Size
 
-	md.BlTxID = binary.BigEndian.Uint64(b[i:])
+	hdr.BlTxID = binary.BigEndian.Uint64(b[i:])
 	i += txIDSize
 
-	copy(md.BlRoot[:], b[i:])
+	copy(hdr.BlRoot[:], b[i:])
 	i += sha256.Size
 
 	return nil
 }
 
-func (txMetadata *TxMetadata) Alh() [sha256.Size]byte {
-	var bi [txIDSize + 2*sha256.Size]byte
+func (hdr *TxHeader) innerHash() [sha256.Size]byte {
+	// ts + version + (mdLen + md)? + nentries + eH + blTxID + blRoot
+	var b [tsSize + sszSize + (sszSize + maxTxMetadataLen) + sszSize + sha256.Size + txIDSize + sha256.Size]byte
+	i := 0
 
-	binary.BigEndian.PutUint64(bi[:], txMetadata.ID)
-	copy(bi[txIDSize:], txMetadata.PrevAlh[:])
+	binary.BigEndian.PutUint64(b[i:], uint64(hdr.Ts))
+	i += tsSize
 
-	var bj [tsSize + 4 + sha256.Size + txIDSize + sha256.Size]byte
-	binary.BigEndian.PutUint64(bj[:], uint64(txMetadata.Ts))
-	binary.BigEndian.PutUint32(bj[tsSize:], uint32(txMetadata.NEntries))
-	copy(bj[tsSize+4:], txMetadata.Eh[:])
-	binary.BigEndian.PutUint64(bj[tsSize+4+sha256.Size:], txMetadata.BlTxID)
-	copy(bj[tsSize+4+sha256.Size+txIDSize:], txMetadata.BlRoot[:])
-	innerHash := sha256.Sum256(bj[:]) // hash(ts + nentries + eH + blTxID + blRoot)
+	binary.BigEndian.PutUint16(b[i:], uint16(hdr.Version))
+	i += sszSize
 
-	copy(bi[txIDSize+sha256.Size:], innerHash[:]) // hash(txID + prevAlh + innerHash)
+	switch hdr.Version {
+	case 0:
+		{
+			binary.BigEndian.PutUint16(b[i:], uint16(hdr.NEntries))
+			i += sszSize
+		}
+	case 1:
+		{
+			var mdbs []byte
 
-	return sha256.Sum256(bi[:])
-}
+			if hdr.Metadata != nil {
+				mdbs = hdr.Metadata.Bytes()
+			}
 
-func (tx *Tx) BuildHashTree() error {
-	digests := make([][sha256.Size]byte, tx.nentries)
+			binary.BigEndian.PutUint16(b[i:], uint16(len(mdbs)))
+			i += sszSize
 
-	for i, e := range tx.Entries() {
-		digests[i] = e.Digest()
+			copy(b[i:], mdbs)
+			i += len(mdbs)
+
+			binary.BigEndian.PutUint32(b[i:], uint32(hdr.NEntries))
+			i += lszSize
+		}
+	default:
+		{
+			panic(fmt.Errorf("missing tx hash calculation method for version %d", hdr.Version))
+		}
 	}
 
-	return tx.htree.BuildWith(digests)
-}
+	// following records are currently common in versions 0 and 1
 
-func (tx *Tx) Entries() []*TxEntry {
-	return tx.entries[:tx.nentries]
+	copy(b[i:], hdr.Eh[:])
+	i += sha256.Size
+
+	binary.BigEndian.PutUint64(b[i:], hdr.BlTxID)
+	i += txIDSize
+
+	copy(b[i:], hdr.BlRoot[:])
+	i += sha256.Size
+
+	// hash(ts + version + (mdLen + md) + nentries + eH + blTxID + blRoot)
+	return sha256.Sum256(b[:i])
 }
 
 // Alh calculates the Accumulative Linear Hash up to this transaction
 // Alh is calculated as hash(txID + prevAlh + hash(ts + nentries + eH + blTxID + blRoot))
 // Inner hash is calculated so to reduce the length of linear proofs
-func (tx *Tx) CalcAlh() {
-	tx.calcInnerHash()
-
+func (hdr *TxHeader) Alh() [sha256.Size]byte {
+	// txID + prevAlh + innerHash
 	var bi [txIDSize + 2*sha256.Size]byte
-	binary.BigEndian.PutUint64(bi[:], tx.ID)
-	copy(bi[txIDSize:], tx.PrevAlh[:])
-	copy(bi[txIDSize+sha256.Size:], tx.InnerHash[:]) // hash(ts + nentries + eH + blTxID + blRoot)
+	binary.BigEndian.PutUint64(bi[:], hdr.ID)
+	copy(bi[txIDSize:], hdr.PrevAlh[:])
 
-	tx.Alh = sha256.Sum256(bi[:]) // hash(txID + prevAlh + innerHash)
+	// hash(ts + version + (mdLen + md)? + nentries + eH + blTxID + blRoot)
+	innerHash := hdr.innerHash()
+	copy(bi[txIDSize+sha256.Size:], innerHash[:])
+
+	// hash(txID + prevAlh + innerHash)
+	return sha256.Sum256(bi[:])
 }
 
-func (tx *Tx) calcInnerHash() {
-	var bj [tsSize + 4 + sha256.Size + txIDSize + sha256.Size]byte
-	binary.BigEndian.PutUint64(bj[:], uint64(tx.Ts))
-	binary.BigEndian.PutUint32(bj[tsSize:], uint32(tx.nentries))
-	eh := tx.Eh()
-	copy(bj[tsSize+4:], eh[:])
-	binary.BigEndian.PutUint64(bj[tsSize+4+sha256.Size:], tx.BlTxID)
-	copy(bj[tsSize+4+sha256.Size+txIDSize:], tx.BlRoot[:])
+func (tx *Tx) TxEntryDigest() (TxEntryDigest, error) {
+	switch tx.header.Version {
+	case 0:
+		return TxEntryDigest_v1_1, nil
+	case 1:
+		return TxEntryDigest_v1_2, nil
+	}
 
-	tx.InnerHash = sha256.Sum256(bj[:]) // hash(ts + nentries + eH + blTxID + blRoot)
+	return nil, ErrCorruptedData
 }
 
-func (tx *Tx) Eh() [sha256.Size]byte {
-	root, _ := tx.htree.Root()
-	return root
+func (tx *Tx) BuildHashTree() error {
+	digests := make([][sha256.Size]byte, tx.header.NEntries)
+
+	txEntryDigest, err := tx.TxEntryDigest()
+	if err != nil {
+		return err
+	}
+
+	for i, e := range tx.Entries() {
+		digests[i] = txEntryDigest(e)
+	}
+
+	err = tx.htree.BuildWith(digests)
+	if err != nil {
+		return err
+	}
+
+	root, err := tx.htree.Root()
+	if err != nil {
+		return err
+	}
+
+	tx.header.Eh = root
+
+	return nil
+}
+
+func (tx *Tx) Entries() []*TxEntry {
+	return tx.entries[:tx.header.NEntries]
 }
 
 func (tx *Tx) IndexOf(key []byte) (int, error) {
@@ -229,42 +336,122 @@ func (tx *Tx) Proof(key []byte) (*htree.InclusionProof, error) {
 }
 
 func (tx *Tx) readFrom(r *appendable.Reader) error {
+	tx.header = &TxHeader{}
+
 	id, err := r.ReadUint64()
 	if err != nil {
 		return err
 	}
-	tx.ID = id
+	tx.header.ID = id
 
 	ts, err := r.ReadUint64()
 	if err != nil {
 		return err
 	}
-	tx.Ts = int64(ts)
+	tx.header.Ts = int64(ts)
 
 	blTxID, err := r.ReadUint64()
 	if err != nil {
 		return err
 	}
-	tx.BlTxID = blTxID
+	tx.header.BlTxID = blTxID
 
-	_, err = r.Read(tx.BlRoot[:])
+	_, err = r.Read(tx.header.BlRoot[:])
 	if err != nil {
 		return err
 	}
 
-	_, err = r.Read(tx.PrevAlh[:])
+	_, err = r.Read(tx.header.PrevAlh[:])
 	if err != nil {
 		return err
 	}
 
-	nentries, err := r.ReadUint32()
+	version, err := r.ReadUint16()
 	if err != nil {
 		return err
 	}
-	tx.nentries = int(nentries)
+	tx.header.Version = int(version)
 
-	for i := 0; i < int(nentries); i++ {
-		kLen, err := r.ReadUint32()
+	switch tx.header.Version {
+	case 0:
+		{
+			nentries, err := r.ReadUint16()
+			if err != nil {
+				return err
+			}
+			tx.header.NEntries = int(nentries)
+		}
+	case 1:
+		{
+			mdLen, err := r.ReadUint16()
+			if err != nil {
+				return err
+			}
+
+			if mdLen > maxTxMetadataLen {
+				return ErrCorruptedData
+			}
+
+			var txmd *TxMetadata
+
+			if mdLen > 0 {
+				var mdBs [maxTxMetadataLen]byte
+
+				_, err = r.Read(mdBs[:mdLen])
+				if err != nil {
+					return err
+				}
+
+				txmd = &TxMetadata{}
+
+				err = txmd.ReadFrom(mdBs[:mdLen])
+				if err != nil {
+					return err
+				}
+			}
+
+			tx.header.Metadata = txmd
+
+			nentries, err := r.ReadUint32()
+			if err != nil {
+				return err
+			}
+			tx.header.NEntries = int(nentries)
+		}
+	default:
+		{
+			panic(fmt.Errorf("missing tx deserialization method for version %d", tx.header.Version))
+		}
+	}
+
+	for i := 0; i < int(tx.header.NEntries); i++ {
+		// md is stored before key to ensure backward compatibility
+		mdLen, err := r.ReadUint16()
+		if err != nil {
+			return err
+		}
+
+		var kvmd *KVMetadata
+
+		if mdLen > 0 {
+			var mdbs [maxKVMetadataLen]byte
+
+			_, err = r.Read(mdbs[:mdLen])
+			if err != nil {
+				return err
+			}
+
+			kvmd = &KVMetadata{}
+
+			err = kvmd.ReadFrom(mdbs[:mdLen])
+			if err != nil {
+				return err
+			}
+		}
+
+		tx.entries[i].md = kvmd
+
+		kLen, err := r.ReadUint16()
 		if err != nil {
 			return err
 		}
@@ -299,11 +486,12 @@ func (tx *Tx) readFrom(r *appendable.Reader) error {
 		return err
 	}
 
-	tx.BuildHashTree()
+	err = tx.BuildHashTree()
+	if err != nil {
+		return err
+	}
 
-	tx.CalcAlh()
-
-	if tx.Alh != alh {
+	if tx.header.Alh() != alh {
 		return ErrorCorruptedTxData
 	}
 
@@ -311,18 +499,19 @@ func (tx *Tx) readFrom(r *appendable.Reader) error {
 }
 
 type TxEntry struct {
-	k          []byte
-	kLen       int
-	vLen       int
-	hVal       [sha256.Size]byte
-	vOff       int64
-	constraint KVConstraint
+	k    []byte
+	kLen int
+	md   *KVMetadata
+	vLen int
+	hVal [sha256.Size]byte
+	vOff int64
 }
 
-func NewTxEntry(key []byte, vLen int, hVal [sha256.Size]byte, vOff int64) *TxEntry {
+func NewTxEntry(key []byte, md *KVMetadata, vLen int, hVal [sha256.Size]byte, vOff int64) *TxEntry {
 	e := &TxEntry{
 		k:    make([]byte, len(key)),
 		kLen: len(key),
+		md:   md,
 		vLen: vLen,
 		hVal: hVal,
 		vOff: vOff,
@@ -348,6 +537,10 @@ func (e *TxEntry) Key() []byte {
 	return k
 }
 
+func (e *TxEntry) Metadata() *KVMetadata {
+	return e.md
+}
+
 func (e *TxEntry) HVal() [sha256.Size]byte {
 	return e.hVal
 }
@@ -360,11 +553,43 @@ func (e *TxEntry) VLen() int {
 	return e.vLen
 }
 
-func (e *TxEntry) Digest() [sha256.Size]byte {
+type TxEntryDigest func(e *TxEntry) [sha256.Size]byte
+
+func TxEntryDigest_v1_1(e *TxEntry) [sha256.Size]byte {
 	b := make([]byte, e.kLen+sha256.Size)
 
 	copy(b[:], e.k[:e.kLen])
 	copy(b[e.kLen:], e.hVal[:])
 
 	return sha256.Sum256(b)
+}
+
+func TxEntryDigest_v1_2(e *TxEntry) [sha256.Size]byte {
+	var mdbs []byte
+
+	if e.md != nil {
+		mdbs = e.md.Bytes()
+	}
+
+	mdLen := len(mdbs)
+
+	b := make([]byte, sszSize+mdLen+sszSize+e.kLen+sha256.Size)
+	i := 0
+
+	binary.BigEndian.PutUint16(b[i:], uint16(mdLen))
+	i += sszSize
+
+	copy(b[i:], mdbs)
+	i += mdLen
+
+	binary.BigEndian.PutUint16(b[i:], uint16(e.kLen))
+	i += sszSize
+
+	copy(b[i:], e.k[:e.kLen])
+	i += e.kLen
+
+	copy(b[i:], e.hVal[:])
+	i += sha256.Size
+
+	return sha256.Sum256(b[:i])
 }

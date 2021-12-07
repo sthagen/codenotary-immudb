@@ -17,16 +17,12 @@ limitations under the License.
 package sql
 
 import (
+	"fmt"
+
 	"github.com/codenotary/immudb/embedded/multierr"
-	"github.com/codenotary/immudb/embedded/store"
 )
 
 type jointRowReader struct {
-	e          *Engine
-	implicitDB *Database
-
-	snap *store.Snapshot
-
 	rowReader RowReader
 
 	joins []*JoinSpec
@@ -37,8 +33,8 @@ type jointRowReader struct {
 	params map[string]interface{}
 }
 
-func (e *Engine) newJointRowReader(db *Database, snap *store.Snapshot, params map[string]interface{}, rowReader RowReader, joins []*JoinSpec) (*jointRowReader, error) {
-	if db == nil || snap == nil || rowReader == nil || len(joins) == 0 {
+func newJointRowReader(rowReader RowReader, joins []*JoinSpec, params map[string]interface{}) (*jointRowReader, error) {
+	if rowReader == nil || len(joins) == 0 {
 		return nil, ErrIllegalArguments
 	}
 
@@ -49,9 +45,6 @@ func (e *Engine) newJointRowReader(db *Database, snap *store.Snapshot, params ma
 	}
 
 	return &jointRowReader{
-		e:                e,
-		implicitDB:       db,
-		snap:             snap,
 		params:           params,
 		rowReader:        rowReader,
 		joins:            joins,
@@ -60,15 +53,23 @@ func (e *Engine) newJointRowReader(db *Database, snap *store.Snapshot, params ma
 	}, nil
 }
 
-func (jointr *jointRowReader) ImplicitDB() string {
-	return jointr.rowReader.ImplicitDB()
+func (jointr *jointRowReader) onClose(callback func()) {
+	jointr.rowReader.onClose(callback)
 }
 
-func (jointr *jointRowReader) ImplicitTable() string {
-	return jointr.rowReader.ImplicitTable()
+func (jointr *jointRowReader) Tx() *SQLTx {
+	return jointr.rowReader.Tx()
 }
 
-func (jointr *jointRowReader) OrderBy() []*ColDescriptor {
+func (jointr *jointRowReader) Database() *Database {
+	return jointr.rowReader.Database()
+}
+
+func (jointr *jointRowReader) TableAlias() string {
+	return jointr.rowReader.TableAlias()
+}
+
+func (jointr *jointRowReader) OrderBy() []ColDescriptor {
 	return jointr.rowReader.OrderBy()
 }
 
@@ -76,45 +77,74 @@ func (jointr *jointRowReader) ScanSpecs() *ScanSpecs {
 	return jointr.rowReader.ScanSpecs()
 }
 
-func (jointr *jointRowReader) Columns() ([]*ColDescriptor, error) {
-	colsBySel, err := jointr.colsBySelector()
-	if err != nil {
-		return nil, err
-	}
-
-	colsByPos := make([]*ColDescriptor, len(colsBySel))
-
-	i := 0
-	for _, c := range colsBySel {
-		colsByPos[i] = c
-		i++
-	}
-
-	return colsByPos, nil
+func (jointr *jointRowReader) Columns() ([]ColDescriptor, error) {
+	return jointr.colsByPos()
 }
 
-func (jointr *jointRowReader) colsBySelector() (map[string]*ColDescriptor, error) {
+func (jointr *jointRowReader) colsBySelector() (map[string]ColDescriptor, error) {
 	colDescriptors, err := jointr.rowReader.colsBySelector()
 	if err != nil {
 		return nil, err
 	}
 
 	for _, jspec := range jointr.joins {
-		tableRef := jspec.ds.(*tableRef)
-		table, err := tableRef.referencedTable(jointr.e, jointr.implicitDB)
+
+		// TODO (byo) optimize this by getting selector list only or opening all joint readers
+		//            on jointRowReader creation,
+		// Note: We're using a dummy ScanSpec object that is only used during read, we're only interested
+		//       in column list though
+		rr, err := jspec.ds.Resolve(jointr.Tx(), nil, &ScanSpecs{index: &Index{}})
+		if err != nil {
+			return nil, err
+		}
+		defer rr.Close()
+
+		cd, err := rr.colsBySelector()
 		if err != nil {
 			return nil, err
 		}
 
-		for _, c := range table.Cols() {
-			des := &ColDescriptor{
-				Database: table.db.name,
-				Table:    tableRef.Alias(),
-				Column:   c.colName,
-				Type:     c.colType,
+		for sel, des := range cd {
+			if _, exists := colDescriptors[sel]; exists {
+				return nil, fmt.Errorf(
+					"error resolving '%s' in a join: %w, "+
+						"use aliasing to assign unique names "+
+						"for all tables, sub-queries and columns",
+					sel,
+					ErrAmbiguousSelector,
+				)
 			}
-			colDescriptors[des.Selector()] = des
+			colDescriptors[sel] = des
 		}
+	}
+
+	return colDescriptors, nil
+}
+
+func (jointr *jointRowReader) colsByPos() ([]ColDescriptor, error) {
+	colDescriptors, err := jointr.rowReader.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, jspec := range jointr.joins {
+
+		// TODO (byo) optimize this by getting selector list only or opening all joint readers
+		//            on jointRowReader creation,
+		// Note: We're using a dummy ScanSpec object that is only used during read, we're only interested
+		//       in column list though
+		rr, err := jspec.ds.Resolve(jointr.Tx(), nil, &ScanSpecs{index: &Index{}})
+		if err != nil {
+			return nil, err
+		}
+		defer rr.Close()
+
+		cd, err := rr.Columns()
+		if err != nil {
+			return nil, err
+		}
+
+		colDescriptors = append(colDescriptors, cd...)
 	}
 
 	return colDescriptors, nil
@@ -126,18 +156,18 @@ func (jointr *jointRowReader) InferParameters(params map[string]SQLValueType) er
 		return err
 	}
 
+	cols, err := jointr.colsBySelector()
+	if err != nil {
+		return err
+	}
+
 	for _, join := range jointr.joins {
-		err = join.ds.inferParameters(jointr.e, jointr.implicitDB, params)
+		err = join.ds.inferParameters(jointr.Tx(), params)
 		if err != nil {
 			return err
 		}
 
-		cols, err := jointr.colsBySelector()
-		if err != nil {
-			return err
-		}
-
-		_, err = join.cond.inferType(cols, params, jointr.ImplicitDB(), jointr.ImplicitTable())
+		_, err = join.cond.inferType(cols, params, jointr.Database().Name(), jointr.TableAlias())
 		if err != nil {
 			return err
 		}
@@ -146,9 +176,15 @@ func (jointr *jointRowReader) InferParameters(params map[string]SQLValueType) er
 	return err
 }
 
-func (jointr *jointRowReader) SetParameters(params map[string]interface{}) {
-	jointr.rowReader.SetParameters(params)
-	jointr.params = params
+func (jointr *jointRowReader) SetParameters(params map[string]interface{}) error {
+	err := jointr.rowReader.SetParameters(params)
+	if err != nil {
+		return err
+	}
+
+	jointr.params, err = normalizeParams(params)
+
+	return err
 }
 
 func (jointr *jointRowReader) Read() (row *Row, err error) {
@@ -198,11 +234,11 @@ func (jointr *jointRowReader) Read() (row *Row, err error) {
 
 			jointq := &SelectStmt{
 				ds:      jspec.ds,
-				where:   jspec.cond.reduceSelectors(row, jointr.ImplicitDB(), jointr.ImplicitTable()),
+				where:   jspec.cond.reduceSelectors(row, jointr.Database().Name(), jointr.TableAlias()),
 				indexOn: jspec.indexOn,
 			}
 
-			reader, err := jointq.Resolve(jointr.e, jointr.snap, jointr.implicitDB, jointr.params, nil)
+			reader, err := jointq.Resolve(jointr.Tx(), jointr.params, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -248,9 +284,5 @@ func (jointr *jointRowReader) Close() error {
 		merr.Append(err)
 	}
 
-	if merr.HasErrors() {
-		return merr
-	}
-
-	return nil
+	return merr.Reduce()
 }

@@ -18,6 +18,8 @@ package immuclienttest
 
 import (
 	"bytes"
+	"github.com/codenotary/immudb/pkg/client/homedir"
+	"github.com/codenotary/immudb/pkg/client/tokenservice"
 	"io"
 	"log"
 	"os"
@@ -32,14 +34,14 @@ import (
 
 type clientTest struct {
 	Imc     immuc.Client
-	Ts      client.TokenService
+	Ts      tokenservice.TokenService
 	Options client.Options
 	Pr      helper.PasswordReader
 }
 
 type HomedirServiceMock struct {
-	client.HomedirService
-	token []byte
+	homedir.HomedirService
+	Token []byte
 }
 
 func (h *HomedirServiceMock) FileExistsInUserHomeDir(pathToFile string) (bool, error) {
@@ -47,7 +49,7 @@ func (h *HomedirServiceMock) FileExistsInUserHomeDir(pathToFile string) (bool, e
 }
 
 func (h *HomedirServiceMock) WriteFileToUserHomeDir(content []byte, pathToFile string) error {
-	h.token = content
+	h.Token = content
 	return nil
 }
 
@@ -56,30 +58,36 @@ func (h *HomedirServiceMock) DeleteFileFromUserHomeDir(pathToFile string) error 
 }
 
 func (h *HomedirServiceMock) ReadFileFromUserHomeDir(pathToFile string) (string, error) {
-	return string(h.token), nil
+	return string(h.Token), nil
 }
 
 func NewDefaultClientTest() *clientTest {
 	return &clientTest{}
 }
-func NewClientTest(pr helper.PasswordReader, tkns client.TokenService) *clientTest {
+func NewClientTest(pr helper.PasswordReader, tkns tokenservice.TokenService) *clientTest {
 	return &clientTest{
-		Ts: tkns,
-		Pr: pr,
+		Ts:      tkns,
+		Pr:      pr,
+		Options: *client.DefaultOptions(),
 	}
+}
+
+func (ct *clientTest) WithTokenFileService(tkns tokenservice.TokenService) *clientTest {
+	ct.Imc.WithFileTokenService(tkns)
+	return ct
 }
 
 func (ct *clientTest) WithOptions(opts *client.Options) *clientTest {
 	ct.Options = *opts
 	return ct
 }
+
 func (c *clientTest) Connect(dialer servertest.BuffDialer) {
 	dialOptions := []grpc.DialOption{
 		grpc.WithContextDialer(dialer), grpc.WithInsecure(),
 	}
 
-	ic, err := immuc.Init(c.Options.WithDialOptions(&dialOptions).WithPasswordReader(c.Pr).
-		WithTokenService(c.Ts))
+	ic, err := immuc.Init(c.Options.WithDialOptions(dialOptions).WithPasswordReader(c.Pr))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -87,6 +95,9 @@ func (c *clientTest) Connect(dialer servertest.BuffDialer) {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	ic.WithFileTokenService(c.Ts)
+
 	c.Imc = ic
 }
 

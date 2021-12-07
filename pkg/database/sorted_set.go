@@ -32,7 +32,7 @@ const txIDLen = 8
 // As a parameter of ZAddOptions is possible to provide the associated index of the provided key. In this way, when resolving reference, the specified version of the key will be returned.
 // If the index is not provided the resolution will use only the key and last version of the item will be returned
 // If ZAddOptions.index is provided key is optional
-func (d *db) ZAdd(req *schema.ZAddRequest) (*schema.TxMetadata, error) {
+func (d *db) ZAdd(req *schema.ZAddRequest) (*schema.TxHeader, error) {
 	if req == nil || len(req.Set) == 0 || len(req.Key) == 0 {
 		return nil, store.ErrIllegalArguments
 	}
@@ -57,7 +57,7 @@ func (d *db) ZAdd(req *schema.ZAddRequest) (*schema.TxMetadata, error) {
 	// check referenced key exists and it's not a reference
 	key := EncodeKey(req.Key)
 
-	refEntry, err := d.getAt(key, req.AtTx, 0, d.st, d.tx1)
+	refEntry, err := d.getAt(key, req.AtTx, 0, d.st, d.st.NewTxHolder())
 	if err != nil {
 		return nil, err
 	}
@@ -65,16 +65,35 @@ func (d *db) ZAdd(req *schema.ZAddRequest) (*schema.TxMetadata, error) {
 		return nil, ErrReferencedKeyCannotBeAReference
 	}
 
-	meta, err := d.st.Commit([]*store.KV{EncodeZAdd(req.Set, req.Score, key, req.AtTx)}, !req.NoWait)
+	tx, err := d.st.NewWriteOnlyTx()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Cancel()
 
-	return schema.TxMetatadaTo(meta), err
+	e := EncodeZAdd(req.Set, req.Score, key, req.AtTx)
+
+	err = tx.Set(e.Key, e.Metadata, e.Value)
+	if err != nil {
+		return nil, err
+	}
+
+	var hdr *store.TxHeader
+
+	if req.NoWait {
+		hdr, err = tx.AsyncCommit()
+	} else {
+		hdr, err = tx.Commit()
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return schema.TxHeaderToProto(hdr), nil
 }
 
 // ZScan ...
 func (d *db) ZScan(req *schema.ZScanRequest) (*schema.ZEntries, error) {
-	d.mutex.Lock()
-	defer d.mutex.Unlock()
-
 	if req == nil || len(req.Set) == 0 {
 		return nil, store.ErrIllegalArguments
 	}
@@ -88,6 +107,33 @@ func (d *db) ZScan(req *schema.ZScanRequest) (*schema.ZEntries, error) {
 	if req.Limit == 0 {
 		limit = MaxKeyScanLimit
 	}
+
+	d.mutex.RLock()
+	defer d.mutex.RUnlock()
+
+	currTxID, _ := d.st.Alh()
+
+	if req.SinceTx > currTxID {
+		return nil, ErrIllegalArguments
+	}
+
+	waitUntilTx := req.SinceTx
+	if waitUntilTx == 0 {
+		waitUntilTx = currTxID
+	}
+
+	if !req.NoWait {
+		err := d.st.WaitForIndexingUpto(waitUntilTx, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	snap, err := d.st.SnapshotSince(waitUntilTx)
+	if err != nil {
+		return nil, err
+	}
+	defer snap.Close()
 
 	prefix := make([]byte, 1+setLenLen+len(req.Set))
 	prefix[0] = SortedSetKeyPrefix
@@ -116,31 +162,13 @@ func (d *db) ZScan(req *schema.ZScanRequest) (*schema.ZEntries, error) {
 		binary.BigEndian.PutUint64(seekKey[len(prefix)+scoreLen+keyLenLen+1+len(req.SeekKey):], req.SeekAtTx)
 	}
 
-	waitUntilTx := req.SinceTx
-
-	if waitUntilTx == 0 {
-		waitUntilTx, _ = d.st.Alh()
-	}
-
-	if !req.NoWait {
-		err := d.st.WaitForIndexingUpto(waitUntilTx, nil)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	snap, err := d.st.SnapshotSince(waitUntilTx)
-	if err != nil {
-		return nil, err
-	}
-	defer snap.Close()
-
 	r, err := snap.NewKeyReader(
 		&store.KeyReaderSpec{
 			SeekKey:       seekKey,
 			Prefix:        prefix,
 			InclusiveSeek: req.InclusiveSeek,
 			DescOrder:     req.Desc,
+			Filter:        store.IgnoreDeleted,
 		})
 	if err != nil {
 		return nil, err
@@ -150,8 +178,10 @@ func (d *db) ZScan(req *schema.ZScanRequest) (*schema.ZEntries, error) {
 	var entries []*schema.ZEntry
 	i := uint64(0)
 
+	tx := d.st.NewTxHolder()
+
 	for {
-		zKey, _, _, _, err := r.Read()
+		zKey, _, err := r.Read()
 		if err == store.ErrNoMoreEntries {
 			break
 		}
@@ -178,7 +208,14 @@ func (d *db) ZScan(req *schema.ZScanRequest) (*schema.ZEntries, error) {
 
 		atTx := binary.BigEndian.Uint64(zKey[keyOff+len(key):])
 
-		e, err := d.getAt(key, atTx, 0, snap, d.tx1)
+		e, err := d.getAt(key, atTx, 0, snap, tx)
+		if err == store.ErrKeyNotFound {
+			// ignore deleted ones (referenced key may have been deleted)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
 
 		zentry := &schema.ZEntry{
 			Set:   req.Set,
@@ -217,10 +254,7 @@ func (d *db) VerifiableZAdd(req *schema.VerifiableZAddRequest) (*schema.Verifiab
 		return nil, err
 	}
 
-	d.mutex.Lock()
-	defer d.mutex.Unlock()
-
-	lastTx := d.tx1
+	lastTx := d.st.NewTxHolder()
 
 	err = d.st.ReadTx(uint64(txMetatadata.Id), lastTx)
 	if err != nil {
@@ -232,7 +266,7 @@ func (d *db) VerifiableZAdd(req *schema.VerifiableZAddRequest) (*schema.Verifiab
 	if req.ProveSinceTx == 0 {
 		prevTx = lastTx
 	} else {
-		prevTx = d.tx2
+		prevTx = d.st.NewTxHolder()
 
 		err = d.st.ReadTx(req.ProveSinceTx, prevTx)
 		if err != nil {
@@ -246,7 +280,7 @@ func (d *db) VerifiableZAdd(req *schema.VerifiableZAddRequest) (*schema.Verifiab
 	}
 
 	return &schema.VerifiableTx{
-		Tx:        schema.TxTo(lastTx),
-		DualProof: schema.DualProofTo(dualProof),
+		Tx:        schema.TxToProto(lastTx),
+		DualProof: schema.DualProofToProto(dualProof),
 	}, nil
 }

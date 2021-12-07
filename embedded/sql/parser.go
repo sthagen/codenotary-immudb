@@ -49,9 +49,13 @@ var reservedWords = map[string]int{
 	"UPSERT":         UPSERT,
 	"INTO":           INTO,
 	"VALUES":         VALUES,
+	"UPDATE":         UPDATE,
+	"SET":            SET,
+	"DELETE":         DELETE,
 	"BEGIN":          BEGIN,
 	"TRANSACTION":    TRANSACTION,
 	"COMMIT":         COMMIT,
+	"ROLLBACK":       ROLLBACK,
 	"SELECT":         SELECT,
 	"DISTINCT":       DISTINCT,
 	"FROM":           FROM,
@@ -70,9 +74,12 @@ var reservedWords = map[string]int{
 	"NOT":            NOT,
 	"LIKE":           LIKE,
 	"EXISTS":         EXISTS,
+	"IN":             IN,
 	"AUTO_INCREMENT": AUTO_INCREMENT,
 	"NULL":           NULL,
 	"IF":             IF,
+	"IS":             IS,
+	"CAST":           CAST,
 }
 
 var joinTypes = map[string]JoinType{
@@ -168,7 +175,6 @@ func ParseString(sql string) ([]SQLStmt, error) {
 
 func Parse(r io.ByteReader) ([]SQLStmt, error) {
 	lexer := newLexer(r)
-	yyErrorVerbose = true
 
 	yyParse(lexer)
 

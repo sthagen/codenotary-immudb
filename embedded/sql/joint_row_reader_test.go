@@ -17,6 +17,7 @@ limitations under the License.
 package sql
 
 import (
+	"errors"
 	"os"
 	"testing"
 
@@ -25,27 +26,26 @@ import (
 )
 
 func TestJointRowReader(t *testing.T) {
-	catalogStore, err := store.Open("catalog_joint_reader", store.DefaultOptions())
-	require.NoError(t, err)
-	defer os.RemoveAll("catalog_joint_reader")
-
-	dataStore, err := store.Open("sqldata_joint_reader", store.DefaultOptions())
+	st, err := store.Open("sqldata_joint_reader", store.DefaultOptions())
 	require.NoError(t, err)
 	defer os.RemoveAll("sqldata_joint_reader")
 
-	engine, err := NewEngine(catalogStore, dataStore, DefaultOptions().WithPrefix(sqlPrefix))
+	engine, err := NewEngine(st, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
-	err = engine.EnsureCatalogReady(nil)
-	require.NoError(t, err)
-
-	_, err = engine.newJointRowReader(nil, nil, nil, nil, nil)
+	_, err = newJointRowReader(nil, nil, nil)
 	require.Equal(t, ErrIllegalArguments, err)
 
-	db, err := engine.catalog.newDatabase(1, "db1")
+	tx, err := engine.newTx(false)
 	require.NoError(t, err)
 
-	table, err := db.newTable("table1", []*ColSpec{{colName: "id", colType: IntegerType}})
+	db, err := tx.catalog.newDatabase(1, "db1")
+	require.NoError(t, err)
+
+	err = tx.useDatabase("db1")
+	require.NoError(t, err)
+
+	table, err := db.newTable("table1", []*ColSpec{{colName: "id", colType: IntegerType}, {colName: "number", colType: IntegerType}})
 	require.NoError(t, err)
 
 	index, err := table.newIndex(true, []uint32{1})
@@ -53,19 +53,16 @@ func TestJointRowReader(t *testing.T) {
 	require.NotNil(t, index)
 	require.Equal(t, table.primaryIndex, index)
 
-	snap, err := engine.getSnapshot()
+	r, err := newRawRowReader(tx, table, 0, "", &ScanSpecs{index: table.primaryIndex})
 	require.NoError(t, err)
 
-	r, err := engine.newRawRowReader(snap, table, 0, "", &ScanSpecs{index: table.primaryIndex})
-	require.NoError(t, err)
-
-	_, err = engine.newJointRowReader(db, snap, nil, r, []*JoinSpec{{joinType: LeftJoin}})
+	_, err = newJointRowReader(r, []*JoinSpec{{joinType: LeftJoin}}, nil)
 	require.Equal(t, ErrUnsupportedJoinType, err)
 
-	_, err = engine.newJointRowReader(db, snap, nil, r, []*JoinSpec{{joinType: InnerJoin, ds: &SelectStmt{}}})
+	_, err = newJointRowReader(r, []*JoinSpec{{joinType: InnerJoin, ds: &SelectStmt{}}}, nil)
 	require.NoError(t, err)
 
-	jr, err := engine.newJointRowReader(db, snap, nil, r, []*JoinSpec{{joinType: InnerJoin, ds: &tableRef{table: "table1"}}})
+	jr, err := newJointRowReader(r, []*JoinSpec{{joinType: InnerJoin, ds: &tableRef{table: "table1", as: "table2"}}}, nil)
 	require.NoError(t, err)
 
 	orderBy := jr.OrderBy()
@@ -76,10 +73,98 @@ func TestJointRowReader(t *testing.T) {
 
 	cols, err := jr.Columns()
 	require.NoError(t, err)
-	require.Len(t, cols, 1)
+	require.Len(t, cols, 4)
+	require.Equal(t, cols[0].Table, "table1")
+	require.Equal(t, cols[1].Table, "table1")
+	require.Equal(t, cols[2].Table, "table2")
+	require.Equal(t, cols[3].Table, "table2")
+	require.Equal(t, cols[0].Column, "id")
+	require.Equal(t, cols[1].Column, "number")
+	require.Equal(t, cols[2].Column, "id")
+	require.Equal(t, cols[3].Column, "number")
 
 	scanSpecs := jr.ScanSpecs()
 	require.NotNil(t, scanSpecs)
 	require.NotNil(t, scanSpecs.index)
 	require.True(t, scanSpecs.index.IsPrimary())
+
+	t.Run("corner cases", func(t *testing.T) {
+
+		t.Run("detect ambiguous selectors", func(t *testing.T) {
+			jr, err = newJointRowReader(r, []*JoinSpec{{joinType: InnerJoin, ds: &tableRef{table: "table1"}}}, nil)
+			require.NoError(t, err)
+
+			_, err = jr.colsBySelector()
+			require.ErrorIs(t, err, ErrAmbiguousSelector)
+		})
+
+		t.Run("must propagate error from rowReader on colsBySelector", func(t *testing.T) {
+			jr := jointRowReader{
+				rowReader: &dummyRowReader{},
+			}
+
+			cols, err := jr.colsBySelector()
+			require.ErrorIs(t, err, errDummy)
+			require.Nil(t, cols)
+		})
+
+		t.Run("must propagate error from rowReader on InferParameters", func(t *testing.T) {
+			jr := jointRowReader{
+				rowReader: &dummyRowReader{
+					failInferringParams: true,
+				},
+			}
+
+			err := jr.InferParameters(make(map[string]SQLValueType))
+			require.ErrorIs(t, err, errDummy)
+
+			jr.rowReader.(*dummyRowReader).failInferringParams = false
+			err = jr.InferParameters(make(map[string]SQLValueType))
+			require.ErrorIs(t, err, errDummy)
+		})
+
+		t.Run("must propagate error from rowReader on Columns", func(t *testing.T) {
+
+			jr := jointRowReader{
+				rowReader: &dummyRowReader{
+					failReturningColumns: true,
+				},
+			}
+
+			cols, err := jr.Columns()
+			require.ErrorIs(t, err, errDummy)
+			require.Nil(t, cols)
+		})
+
+		t.Run("must propagate error from joined reader on colsBySelector", func(t *testing.T) {
+			injectedErr := errors.New("err")
+
+			jr, err := newJointRowReader(r,
+				[]*JoinSpec{{joinType: InnerJoin, ds: &dummyDataSource{
+					ResolveFunc: func(tx *SQLTx, params map[string]interface{}, ScanSpecs *ScanSpecs) (RowReader, error) {
+						return nil, injectedErr
+					},
+				}}}, nil)
+			require.NoError(t, err)
+
+			cols, err := jr.colsBySelector()
+			require.ErrorIs(t, err, injectedErr)
+			require.Nil(t, cols)
+		})
+
+		t.Run("must propagate error from joined reader on colsBySelector from Resolve", func(t *testing.T) {
+
+			jr, err := newJointRowReader(r,
+				[]*JoinSpec{{joinType: InnerJoin, ds: &dummyDataSource{
+					ResolveFunc: func(tx *SQLTx, params map[string]interface{}, ScanSpecs *ScanSpecs) (RowReader, error) {
+						return &dummyRowReader{}, nil
+					},
+				}}}, nil)
+			require.NoError(t, err)
+
+			cols, err := jr.colsBySelector()
+			require.ErrorIs(t, err, errDummy)
+			require.Nil(t, cols)
+		})
+	})
 }

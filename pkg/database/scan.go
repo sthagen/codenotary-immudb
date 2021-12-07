@@ -22,10 +22,12 @@ import (
 
 //Scan ...
 func (d *db) Scan(req *schema.ScanRequest) (*schema.Entries, error) {
-	d.mutex.Lock()
-	defer d.mutex.Unlock()
+	d.mutex.RLock()
+	defer d.mutex.RUnlock()
 
-	if req == nil {
+	currTxID, _ := d.st.Alh()
+
+	if req == nil || req.SinceTx > currTxID {
 		return nil, store.ErrIllegalArguments
 	}
 
@@ -34,9 +36,8 @@ func (d *db) Scan(req *schema.ScanRequest) (*schema.Entries, error) {
 	}
 
 	waitUntilTx := req.SinceTx
-
 	if waitUntilTx == 0 {
-		waitUntilTx, _ = d.st.Alh()
+		waitUntilTx = currTxID
 	}
 
 	if !req.NoWait {
@@ -72,14 +73,17 @@ func (d *db) Scan(req *schema.ScanRequest) (*schema.Entries, error) {
 			SeekKey:   seekKey,
 			Prefix:    EncodeKey(req.Prefix),
 			DescOrder: req.Desc,
+			Filter:    store.IgnoreDeleted,
 		})
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
 
+	tx := d.st.NewTxHolder()
+
 	for {
-		key, _, tx, _, err := r.Read()
+		key, valRef, err := r.Read()
 		if err == store.ErrNoMoreEntries {
 			break
 		}
@@ -87,7 +91,11 @@ func (d *db) Scan(req *schema.ScanRequest) (*schema.Entries, error) {
 			return nil, err
 		}
 
-		e, err := d.getAt(key, tx, 0, snap, d.tx1)
+		e, err := d.getAt(key, valRef.Tx(), 0, snap, tx)
+		if err == store.ErrKeyNotFound {
+			// ignore deleted ones (referenced key may have been deleted)
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}

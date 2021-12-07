@@ -31,9 +31,9 @@ func TestStoreReference(t *testing.T) {
 	defer closer()
 
 	req := &schema.SetRequest{KVs: []*schema.KeyValue{{Key: []byte(`firstKey`), Value: []byte(`firstValue`)}}}
-	meta, err := db.Set(req)
+	txhdr, err := db.Set(req)
 
-	item, err := db.Get(&schema.KeyRequest{Key: []byte(`firstKey`), SinceTx: meta.Id})
+	item, err := db.Get(&schema.KeyRequest{Key: []byte(`firstKey`), SinceTx: txhdr.Id})
 	require.NoError(t, err)
 	require.Equal(t, []byte(`firstKey`), item.Key)
 	require.Equal(t, []byte(`firstValue`), item.Value)
@@ -42,7 +42,7 @@ func TestStoreReference(t *testing.T) {
 		Key:           []byte(`myTag`),
 		ReferencedKey: []byte(`secondKey`),
 	}
-	meta, err = db.SetReference(refOpts)
+	txhdr, err = db.SetReference(refOpts)
 	require.Equal(t, store.ErrKeyNotFound, err)
 
 	refOpts = &schema.ReferenceRequest{
@@ -58,18 +58,18 @@ func TestStoreReference(t *testing.T) {
 		Key:           []byte(`firstKey`),
 		ReferencedKey: []byte(`firstKey`),
 	}
-	meta, err = db.SetReference(refOpts)
+	txhdr, err = db.SetReference(refOpts)
 	require.Equal(t, ErrFinalKeyCannotBeConvertedIntoReference, err)
 
 	refOpts = &schema.ReferenceRequest{
 		Key:           []byte(`myTag`),
 		ReferencedKey: []byte(`firstKey`),
 	}
-	meta, err = db.SetReference(refOpts)
+	txhdr, err = db.SetReference(refOpts)
 	require.NoError(t, err)
-	require.Equal(t, uint64(3), meta.Id)
+	require.Equal(t, uint64(3), txhdr.Id)
 
-	keyReq := &schema.KeyRequest{Key: []byte(`myTag`), SinceTx: meta.Id}
+	keyReq := &schema.KeyRequest{Key: []byte(`myTag`), SinceTx: txhdr.Id}
 
 	firstItemRet, err := db.Get(keyReq)
 	require.NoError(t, err)
@@ -83,14 +83,20 @@ func TestStoreReference(t *testing.T) {
 	require.Equal(t, []byte(`firstKey`), vitem.Entry.Key)
 	require.Equal(t, []byte(`firstValue`), vitem.Entry.Value)
 
-	inclusionProof := schema.InclusionProofFrom(vitem.InclusionProof)
+	inclusionProof := schema.InclusionProofFromProto(vitem.InclusionProof)
 
 	var eh [sha256.Size]byte
-	copy(eh[:], vitem.VerifiableTx.Tx.Metadata.EH)
+	copy(eh[:], vitem.VerifiableTx.Tx.Header.EH)
+
+	entrySpec := EncodeReference([]byte(`myTag`), nil, []byte(`firstKey`), 0)
+
+	entrySpecDigest, err := store.EntrySpecDigestFor(int(txhdr.Version))
+	require.NoError(t, err)
+	require.NotNil(t, entrySpecDigest)
 
 	verifies := store.VerifyInclusion(
 		inclusionProof,
-		EncodeReference([]byte(`myTag`), []byte(`firstKey`), 0),
+		entrySpecDigest(entrySpec),
 		eh,
 	)
 	require.True(t, verifies)
@@ -120,9 +126,9 @@ func TestStoreInvalidReferenceToReference(t *testing.T) {
 	defer closer()
 
 	req := &schema.SetRequest{KVs: []*schema.KeyValue{{Key: []byte(`firstKey`), Value: []byte(`firstValue`)}}}
-	meta, err := db.Set(req)
+	txhdr, err := db.Set(req)
 
-	ref1, err := db.SetReference(&schema.ReferenceRequest{Key: []byte(`myTag1`), ReferencedKey: []byte(`firstKey`), AtTx: meta.Id, BoundRef: true})
+	ref1, err := db.SetReference(&schema.ReferenceRequest{Key: []byte(`myTag1`), ReferencedKey: []byte(`firstKey`), AtTx: txhdr.Id, BoundRef: true})
 	require.NoError(t, err)
 
 	_, err = db.Get(&schema.KeyRequest{Key: []byte(`myTag1`), SinceTx: ref1.Id})
@@ -335,12 +341,12 @@ func TestStoreVerifiableReference(t *testing.T) {
 	require.Equal(t, store.ErrIllegalArguments, err)
 
 	req := &schema.SetRequest{KVs: []*schema.KeyValue{{Key: []byte(`firstKey`), Value: []byte(`firstValue`)}}}
-	meta, err := db.Set(req)
+	txhdr, err := db.Set(req)
 	require.NoError(t, err)
 
 	_, err = db.VerifiableSetReference(&schema.VerifiableReferenceRequest{
 		ReferenceRequest: nil,
-		ProveSinceTx:     meta.Id,
+		ProveSinceTx:     txhdr.Id,
 	})
 	require.Equal(t, store.ErrIllegalArguments, err)
 
@@ -351,29 +357,29 @@ func TestStoreVerifiableReference(t *testing.T) {
 
 	_, err = db.VerifiableSetReference(&schema.VerifiableReferenceRequest{
 		ReferenceRequest: refReq,
-		ProveSinceTx:     meta.Id + 1,
+		ProveSinceTx:     txhdr.Id + 1,
 	})
 	require.Equal(t, store.ErrIllegalArguments, err)
 
 	vtx, err := db.VerifiableSetReference(&schema.VerifiableReferenceRequest{
 		ReferenceRequest: refReq,
-		ProveSinceTx:     meta.Id,
+		ProveSinceTx:     txhdr.Id,
 	})
 	require.NoError(t, err)
 	require.Equal(t, WrapWithPrefix([]byte(`myTag`), SetKeyPrefix), vtx.Tx.Entries[0].Key)
 
-	dualProof := schema.DualProofFrom(vtx.DualProof)
+	dualProof := schema.DualProofFromProto(vtx.DualProof)
 
 	verifies := store.VerifyDualProof(
 		dualProof,
-		meta.Id,
-		vtx.Tx.Metadata.Id,
-		schema.TxMetadataFrom(meta).Alh(),
-		dualProof.TargetTxMetadata.Alh(),
+		txhdr.Id,
+		vtx.Tx.Header.Id,
+		schema.TxHeaderFromProto(txhdr).Alh(),
+		dualProof.TargetTxHeader.Alh(),
 	)
 	require.True(t, verifies)
 
-	keyReq := &schema.KeyRequest{Key: []byte(`myTag`), SinceTx: vtx.Tx.Metadata.Id}
+	keyReq := &schema.KeyRequest{Key: []byte(`myTag`), SinceTx: vtx.Tx.Header.Id}
 
 	firstItemRet, err := db.Get(keyReq)
 	require.NoError(t, err)

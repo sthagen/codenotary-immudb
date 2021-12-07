@@ -18,6 +18,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 
@@ -42,7 +43,7 @@ func TestImmuClient_SQL(t *testing.T) {
 	defer bs.Stop()
 
 	clientOpts := ic.DefaultOptions().
-		WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).
+		WithDialOptions([]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).
 		WithServerSigningPubKey("./../../test/signer/ec1.pub")
 
 	client, err := ic.NewImmuClient(clientOpts)
@@ -71,7 +72,7 @@ func TestImmuClient_SQL(t *testing.T) {
 	_, err = client.SQLExec(ctx, "INSERT INTO table1(id, title, active, payload) VALUES (@id, @title, @active, @payload), (2, 'title2', false, NULL), (3, NULL, NULL, x'AED0393F')", params)
 	require.NoError(t, err)
 
-	res, err := client.SQLQuery(ctx, "SELECT t.id as id, title FROM (table1 as t) WHERE id <= 3 AND active = @active", params, true)
+	res, err := client.SQLQuery(ctx, "SELECT t.id as id, title FROM table1 t WHERE id <= 3 AND active = @active", params, true)
 	require.NoError(t, err)
 	require.NotNil(t, res)
 
@@ -160,10 +161,7 @@ func TestImmuClient_SQL(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "title2-updated", res.Rows[0].Values[0].GetS())
 
-	err = client.UseSnapshot(ctx, 0, tx2.Dtxs[0].Id)
-	require.NoError(t, err)
-
-	res, err = client.SQLQuery(ctx, "SELECT title FROM table1 WHERE id=2", nil, true)
+	res, err = client.SQLQuery(ctx, fmt.Sprintf("SELECT title FROM table1 BEFORE TX %d WHERE id=2", tx2.Txs[0].Header.Id), nil, true)
 	require.NoError(t, err)
 	require.Equal(t, "title2", res.Rows[0].Values[0].GetS())
 }
@@ -178,7 +176,7 @@ func TestImmuClient_SQL_Errors(t *testing.T) {
 	bs.Start()
 	defer bs.Stop()
 
-	client, err := ic.NewImmuClient(ic.DefaultOptions().WithDialOptions(&[]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
+	client, err := ic.NewImmuClient(ic.DefaultOptions().WithDialOptions([]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
 	require.NoError(t, err)
 
 	_, err = client.SQLExec(context.Background(), "", map[string]interface{}{
@@ -204,9 +202,6 @@ func TestImmuClient_SQL_Errors(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = client.SQLExec(context.Background(), "", nil)
-	require.True(t, errors.Is(err, ic.ErrNotConnected))
-
-	err = client.UseSnapshot(context.Background(), 1, 2)
 	require.True(t, errors.Is(err, ic.ErrNotConnected))
 
 	_, err = client.SQLQuery(context.Background(), "", nil, false)

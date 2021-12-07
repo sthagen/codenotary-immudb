@@ -9,11 +9,14 @@
     - [ChangePermissionRequest](#immudb.schema.ChangePermissionRequest)
     - [Chunk](#immudb.schema.Chunk)
     - [Column](#immudb.schema.Column)
+    - [CommittedSQLTx](#immudb.schema.CommittedSQLTx)
+    - [CommittedSQLTx.LastInsertedPKsEntry](#immudb.schema.CommittedSQLTx.LastInsertedPKsEntry)
     - [CreateUserRequest](#immudb.schema.CreateUserRequest)
     - [Database](#immudb.schema.Database)
     - [DatabaseListResponse](#immudb.schema.DatabaseListResponse)
     - [DatabaseSettings](#immudb.schema.DatabaseSettings)
     - [DebugInfo](#immudb.schema.DebugInfo)
+    - [DeleteKeysRequest](#immudb.schema.DeleteKeysRequest)
     - [DualProof](#immudb.schema.DualProof)
     - [Entries](#immudb.schema.Entries)
     - [Entry](#immudb.schema.Entry)
@@ -24,6 +27,7 @@
     - [HistoryRequest](#immudb.schema.HistoryRequest)
     - [ImmutableState](#immudb.schema.ImmutableState)
     - [InclusionProof](#immudb.schema.InclusionProof)
+    - [KVMetadata](#immudb.schema.KVMetadata)
     - [Key](#immudb.schema.Key)
     - [KeyListRequest](#immudb.schema.KeyListRequest)
     - [KeyPrefix](#immudb.schema.KeyPrefix)
@@ -34,7 +38,11 @@
     - [LoginResponse](#immudb.schema.LoginResponse)
     - [MTLSConfig](#immudb.schema.MTLSConfig)
     - [NamedParam](#immudb.schema.NamedParam)
+    - [NewTxRequest](#immudb.schema.NewTxRequest)
+    - [NewTxResponse](#immudb.schema.NewTxResponse)
     - [Op](#immudb.schema.Op)
+    - [OpenSessionRequest](#immudb.schema.OpenSessionRequest)
+    - [OpenSessionResponse](#immudb.schema.OpenSessionResponse)
     - [Permission](#immudb.schema.Permission)
     - [Reference](#immudb.schema.Reference)
     - [ReferenceRequest](#immudb.schema.ReferenceRequest)
@@ -43,7 +51,6 @@
     - [SQLEntry](#immudb.schema.SQLEntry)
     - [SQLExecRequest](#immudb.schema.SQLExecRequest)
     - [SQLExecResult](#immudb.schema.SQLExecResult)
-    - [SQLExecResult.LastInsertedPKsEntry](#immudb.schema.SQLExecResult.LastInsertedPKsEntry)
     - [SQLGetRequest](#immudb.schema.SQLGetRequest)
     - [SQLQueryRequest](#immudb.schema.SQLQueryRequest)
     - [SQLQueryResult](#immudb.schema.SQLQueryResult)
@@ -56,8 +63,9 @@
     - [Table](#immudb.schema.Table)
     - [Tx](#immudb.schema.Tx)
     - [TxEntry](#immudb.schema.TxEntry)
+    - [TxHeader](#immudb.schema.TxHeader)
     - [TxList](#immudb.schema.TxList)
-    - [TxMetadata](#immudb.schema.TxMetadata)
+    - [TxMD](#immudb.schema.TxMD)
     - [TxRequest](#immudb.schema.TxRequest)
     - [TxScanRequest](#immudb.schema.TxScanRequest)
     - [UseDatabaseReply](#immudb.schema.UseDatabaseReply)
@@ -84,6 +92,7 @@
     - [ZScanRequest](#immudb.schema.ZScanRequest)
   
     - [PermissionAction](#immudb.schema.PermissionAction)
+    - [TxMode](#immudb.schema.TxMode)
   
     - [ImmuService](#immudb.schema.ImmuService)
   
@@ -179,6 +188,39 @@
 
 
 
+<a name="immudb.schema.CommittedSQLTx"></a>
+
+### CommittedSQLTx
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| header | [TxHeader](#immudb.schema.TxHeader) |  |  |
+| updatedRows | [uint32](#uint32) |  |  |
+| lastInsertedPKs | [CommittedSQLTx.LastInsertedPKsEntry](#immudb.schema.CommittedSQLTx.LastInsertedPKsEntry) | repeated |  |
+
+
+
+
+
+
+<a name="immudb.schema.CommittedSQLTx.LastInsertedPKsEntry"></a>
+
+### CommittedSQLTx.LastInsertedPKsEntry
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [string](#string) |  |  |
+| value | [SQLValue](#immudb.schema.SQLValue) |  |  |
+
+
+
+
+
+
 <a name="immudb.schema.CreateUserRequest"></a>
 
 ### CreateUserRequest
@@ -268,6 +310,23 @@
 
 
 
+<a name="immudb.schema.DeleteKeysRequest"></a>
+
+### DeleteKeysRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| keys | [bytes](#bytes) | repeated |  |
+| sinceTx | [uint64](#uint64) |  |  |
+| noWait | [bool](#bool) |  |  |
+
+
+
+
+
+
 <a name="immudb.schema.DualProof"></a>
 
 ### DualProof
@@ -276,8 +335,8 @@
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| sourceTxMetadata | [TxMetadata](#immudb.schema.TxMetadata) |  |  |
-| targetTxMetadata | [TxMetadata](#immudb.schema.TxMetadata) |  |  |
+| sourceTxHeader | [TxHeader](#immudb.schema.TxHeader) |  |  |
+| targetTxHeader | [TxHeader](#immudb.schema.TxHeader) |  |  |
 | inclusionProof | [bytes](#bytes) | repeated |  |
 | consistencyProof | [bytes](#bytes) | repeated |  |
 | targetBlTxAlh | [bytes](#bytes) |  |  |
@@ -316,6 +375,7 @@
 | key | [bytes](#bytes) |  |  |
 | value | [bytes](#bytes) |  |  |
 | referencedBy | [Reference](#immudb.schema.Reference) |  |  |
+| metadata | [KVMetadata](#immudb.schema.KVMetadata) |  |  |
 
 
 
@@ -439,6 +499,21 @@
 
 
 
+<a name="immudb.schema.KVMetadata"></a>
+
+### KVMetadata
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| deleted | [bool](#bool) |  |  |
+
+
+
+
+
+
 <a name="immudb.schema.Key"></a>
 
 ### Key
@@ -512,6 +587,7 @@
 | ----- | ---- | ----- | ----------- |
 | key | [bytes](#bytes) |  |  |
 | value | [bytes](#bytes) |  |  |
+| metadata | [KVMetadata](#immudb.schema.KVMetadata) |  |  |
 
 
 
@@ -598,6 +674,36 @@
 
 
 
+<a name="immudb.schema.NewTxRequest"></a>
+
+### NewTxRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| mode | [TxMode](#immudb.schema.TxMode) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.NewTxResponse"></a>
+
+### NewTxResponse
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| transactionID | [string](#string) |  |  |
+
+
+
+
+
+
 <a name="immudb.schema.Op"></a>
 
 ### Op
@@ -609,6 +715,39 @@
 | kv | [KeyValue](#immudb.schema.KeyValue) |  |  |
 | zAdd | [ZAddRequest](#immudb.schema.ZAddRequest) |  |  |
 | ref | [ReferenceRequest](#immudb.schema.ReferenceRequest) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.OpenSessionRequest"></a>
+
+### OpenSessionRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| username | [bytes](#bytes) |  |  |
+| password | [bytes](#bytes) |  |  |
+| databaseName | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.OpenSessionResponse"></a>
+
+### OpenSessionResponse
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| sessionID | [string](#string) |  |  |
+| serverUUID | [string](#string) |  |  |
 
 
 
@@ -642,6 +781,7 @@
 | tx | [uint64](#uint64) |  |  |
 | key | [bytes](#bytes) |  |  |
 | atTx | [uint64](#uint64) |  |  |
+| metadata | [KVMetadata](#immudb.schema.KVMetadata) |  |  |
 
 
 
@@ -709,6 +849,7 @@
 | tx | [uint64](#uint64) |  |  |
 | key | [bytes](#bytes) |  |  |
 | value | [bytes](#bytes) |  |  |
+| metadata | [KVMetadata](#immudb.schema.KVMetadata) |  |  |
 
 
 
@@ -740,26 +881,8 @@
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| ctxs | [TxMetadata](#immudb.schema.TxMetadata) | repeated |  |
-| dtxs | [TxMetadata](#immudb.schema.TxMetadata) | repeated |  |
-| updatedRows | [uint32](#uint32) |  |  |
-| lastInsertedPKs | [SQLExecResult.LastInsertedPKsEntry](#immudb.schema.SQLExecResult.LastInsertedPKsEntry) | repeated |  |
-
-
-
-
-
-
-<a name="immudb.schema.SQLExecResult.LastInsertedPKsEntry"></a>
-
-### SQLExecResult.LastInsertedPKsEntry
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| key | [string](#string) |  |  |
-| value | [SQLValue](#immudb.schema.SQLValue) |  |  |
+| txs | [CommittedSQLTx](#immudb.schema.CommittedSQLTx) | repeated |  |
+| ongoingTx | [bool](#bool) |  |  |
 
 
 
@@ -830,6 +953,7 @@
 | s | [string](#string) |  |  |
 | b | [bool](#bool) |  |  |
 | bs | [bytes](#bytes) |  |  |
+| ts | [int64](#int64) |  |  |
 
 
 
@@ -942,7 +1066,7 @@
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| metadata | [TxMetadata](#immudb.schema.TxMetadata) |  |  |
+| header | [TxHeader](#immudb.schema.TxHeader) |  |  |
 | entries | [TxEntry](#immudb.schema.TxEntry) | repeated |  |
 
 
@@ -961,6 +1085,30 @@
 | key | [bytes](#bytes) |  |  |
 | hValue | [bytes](#bytes) |  |  |
 | vLen | [int32](#int32) |  |  |
+| metadata | [KVMetadata](#immudb.schema.KVMetadata) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.TxHeader"></a>
+
+### TxHeader
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| id | [uint64](#uint64) |  |  |
+| prevAlh | [bytes](#bytes) |  |  |
+| ts | [int64](#int64) |  |  |
+| version | [int32](#int32) |  |  |
+| metadata | [TxMD](#immudb.schema.TxMD) |  |  |
+| nentries | [int32](#int32) |  |  |
+| eH | [bytes](#bytes) |  |  |
+| blTxId | [uint64](#uint64) |  |  |
+| blRoot | [bytes](#bytes) |  |  |
 
 
 
@@ -982,21 +1130,15 @@
 
 
 
-<a name="immudb.schema.TxMetadata"></a>
+<a name="immudb.schema.TxMD"></a>
 
-### TxMetadata
+### TxMD
 
 
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| id | [uint64](#uint64) |  |  |
-| prevAlh | [bytes](#bytes) |  |  |
-| ts | [int64](#int64) |  |  |
-| nentries | [int32](#int32) |  |  |
-| eH | [bytes](#bytes) |  |  |
-| blTxId | [uint64](#uint64) |  |  |
-| blRoot | [bytes](#bytes) |  |  |
+| summary | [bytes](#bytes) |  |  |
 
 
 
@@ -1425,6 +1567,19 @@
 | REVOKE | 1 |  |
 
 
+
+<a name="immudb.schema.TxMode"></a>
+
+### TxMode
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| ReadOnly | 0 |  |
+| WriteOnly | 1 |  |
+| ReadWrite | 2 |  |
+
+
  
 
  
@@ -1442,14 +1597,23 @@ immudb gRPC &amp; REST service
 | ChangePassword | [ChangePasswordRequest](#immudb.schema.ChangePasswordRequest) | [.google.protobuf.Empty](#google.protobuf.Empty) |  |
 | UpdateAuthConfig | [AuthConfig](#immudb.schema.AuthConfig) | [.google.protobuf.Empty](#google.protobuf.Empty) |  |
 | UpdateMTLSConfig | [MTLSConfig](#immudb.schema.MTLSConfig) | [.google.protobuf.Empty](#google.protobuf.Empty) |  |
+| OpenSession | [OpenSessionRequest](#immudb.schema.OpenSessionRequest) | [OpenSessionResponse](#immudb.schema.OpenSessionResponse) |  |
+| CloseSession | [.google.protobuf.Empty](#google.protobuf.Empty) | [.google.protobuf.Empty](#google.protobuf.Empty) |  |
+| KeepAlive | [.google.protobuf.Empty](#google.protobuf.Empty) | [.google.protobuf.Empty](#google.protobuf.Empty) |  |
+| NewTx | [NewTxRequest](#immudb.schema.NewTxRequest) | [NewTxResponse](#immudb.schema.NewTxResponse) |  |
+| Commit | [.google.protobuf.Empty](#google.protobuf.Empty) | [CommittedSQLTx](#immudb.schema.CommittedSQLTx) |  |
+| Rollback | [.google.protobuf.Empty](#google.protobuf.Empty) | [.google.protobuf.Empty](#google.protobuf.Empty) |  |
+| TxSQLExec | [SQLExecRequest](#immudb.schema.SQLExecRequest) | [.google.protobuf.Empty](#google.protobuf.Empty) |  |
+| TxSQLQuery | [SQLQueryRequest](#immudb.schema.SQLQueryRequest) | [SQLQueryResult](#immudb.schema.SQLQueryResult) |  |
 | Login | [LoginRequest](#immudb.schema.LoginRequest) | [LoginResponse](#immudb.schema.LoginResponse) |  |
 | Logout | [.google.protobuf.Empty](#google.protobuf.Empty) | [.google.protobuf.Empty](#google.protobuf.Empty) |  |
-| Set | [SetRequest](#immudb.schema.SetRequest) | [TxMetadata](#immudb.schema.TxMetadata) |  |
+| Set | [SetRequest](#immudb.schema.SetRequest) | [TxHeader](#immudb.schema.TxHeader) |  |
 | VerifiableSet | [VerifiableSetRequest](#immudb.schema.VerifiableSetRequest) | [VerifiableTx](#immudb.schema.VerifiableTx) |  |
 | Get | [KeyRequest](#immudb.schema.KeyRequest) | [Entry](#immudb.schema.Entry) |  |
 | VerifiableGet | [VerifiableGetRequest](#immudb.schema.VerifiableGetRequest) | [VerifiableEntry](#immudb.schema.VerifiableEntry) |  |
+| Delete | [DeleteKeysRequest](#immudb.schema.DeleteKeysRequest) | [TxHeader](#immudb.schema.TxHeader) |  |
 | GetAll | [KeyListRequest](#immudb.schema.KeyListRequest) | [Entries](#immudb.schema.Entries) |  |
-| ExecAll | [ExecAllRequest](#immudb.schema.ExecAllRequest) | [TxMetadata](#immudb.schema.TxMetadata) |  |
+| ExecAll | [ExecAllRequest](#immudb.schema.ExecAllRequest) | [TxHeader](#immudb.schema.TxHeader) |  |
 | Scan | [ScanRequest](#immudb.schema.ScanRequest) | [Entries](#immudb.schema.Entries) |  |
 | Count | [KeyPrefix](#immudb.schema.KeyPrefix) | [EntryCount](#immudb.schema.EntryCount) | NOT YET SUPPORTED |
 | CountAll | [.google.protobuf.Empty](#google.protobuf.Empty) | [EntryCount](#immudb.schema.EntryCount) | NOT YET SUPPORTED |
@@ -1459,9 +1623,9 @@ immudb gRPC &amp; REST service
 | History | [HistoryRequest](#immudb.schema.HistoryRequest) | [Entries](#immudb.schema.Entries) |  |
 | Health | [.google.protobuf.Empty](#google.protobuf.Empty) | [HealthResponse](#immudb.schema.HealthResponse) |  |
 | CurrentState | [.google.protobuf.Empty](#google.protobuf.Empty) | [ImmutableState](#immudb.schema.ImmutableState) |  |
-| SetReference | [ReferenceRequest](#immudb.schema.ReferenceRequest) | [TxMetadata](#immudb.schema.TxMetadata) |  |
+| SetReference | [ReferenceRequest](#immudb.schema.ReferenceRequest) | [TxHeader](#immudb.schema.TxHeader) |  |
 | VerifiableSetReference | [VerifiableReferenceRequest](#immudb.schema.VerifiableReferenceRequest) | [VerifiableTx](#immudb.schema.VerifiableTx) |  |
-| ZAdd | [ZAddRequest](#immudb.schema.ZAddRequest) | [TxMetadata](#immudb.schema.TxMetadata) |  |
+| ZAdd | [ZAddRequest](#immudb.schema.ZAddRequest) | [TxHeader](#immudb.schema.TxHeader) |  |
 | VerifiableZAdd | [VerifiableZAddRequest](#immudb.schema.VerifiableZAddRequest) | [VerifiableTx](#immudb.schema.VerifiableTx) |  |
 | ZScan | [ZScanRequest](#immudb.schema.ZScanRequest) | [ZEntries](#immudb.schema.ZEntries) |  |
 | CreateDatabase | [Database](#immudb.schema.Database) | [.google.protobuf.Empty](#google.protobuf.Empty) | DEPRECATED: kept for backward compatibility |
@@ -1473,16 +1637,15 @@ immudb gRPC &amp; REST service
 | ChangePermission | [ChangePermissionRequest](#immudb.schema.ChangePermissionRequest) | [.google.protobuf.Empty](#google.protobuf.Empty) |  |
 | SetActiveUser | [SetActiveUserRequest](#immudb.schema.SetActiveUserRequest) | [.google.protobuf.Empty](#google.protobuf.Empty) |  |
 | streamGet | [KeyRequest](#immudb.schema.KeyRequest) | [Chunk](#immudb.schema.Chunk) stream | Streams |
-| streamSet | [Chunk](#immudb.schema.Chunk) stream | [TxMetadata](#immudb.schema.TxMetadata) |  |
+| streamSet | [Chunk](#immudb.schema.Chunk) stream | [TxHeader](#immudb.schema.TxHeader) |  |
 | streamVerifiableGet | [VerifiableGetRequest](#immudb.schema.VerifiableGetRequest) | [Chunk](#immudb.schema.Chunk) stream |  |
 | streamVerifiableSet | [Chunk](#immudb.schema.Chunk) stream | [VerifiableTx](#immudb.schema.VerifiableTx) |  |
 | streamScan | [ScanRequest](#immudb.schema.ScanRequest) | [Chunk](#immudb.schema.Chunk) stream |  |
 | streamZScan | [ZScanRequest](#immudb.schema.ZScanRequest) | [Chunk](#immudb.schema.Chunk) stream |  |
 | streamHistory | [HistoryRequest](#immudb.schema.HistoryRequest) | [Chunk](#immudb.schema.Chunk) stream |  |
-| streamExecAll | [Chunk](#immudb.schema.Chunk) stream | [TxMetadata](#immudb.schema.TxMetadata) |  |
+| streamExecAll | [Chunk](#immudb.schema.Chunk) stream | [TxHeader](#immudb.schema.TxHeader) |  |
 | exportTx | [TxRequest](#immudb.schema.TxRequest) | [Chunk](#immudb.schema.Chunk) stream | Replication |
-| replicateTx | [Chunk](#immudb.schema.Chunk) stream | [TxMetadata](#immudb.schema.TxMetadata) |  |
-| UseSnapshot | [UseSnapshotRequest](#immudb.schema.UseSnapshotRequest) | [.google.protobuf.Empty](#google.protobuf.Empty) | SQL |
+| replicateTx | [Chunk](#immudb.schema.Chunk) stream | [TxHeader](#immudb.schema.TxHeader) |  |
 | SQLExec | [SQLExecRequest](#immudb.schema.SQLExecRequest) | [SQLExecResult](#immudb.schema.SQLExecResult) |  |
 | SQLQuery | [SQLQueryRequest](#immudb.schema.SQLQueryRequest) | [SQLQueryResult](#immudb.schema.SQLQueryResult) |  |
 | ListTables | [.google.protobuf.Empty](#google.protobuf.Empty) | [SQLQueryResult](#immudb.schema.SQLQueryResult) |  |

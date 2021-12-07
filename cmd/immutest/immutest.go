@@ -17,20 +17,21 @@ limitations under the License.
 package main
 
 import (
+	"github.com/codenotary/immudb/pkg/client/homedir"
+	"github.com/codenotary/immudb/pkg/client/tokenservice"
+	"github.com/spf13/viper"
 	"os"
 
 	c "github.com/codenotary/immudb/cmd/helper"
 	immutest "github.com/codenotary/immudb/cmd/immutest/command"
 	"github.com/codenotary/immudb/cmd/version"
-	"github.com/codenotary/immudb/pkg/client"
 )
 
 func main() {
 	err := execute(
-		client.NewImmuClient,
 		c.DefaultPasswordReader,
 		c.NewTerminalReader(os.Stdin),
-		client.NewTokenService(),
+		tokenservice.NewFileTokenService().WithHds(homedir.NewHomedirService()).WithTokenFileName(viper.GetString("tokenfile")),
 		c.QuitWithUserError,
 		nil)
 	if err != nil {
@@ -40,15 +41,14 @@ func main() {
 }
 
 func execute(
-	newImmuClient func(*client.Options) (client.ImmuClient, error),
 	pwr c.PasswordReader,
 	tr c.TerminalReader,
-	ts client.TokenService,
+	ts tokenservice.TokenService,
 	onError func(err error),
 	args []string,
 ) error {
 	version.App = "immutest"
-	cmd := immutest.NewCmd(newImmuClient, pwr, tr, ts, onError)
+	cmd := immutest.NewCmd(pwr, tr, ts, onError)
 	if args != nil {
 		cmd.SetArgs(args)
 	}

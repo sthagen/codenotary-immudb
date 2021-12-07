@@ -19,12 +19,14 @@ package immuadmin
 import (
 	"bytes"
 	"context"
+	"github.com/codenotary/immudb/cmd/cmdtest"
+	"github.com/codenotary/immudb/pkg/client/homedir"
+	"github.com/codenotary/immudb/pkg/client/tokenservice"
+	"github.com/stretchr/testify/require"
 	"io/ioutil"
 	"log"
 	"os"
 	"testing"
-
-	"github.com/stretchr/testify/require"
 
 	"github.com/codenotary/immudb/cmd/helper"
 
@@ -70,7 +72,7 @@ func TestCommandLine_Connect(t *testing.T) {
 		grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 	}
 	opts := Options()
-	opts.DialOptions = &dialOptions
+	opts.DialOptions = dialOptions
 	cmdl := commandline{
 		context: context.Background(),
 		options: opts,
@@ -94,13 +96,14 @@ func TestCommandLine_Disconnect(t *testing.T) {
 		grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 	}
 	cliopt := Options()
-	cliopt.DialOptions = &dialOptions
+	cliopt.DialOptions = dialOptions
+	tkf := cmdtest.RandString()
 	cmdl := commandline{
 		options:        cliopt,
 		immuClient:     &scIClientMock{*new(client.ImmuClient)},
 		passwordReader: pwReaderMock,
 		context:        context.Background(),
-		ts:             client.NewTokenService().WithHds(newHomedirServiceMock()).WithTokenFileName("token_admin"),
+		ts:             tokenservice.NewFileTokenService().WithHds(newHomedirServiceMock()).WithTokenFileName(tkf),
 	}
 	_ = cmdl.connect(&cobra.Command{}, []string{})
 
@@ -130,7 +133,7 @@ func (c scIClientInnerMock) GetOptions() *client.Options {
 }
 
 func (c scIClientInnerMock) Login(ctx context.Context, user []byte, pass []byte) (*schema.LoginResponse, error) {
-	return &schema.LoginResponse{}, nil
+	return &schema.LoginResponse{Token: "fake-token"}, nil
 }
 
 func TestCommandLine_LoginLogout(t *testing.T) {
@@ -148,17 +151,16 @@ func TestCommandLine_LoginLogout(t *testing.T) {
 	dialOptions := []grpc.DialOption{
 		grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 	}
-	cliopt := Options().WithDialOptions(&dialOptions)
+	cliopt := Options().WithDialOptions(dialOptions)
 
-	cliopt.Tkns = client.NewTokenService().WithHds(client.NewHomedirService()).WithTokenFileName("token_admin")
+	tkf := cmdtest.RandString()
 	cmdl := commandline{
 		config:         helper.Config{Name: "immuadmin"},
 		options:        cliopt,
 		immuClient:     &scIClientInnerMock{cliopt, *new(client.ImmuClient)},
 		passwordReader: pwReaderMock,
 		context:        context.Background(),
-		ts:             client.NewTokenService().WithHds(client.NewHomedirService()).WithTokenFileName("token_admin"),
-		newImmuClient:  client.NewImmuClient,
+		ts:             tokenservice.NewFileTokenService().WithHds(homedir.NewHomedirService()).WithTokenFileName(tkf),
 	}
 	cmdl.login(cmd)
 
@@ -177,14 +179,13 @@ func TestCommandLine_LoginLogout(t *testing.T) {
 		t.Fatal(err)
 	}
 	assert.Contains(t, string(out), "logged in")
-
 	cmdlo := commandline{
 		config:         helper.Config{Name: "immuadmin"},
 		options:        cliopt,
 		immuClient:     &scIClientMock{*new(client.ImmuClient)},
 		passwordReader: pwReaderMock,
 		context:        context.Background(),
-		ts:             client.NewTokenService().WithHds(client.NewHomedirService()).WithTokenFileName("token_admin"),
+		ts:             tokenservice.NewFileTokenService().WithHds(homedir.NewHomedirService()).WithTokenFileName(tkf),
 	}
 	b1 := bytes.NewBufferString("")
 	cl = commandline{}
@@ -229,20 +230,21 @@ func TestCommandLine_CheckLoggedIn(t *testing.T) {
 	cmd.Execute()
 
 	cl.options = Options()
-	cl.options.DialOptions = &dialOptions
+	cl.options.DialOptions = dialOptions
 	cl.login(cmd)
 
 	cmd1 := cobra.Command{}
 	cl1 := new(commandline)
 	cl1.context = context.Background()
 	cl1.passwordReader = pwReaderMock
-	cl1.ts = client.NewTokenService().WithHds(newHomedirServiceMock()).WithTokenFileName("token_admin")
+	tkf := cmdtest.RandString()
+	cl1.ts = tokenservice.NewFileTokenService().WithHds(newHomedirServiceMock()).WithTokenFileName(tkf)
 	dialOptions1 := []grpc.DialOption{
 		grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 	}
 
 	cl1.options = Options()
-	cl1.options.DialOptions = &dialOptions1
+	cl1.options.DialOptions = dialOptions1
 	err := cl1.checkLoggedIn(&cmd1, nil)
 	assert.Nil(t, err)
 }

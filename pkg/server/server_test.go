@@ -405,11 +405,11 @@ func TestServerLoaduserDatabase(t *testing.T) {
 
 func TestServerLoadUserDatabases(t *testing.T) {
 	copier := fs.NewStandardCopier()
-	require.NoError(t, copier.CopyDir("../../test/data_v1.0.1", "data_v1.0.1"))
+	require.NoError(t, copier.CopyDir("../../test/data_v1.1.0", "data_v1.1.0"))
 
-	defer os.RemoveAll("data_v1.0.1")
+	defer os.RemoveAll("data_v1.1.0")
 
-	serverOptions := DefaultOptions().WithMetricsServer(false).WithDir("./data_v1.0.1")
+	serverOptions := DefaultOptions().WithMetricsServer(false).WithDir("./data_v1.1.0")
 	s := DefaultServer().WithOptions(serverOptions).(*ImmuServer)
 
 	s.Initialize()
@@ -419,7 +419,7 @@ func TestServerLoadUserDatabases(t *testing.T) {
 }
 
 func testServerSetGet(ctx context.Context, s *ImmuServer, t *testing.T) {
-	txMetadata, err := s.Set(ctx, &schema.SetRequest{
+	txhdr, err := s.Set(ctx, &schema.SetRequest{
 		KVs: []*schema.KeyValue{
 			{
 				Key:   testKey,
@@ -435,13 +435,13 @@ func testServerSetGet(ctx context.Context, s *ImmuServer, t *testing.T) {
 
 	it, err := s.Get(ctx, &schema.KeyRequest{
 		Key:     testKey,
-		SinceTx: txMetadata.Id,
+		SinceTx: txhdr.Id,
 	})
 	if err != nil {
 		t.Fatalf("Get error %v", err)
 	}
-	if it.Tx != txMetadata.Id {
-		t.Fatalf("set.get tx missmatch expected %v got %v", txMetadata.Id, it.Tx)
+	if it.Tx != txhdr.Id {
+		t.Fatalf("set.get tx missmatch expected %v got %v", txhdr.Id, it.Tx)
 	}
 	if !bytes.Equal(it.Key, testKey) {
 		t.Fatalf("get key missmatch expected %v got %v", string(testKey), string(it.Key))
@@ -525,7 +525,7 @@ func testServerSafeSetGet(ctx context.Context, s *ImmuServer, t *testing.T) {
 		_, err = s.VerifiableGet(ctx, &schema.VerifiableGetRequest{
 			KeyRequest: &schema.KeyRequest{
 				Key:     val.SetRequest.KVs[0].Key,
-				SinceTx: vTx.Tx.Metadata.Id,
+				SinceTx: vTx.Tx.Header.Id,
 			},
 		})
 		if err != nil {
@@ -637,11 +637,11 @@ func testServerByIndex(ctx context.Context, s *ImmuServer, t *testing.T) {
 	ind := uint64(1)
 
 	for _, val := range kvs {
-		txMetadata, err := s.Set(ctx, &schema.SetRequest{KVs: []*schema.KeyValue{val}})
+		txhdr, err := s.Set(ctx, &schema.SetRequest{KVs: []*schema.KeyValue{val}})
 		if err != nil {
 			t.Fatalf("Error Inserting to db %s", err)
 		}
-		ind = txMetadata.Id
+		ind = txhdr.Id
 	}
 
 	s.VerifiableSet(ctx, &schema.VerifiableSetRequest{
@@ -857,7 +857,7 @@ func testServerScan(ctx context.Context, s *ImmuServer, t *testing.T) {
 		SeekKey: nil,
 		Limit:   1,
 		Prefix:  kvs[0].Key,
-		SinceTx: meta.Tx.Metadata.Id,
+		SinceTx: meta.Tx.Header.Id,
 	})
 	require.NoError(t, err)
 
@@ -925,7 +925,7 @@ func testServerSafeReference(ctx context.Context, s *ImmuServer, t *testing.T) {
 
 	ref, err := s.Get(ctx, &schema.KeyRequest{
 		Key:     []byte("refKey1"),
-		SinceTx: vtx.Tx.Metadata.Id,
+		SinceTx: vtx.Tx.Header.Id,
 	})
 	require.NoError(t, err)
 	require.Equal(t, kvs[0].Value, ref.Value)
@@ -1724,6 +1724,12 @@ func TestServerMaintenanceMode(t *testing.T) {
 	require.Contains(t, err.Error(), ErrNotAllowedInMaintenanceMode.Error())
 
 	_, err = s.VerifiableZAdd(context.Background(), nil)
+	require.Contains(t, err.Error(), ErrNotAllowedInMaintenanceMode.Error())
+
+	_, err = s.Delete(context.Background(), nil)
+	require.Contains(t, err.Error(), store.ErrIllegalArguments.Error())
+
+	_, err = s.Delete(context.Background(), &schema.DeleteKeysRequest{})
 	require.Contains(t, err.Error(), ErrNotAllowedInMaintenanceMode.Error())
 
 	_, err = s.ExecAll(context.Background(), nil)

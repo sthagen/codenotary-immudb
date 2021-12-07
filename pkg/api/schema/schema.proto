@@ -81,25 +81,38 @@ message MTLSConfig {
 	bool enabled = 1;
 }
 
+message OpenSessionRequest {
+	bytes username = 1;
+	bytes password = 2;
+	string databaseName = 3;
+}
+
+message OpenSessionResponse {
+	string sessionID = 1;
+	string serverUUID = 2;
+}
+
 ////////////////////////////////////////////////////////
 
 message KeyValue {
 	bytes key = 1;
 	bytes value = 2;
+	KVMetadata metadata = 3;
 }
 
 message Entry {
 	uint64 tx = 1;
 	bytes key = 2;
 	bytes value = 3;
-
 	Reference referencedBy = 4;
+	KVMetadata metadata = 5;
 }
 
 message Reference {
 	uint64 tx = 1;
 	bytes key = 2;
 	uint64 atTx = 3;
+	KVMetadata metadata = 4;
 }
 
 message Op {
@@ -155,14 +168,20 @@ message Signature {
 	bytes signature = 2;
 }
 
-message TxMetadata {
+message TxHeader {
 	uint64 id = 1;
 	bytes prevAlh = 2;
 	int64 ts = 3;
-	int32 nentries = 4;
-	bytes eH = 5;
-	uint64 blTxId = 6;
-	bytes blRoot = 7;
+	int32 version = 9;
+	TxMD metadata = 4;
+	int32 nentries = 5;
+	bytes eH = 6;
+	uint64 blTxId = 7;
+	bytes blRoot = 8;
+}
+
+message TxMD {
+	bytes summary = 1;
 }
 
 message LinearProof {
@@ -172,8 +191,8 @@ message LinearProof {
 }
 
 message DualProof {
-	TxMetadata sourceTxMetadata = 1;
-	TxMetadata targetTxMetadata = 2;
+	TxHeader sourceTxHeader = 1;
+	TxHeader targetTxHeader = 2;
 
 	repeated bytes inclusionProof = 3;
 	repeated bytes consistencyProof = 4;
@@ -185,14 +204,19 @@ message DualProof {
 }
 
 message Tx {
-	TxMetadata metadata = 1;
+	TxHeader header = 1;
 	repeated TxEntry entries = 2;
 }
 
 message TxEntry {
 	bytes key = 1;
 	bytes hValue = 2;
-	int32 vLen = 4;
+	int32 vLen = 3;
+	KVMetadata metadata = 4;
+}
+
+message KVMetadata {
+	bool deleted = 1;
 }
 
 message VerifiableTx {
@@ -229,6 +253,12 @@ message KeyRequest {
 message KeyListRequest {
 	repeated bytes keys = 1;
 	uint64 sinceTx = 2;
+}
+
+message DeleteKeysRequest {
+	repeated bytes keys = 1;
+	uint64 sinceTx = 2;
+	bool  noWait = 3;
 }
 
 message VerifiableSetRequest {
@@ -364,6 +394,7 @@ message SQLEntry {
 	uint64 tx = 1;
 	bytes  key = 2;
 	bytes  value = 3;
+	KVMetadata metadata = 4;
 }
 
 message VerifiableSQLEntry {
@@ -432,10 +463,14 @@ message NamedParam {
 }
 
 message SQLExecResult {
-	repeated TxMetadata ctxs = 1;
-	repeated TxMetadata dtxs = 2;
-	uint32 updatedRows = 3;
-	map<string, SQLValue> lastInsertedPKs = 4;
+	repeated CommittedSQLTx txs = 5;
+	bool ongoingTx = 6;
+}
+
+message CommittedSQLTx {
+	TxHeader header = 1;
+	uint32 updatedRows = 2;
+	map<string, SQLValue> lastInsertedPKs = 3;
 }
 
 message SQLQueryResult {
@@ -460,8 +495,24 @@ message SQLValue {
 		string s = 3;
 		bool b = 4;
 		bytes bs = 5;
+		int64 ts = 6;
 	}
 }
+
+enum TxMode {
+	ReadOnly = 0;
+	WriteOnly = 1;
+	ReadWrite = 2;
+}
+
+message NewTxRequest {
+	TxMode mode = 1;
+}
+
+message NewTxResponse {
+	string transactionID = 1;
+}
+
 
 option (grpc.gateway.protoc_gen_swagger.options.openapiv2_swagger) = {
 	info: {
@@ -521,10 +572,26 @@ service ImmuService {
 		};
 	};
 
-	rpc UpdateAuthConfig (AuthConfig) returns (google.protobuf.Empty){} // DEPRECATED
-	rpc UpdateMTLSConfig (MTLSConfig) returns (google.protobuf.Empty){} // DEPRECATED
+	rpc UpdateAuthConfig (AuthConfig) returns (google.protobuf.Empty){
+		option deprecated = true;
+	} // DEPRECATED
+	rpc UpdateMTLSConfig (MTLSConfig) returns (google.protobuf.Empty){
+		option deprecated = true;
+	} // DEPRECATED
+
+	rpc OpenSession (OpenSessionRequest) returns (OpenSessionResponse){};
+	rpc CloseSession (google.protobuf.Empty) returns (google.protobuf.Empty){};
+	rpc KeepAlive (google.protobuf.Empty) returns (google.protobuf.Empty){};
+
+	rpc NewTx (NewTxRequest) returns (NewTxResponse){};
+	rpc Commit (google.protobuf.Empty) returns (CommittedSQLTx){};
+	rpc Rollback (google.protobuf.Empty) returns (google.protobuf.Empty){};
+
+	rpc TxSQLExec(SQLExecRequest) returns (google.protobuf.Empty) {};
+	rpc TxSQLQuery(SQLQueryRequest) returns (SQLQueryResult) {};
 
 	rpc Login (LoginRequest) returns (LoginResponse){
+		option deprecated = true;
 		option (google.api.http) = {
 			post: "/login"
 			body: "*"
@@ -535,13 +602,14 @@ service ImmuService {
 	};
 
 	rpc Logout (google.protobuf.Empty) returns (google.protobuf.Empty){
+		option deprecated = true;
 		option (google.api.http) = {
 			post: "/logout"
 			body: "*"
 		};
 	};
 
-	rpc Set (SetRequest) returns (TxMetadata){
+	rpc Set (SetRequest) returns (TxHeader){
 		option (google.api.http) = {
 			post: "/db/set"
 			body: "*"
@@ -568,6 +636,13 @@ service ImmuService {
 		};
 	};
 
+	rpc Delete(DeleteKeysRequest) returns (TxHeader) {
+		option (google.api.http) = {
+			post: "/db/delete"
+			body: "*"
+		};
+	}
+
 	rpc GetAll (KeyListRequest) returns (Entries){
 		option (google.api.http) = {
 			post: "/db/getall"
@@ -575,7 +650,7 @@ service ImmuService {
 		};
 	};
 
-	rpc ExecAll (ExecAllRequest) returns (TxMetadata) {
+	rpc ExecAll (ExecAllRequest) returns (TxHeader) {
 		option (google.api.http) = {
 			post: "/db/execall"
 			body: "*"
@@ -647,7 +722,7 @@ service ImmuService {
 		};
 	};
 
-	rpc SetReference (ReferenceRequest) returns (TxMetadata){
+	rpc SetReference (ReferenceRequest) returns (TxHeader){
 		option (google.api.http) = {
 			post: "/db/setreference"
 			body: "*"
@@ -661,7 +736,7 @@ service ImmuService {
 		};
 	};
 
-	rpc ZAdd (ZAddRequest) returns (TxMetadata){
+	rpc ZAdd (ZAddRequest) returns (TxHeader){
 		option (google.api.http) = {
 			post: "/db/zadd"
 			body: "*"
@@ -739,24 +814,17 @@ service ImmuService {
 
 	// Streams
 	rpc streamGet(KeyRequest) returns (stream Chunk) {};
-	rpc streamSet(stream Chunk) returns (TxMetadata) {};
+	rpc streamSet(stream Chunk) returns (TxHeader) {};
 	rpc streamVerifiableGet(VerifiableGetRequest) returns (stream Chunk) {};
 	rpc streamVerifiableSet(stream Chunk) returns (VerifiableTx) {};
 	rpc streamScan(ScanRequest) returns (stream Chunk) {};
 	rpc streamZScan(ZScanRequest) returns (stream Chunk) {};
 	rpc streamHistory(HistoryRequest) returns (stream Chunk) {};
-	rpc streamExecAll(stream Chunk) returns (TxMetadata) {};
+	rpc streamExecAll(stream Chunk) returns (TxHeader) {};
 
 	// Replication
 	rpc exportTx(TxRequest) returns (stream Chunk) {};
-	rpc replicateTx(stream Chunk) returns (TxMetadata) {};
-
-	// SQL
-	rpc UseSnapshot(UseSnapshotRequest) returns (google.protobuf.Empty) {
-		option (google.api.http) = {
-			get: "/db/usesnapshot"
-		};
-	}
+	rpc replicateTx(stream Chunk) returns (TxHeader) {};
 
 	rpc SQLExec(SQLExecRequest) returns (SQLExecResult) {
 		option (google.api.http) = {

@@ -40,6 +40,10 @@ func (v *CountValue) Type() SQLValueType {
 	return IntegerType
 }
 
+func (v *CountValue) IsNull() bool {
+	return false
+}
+
 func (v *CountValue) Value() interface{} {
 	return v.c
 }
@@ -69,11 +73,11 @@ func (v *CountValue) updateWith(val TypedValue) error {
 
 // ValueExp
 
-func (v *CountValue) inferType(cols map[string]*ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) (SQLValueType, error) {
+func (v *CountValue) inferType(cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) (SQLValueType, error) {
 	return IntegerType, nil
 }
 
-func (v *CountValue) requiresType(t SQLValueType, cols map[string]*ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) error {
+func (v *CountValue) requiresType(t SQLValueType, cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) error {
 	if t != IntegerType {
 		return ErrNotComparableValues
 	}
@@ -121,6 +125,10 @@ func (v *SumValue) Type() SQLValueType {
 	return IntegerType
 }
 
+func (v *SumValue) IsNull() bool {
+	return false
+}
+
 func (v *SumValue) Value() interface{} {
 	return v.s
 }
@@ -155,11 +163,11 @@ func (v *SumValue) updateWith(val TypedValue) error {
 
 // ValueExp
 
-func (v *SumValue) inferType(cols map[string]*ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) (SQLValueType, error) {
+func (v *SumValue) inferType(cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) (SQLValueType, error) {
 	return IntegerType, nil
 }
 
-func (v *SumValue) requiresType(t SQLValueType, cols map[string]*ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) error {
+func (v *SumValue) requiresType(t SQLValueType, cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) error {
 	if t != IntegerType {
 		return ErrNotComparableValues
 	}
@@ -207,6 +215,10 @@ func (v *MinValue) Type() SQLValueType {
 	return v.val.Type()
 }
 
+func (v *MinValue) IsNull() bool {
+	return false
+}
+
 func (v *MinValue) Value() interface{} {
 	return v.val.Value()
 }
@@ -235,7 +247,7 @@ func (v *MinValue) updateWith(val TypedValue) error {
 
 // ValueExp
 
-func (v *MinValue) inferType(cols map[string]*ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) (SQLValueType, error) {
+func (v *MinValue) inferType(cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) (SQLValueType, error) {
 	if v.val == nil {
 		return AnyType, ErrUnexpected
 	}
@@ -243,7 +255,7 @@ func (v *MinValue) inferType(cols map[string]*ColDescriptor, params map[string]S
 	return v.val.Type(), nil
 }
 
-func (v *MinValue) requiresType(t SQLValueType, cols map[string]*ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) error {
+func (v *MinValue) requiresType(t SQLValueType, cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) error {
 	if v.val == nil {
 		return ErrUnexpected
 	}
@@ -296,6 +308,10 @@ func (v *MaxValue) Type() SQLValueType {
 	return v.val.Type()
 }
 
+func (v *MaxValue) IsNull() bool {
+	return false
+}
+
 func (v *MaxValue) Value() interface{} {
 	return v.val.Value()
 }
@@ -324,7 +340,7 @@ func (v *MaxValue) updateWith(val TypedValue) error {
 
 // ValueExp
 
-func (v *MaxValue) inferType(cols map[string]*ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) (SQLValueType, error) {
+func (v *MaxValue) inferType(cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) (SQLValueType, error) {
 	if v.val == nil {
 		return AnyType, ErrUnexpected
 	}
@@ -332,7 +348,7 @@ func (v *MaxValue) inferType(cols map[string]*ColDescriptor, params map[string]S
 	return v.val.Type(), nil
 }
 
-func (v *MaxValue) requiresType(t SQLValueType, cols map[string]*ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) error {
+func (v *MaxValue) requiresType(t SQLValueType, cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) error {
 	if v.val == nil {
 		return ErrUnexpected
 	}
@@ -386,6 +402,10 @@ func (v *AVGValue) Type() SQLValueType {
 	return IntegerType
 }
 
+func (v *AVGValue) IsNull() bool {
+	return false
+}
+
 func (v *AVGValue) Value() interface{} {
 	return v.s / v.c
 }
@@ -422,11 +442,11 @@ func (v *AVGValue) updateWith(val TypedValue) error {
 
 // ValueExp
 
-func (v *AVGValue) inferType(cols map[string]*ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) (SQLValueType, error) {
+func (v *AVGValue) inferType(cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) (SQLValueType, error) {
 	return IntegerType, nil
 }
 
-func (v *AVGValue) requiresType(t SQLValueType, cols map[string]*ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) error {
+func (v *AVGValue) requiresType(t SQLValueType, cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) error {
 	if t != IntegerType {
 		return ErrNotComparableValues
 	}

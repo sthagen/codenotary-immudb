@@ -4,8 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
-	"strings"
+	"github.com/codenotary/immudb/pkg/server/sessions"
 	"time"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
@@ -166,9 +165,8 @@ func (s *ImmuServer) ListUsers(ctx context.Context, req *empty.Empty) (*schema.U
 	}
 
 	itemList, err := s.sysDB.Scan(&schema.ScanRequest{
-		Prefix:  []byte{KeyPrefixUser},
-		SinceTx: math.MaxUint64,
-		NoWait:  true,
+		Prefix: []byte{KeyPrefixUser},
+		NoWait: true,
 	})
 	if err != nil {
 		s.Logger.Errorf("error getting users: %v", err)
@@ -602,12 +600,16 @@ func (s *ImmuServer) addUserToLoginList(u *auth.User) {
 }
 
 func (s *ImmuServer) getLoggedInUserdataFromCtx(ctx context.Context) (int64, *auth.User, error) {
+	if sessionID, err := sessions.GetSessionIDFromContext(ctx); err == nil {
+		sess, e := s.SessManager.GetSession(sessionID)
+		if e != nil {
+			return 0, nil, e
+		}
+		return s.dbList.GetId(sess.GetDatabase().GetName()), sess.GetUser(), nil
+	}
 	jsUser, err := auth.GetLoggedInUser(ctx)
 	if err != nil {
-		if strings.HasPrefix(fmt.Sprintf("%s", err), "token has expired") {
-			return -1, nil, err
-		}
-		return -1, nil, ErrNotLoggedIn
+		return -1, nil, err
 	}
 
 	u, err := s.getLoggedInUserDataFromUsername(jsUser.Username)

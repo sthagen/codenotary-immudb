@@ -55,18 +55,20 @@ func setResult(l yyLexer, stmts []SQLStmt) {
     binExp ValueExp
     err error
     ordcols []*OrdCol
-    opt_ord Order
+    opt_ord bool
     logicOp LogicOperator
     cmpOp CmpOperator
     pparam int
+    update *colUpdate
+    updates []*colUpdate
 }
 
 %token CREATE USE DATABASE SNAPSHOT SINCE UP TO TABLE UNIQUE INDEX ON ALTER ADD COLUMN PRIMARY KEY
-%token BEGIN TRANSACTION COMMIT
-%token INSERT UPSERT INTO VALUES
+%token BEGIN TRANSACTION COMMIT ROLLBACK
+%token INSERT UPSERT INTO VALUES DELETE UPDATE SET
 %token SELECT DISTINCT FROM BEFORE TX JOIN HAVING WHERE GROUP BY LIMIT ORDER ASC DESC AS
-%token NOT LIKE IF EXISTS
-%token AUTO_INCREMENT NULL NPARAM
+%token NOT LIKE IF EXISTS IN IS
+%token AUTO_INCREMENT NULL NPARAM CAST
 %token <pparam> PPARAM
 %token <joinType> JOINTYPE
 %token <logicOp> LOP
@@ -90,10 +92,10 @@ func setResult(l yyLexer, stmts []SQLStmt) {
 %left '*' '/'
 %left  '.'
 %right STMT_SEPARATOR
+%left IS
 
-%type <stmts> sql
-%type <stmts> sqlstmts dstmts
-%type <stmt> sqlstmt dstmt ddlstmt dmlstmt dqlstmt
+%type <stmts> sql sqlstmts
+%type <stmt> sqlstmt ddlstmt dqlstmt dmlstmt
 %type <colsSpec> colsSpec
 %type <colSpec> colSpec
 %type <ids> ids one_or_more_ids opt_ids
@@ -111,7 +113,8 @@ func setResult(l yyLexer, stmts []SQLStmt) {
 %type <number> opt_since opt_as_before
 %type <joins> opt_joins joins
 %type <join> join
-%type <exp> exp opt_where opt_having
+%type <joinType> opt_join_type
+%type <exp> exp opt_where opt_having boundexp
 %type <binExp> binExp
 %type <cols> opt_groupby
 %type <number> opt_limit opt_max_len
@@ -119,10 +122,12 @@ func setResult(l yyLexer, stmts []SQLStmt) {
 %type <ordcols> ordcols opt_orderby
 %type <opt_ord> opt_ord
 %type <ids> opt_indexon
-%type <boolean> opt_if_not_exists opt_auto_increment opt_not_null
+%type <boolean> opt_if_not_exists opt_auto_increment opt_not_null opt_not
+%type <update> update
+%type <updates> updates
 
 %start sql
-    
+
 %%
 
 sql: sqlstmts
@@ -137,11 +142,6 @@ sqlstmts:
         $$ = []SQLStmt{$1}
     }
 |
-    dqlstmt opt_separator
-    {
-        $$ = []SQLStmt{$1}
-    }
-|
     sqlstmt STMT_SEPARATOR sqlstmts
     {
         $$ = append([]SQLStmt{$1}, $3...)
@@ -149,31 +149,24 @@ sqlstmts:
 
 opt_separator: {} | STMT_SEPARATOR
 
-sqlstmt:
-    dstmt
-    {
-        $$ = $1
-    }
-|
-    BEGIN TRANSACTION dstmts COMMIT
-    {
-        $$ = &TxStmt{stmts: $3}
-    }
-
-dstmt: ddlstmt | dmlstmt
-
-dstmts:
-    dstmt opt_separator
-    {
-        $$ = []SQLStmt{$1}
-    }
-|
-    dstmt STMT_SEPARATOR dstmts
-    {
-        $$ = append([]SQLStmt{$1}, $3...)
-    }
+sqlstmt: ddlstmt | dmlstmt | dqlstmt
 
 ddlstmt:
+    BEGIN TRANSACTION
+    {
+        $$ = &BeginTransactionStmt{}
+    }
+|
+    COMMIT
+    {
+        $$ = &CommitStmt{}
+    }
+|
+    ROLLBACK
+    {
+        $$ = &RollbackStmt{}
+    }
+|
     CREATE DATABASE IDENTIFIER
     {
         $$ = &CreateDatabaseStmt{DB: $3}
@@ -194,14 +187,14 @@ ddlstmt:
         $$ = &CreateTableStmt{ifNotExists: $3, table: $4, colsSpec: $6, pkColNames: $10}
     }
 |
-    CREATE INDEX ON IDENTIFIER '(' ids ')'
+    CREATE INDEX opt_if_not_exists ON IDENTIFIER '(' ids ')'
     {
-        $$ = &CreateIndexStmt{table: $4, cols: $6}
+        $$ = &CreateIndexStmt{ifNotExists: $3, table: $5, cols: $7}
     }
 |
-    CREATE UNIQUE INDEX ON IDENTIFIER '(' ids ')'
+    CREATE UNIQUE INDEX opt_if_not_exists ON IDENTIFIER '(' ids ')'
     {
-        $$ = &CreateIndexStmt{unique: true, table: $5, cols: $7}
+        $$ = &CreateIndexStmt{unique: true, ifNotExists: $4, table: $6, cols: $8}
     }
 |
     ALTER TABLE IDENTIFIER ADD COLUMN colSpec
@@ -249,6 +242,33 @@ dmlstmt:
     UPSERT INTO tableRef '(' ids ')' VALUES rows
     {
         $$ = &UpsertIntoStmt{tableRef: $3, cols: $5, rows: $8}
+    }
+|
+    DELETE FROM tableRef opt_where opt_indexon opt_limit
+    {
+        $$ = &DeleteFromStmt{tableRef: $3, where: $4, indexOn: $5, limit: int($6)}
+    }
+|
+    UPDATE tableRef SET updates opt_where opt_indexon opt_limit
+    {
+        $$ = &UpdateStmt{tableRef: $2, updates: $4, where: $5, indexOn: $6, limit: int($7)}
+    }
+
+updates:
+    update
+    {
+        $$ = []*colUpdate{$1}
+    }
+|
+    updates  ',' update
+    {
+        $$ = append($1, $3)
+    }
+
+update:
+    IDENTIFIER CMPOP exp
+    {
+        $$ = &colUpdate{col: $1, op: $2, val: $3}
     }
 
 opt_ids:
@@ -342,6 +362,11 @@ val:
         $$ = &Blob{val: $1}
     }
 |
+    CAST '(' exp AS TYPE ')'
+    {
+        $$ = &Cast{val: $3, t: $5}
+    }
+|
     IDENTIFIER '(' ')'
     {
         $$ = &SysFn{fn: $1}
@@ -415,7 +440,7 @@ opt_not_null:
     }
 
 dqlstmt:
-    SELECT opt_distinct opt_selectors FROM ds opt_indexon opt_joins opt_where opt_groupby opt_having opt_orderby opt_limit opt_as
+    SELECT opt_distinct opt_selectors FROM ds opt_indexon opt_joins opt_where opt_groupby opt_having opt_orderby opt_limit
     {
         $$ = &SelectStmt{
                 distinct: $2,
@@ -428,7 +453,6 @@ dqlstmt:
                 having: $10,
                 orderBy: $11,
                 limit: int($12),
-                as: $13,
             }
     }
 
@@ -472,7 +496,7 @@ selector:
         $$ = $1
     }
 |
-    AGGREGATE_FUNC '(' ')'
+    AGGREGATE_FUNC '(' '*' ')'
     {
         $$ = &AggColSelector{aggFn: $1, col: "*"}
     }
@@ -499,21 +523,17 @@ col:
     }
 
 ds:
-    tableRef
+    tableRef opt_as_before opt_as
     {
+        $1.asBefore = $2
+        $1.as = $3
         $$ = $1
     }
 |
-    '(' tableRef opt_as_before opt_as ')'
+    '(' dqlstmt ')' opt_as
     {
-        $2.asBefore = $3
-        $2.as = $4
-        $$ = $2
-    }
-|
-    '(' dqlstmt ')'
-    {
-        $$ = $2.(*SelectStmt)
+        $2.(*SelectStmt).as = $4
+        $$ = $2.(DataSource)
     }
 
 tableRef:
@@ -559,9 +579,19 @@ joins:
     }
 
 join:
-    JOINTYPE JOIN ds opt_indexon ON exp
+    opt_join_type JOIN ds opt_indexon ON exp
     {
         $$ = &JoinSpec{joinType: $1, ds: $3, indexOn: $4, cond: $6}
+    }
+
+opt_join_type:
+    {
+        $$ = InnerJoin
+    }
+|
+    JOINTYPE
+    {
+        $$ = $1
     }
 
 opt_where:
@@ -627,32 +657,37 @@ opt_indexon:
 ordcols:
     col opt_ord
     {
-        $$ = []*OrdCol{{sel: $1, order: $2}}
+        $$ = []*OrdCol{{sel: $1, descOrder: $2}}
     }
 |
     ordcols ',' col opt_ord
     {
-        $$ = append($1, &OrdCol{sel: $3, order: $4})
+        $$ = append($1, &OrdCol{sel: $3, descOrder: $4})
     }
 
 opt_ord:
     {
-        $$ = AscOrder
+        $$ = false
     }
 |
     ASC
     {
-        $$ = AscOrder
+        $$ = false
     }
 |
     DESC
     {
-        $$ = DescOrder
+        $$ = true
     }
 
 opt_as:
     {
         $$ = ""
+    }
+|
+    IDENTIFIER
+    {
+        $$ = $1
     }
 |
     AS IDENTIFIER
@@ -661,12 +696,7 @@ opt_as:
     }
 
 exp:
-    selector
-    {
-        $$ = $1
-    }
-|
-    val
+    boundexp
     {
         $$ = $1
     }
@@ -686,19 +716,50 @@ exp:
         $$ = &NumExp{left: &Number{val: 0}, op: SUBSOP, right: $2}
     }
 |
-    '(' exp ')'
+    boundexp opt_not LIKE exp
     {
-        $$ = $2
-    }
-|
-    selector LIKE VARCHAR
-    {
-        $$ = &LikeBoolExp{sel: $1, pattern: $3}
+        $$ = &LikeBoolExp{val: $1, notLike: $2, pattern: $4}
     }
 |
     EXISTS '(' dqlstmt ')'
     {
         $$ = &ExistsBoolExp{q: ($3).(*SelectStmt)}
+    }
+|
+    boundexp opt_not IN '(' dqlstmt ')'
+    {
+        $$ = &InSubQueryExp{val: $1, notIn: $2, q: $5.(*SelectStmt)}
+    }
+|
+    boundexp opt_not IN '(' values ')'
+    {
+        $$ = &InListExp{val: $1, notIn: $2, values: $5}
+    }
+
+boundexp:
+    selector
+    {
+        $$ = $1
+    }
+|
+    val
+    {
+        $$ = $1
+    }
+|
+    '(' exp ')'
+    {
+        $$ = $2
+    }
+
+opt_not:
+    {
+        $$ = false
+    }
+|
+    NOT
+    {
+        $$ = true
     }
 
 binExp:
@@ -730,4 +791,14 @@ binExp:
     exp CMPOP exp
     {
         $$ = &CmpBoolExp{left: $1, op: $2, right: $3}
+    }
+|
+    exp IS NULL
+    {
+        $$ = &CmpBoolExp{left: $1, op: EQ, right: &NullValue{t: AnyType}}
+    }
+|
+    exp IS NOT NULL
+    {
+        $$ = &CmpBoolExp{left: $1, op: NE, right: &NullValue{t: AnyType}}
     }

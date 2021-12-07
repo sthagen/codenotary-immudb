@@ -221,6 +221,11 @@ func TestCreateIndexStmt(t *testing.T) {
 			expectedError:  nil,
 		},
 		{
+			input:          "CREATE INDEX IF NOT EXISTS ON table1(id)",
+			expectedOutput: []SQLStmt{&CreateIndexStmt{table: "table1", ifNotExists: true, cols: []string{"id"}}},
+			expectedError:  nil,
+		},
+		{
 			input:          "CREATE INDEX table1(id)",
 			expectedOutput: nil,
 			expectedError:  errors.New("syntax error: unexpected IDENTIFIER, expecting ON"),
@@ -529,31 +534,29 @@ func TestTxStmt(t *testing.T) {
 		expectedError  error
 	}{
 		{
-			input: "BEGIN TRANSACTION UPSERT INTO table1 (id, label) VALUES (100, 'label1'); UPSERT INTO table2 (id) VALUES (10) COMMIT;",
+			input: "BEGIN TRANSACTION; UPSERT INTO table1 (id, label) VALUES (100, 'label1'); UPSERT INTO table2 (id) VALUES (10); ROLLBACK;",
 			expectedOutput: []SQLStmt{
-				&TxStmt{
-					stmts: []SQLStmt{
-						&UpsertIntoStmt{
-							tableRef: &tableRef{table: "table1"},
-							cols:     []string{"id", "label"},
-							rows: []*RowSpec{
-								{Values: []ValueExp{&Number{val: 100}, &Varchar{val: "label1"}}},
-							},
-						},
-						&UpsertIntoStmt{
-							tableRef: &tableRef{table: "table2"},
-							cols:     []string{"id"},
-							rows: []*RowSpec{
-								{Values: []ValueExp{&Number{val: 10}}},
-							},
-						},
+				&BeginTransactionStmt{},
+				&UpsertIntoStmt{
+					tableRef: &tableRef{table: "table1"},
+					cols:     []string{"id", "label"},
+					rows: []*RowSpec{
+						{Values: []ValueExp{&Number{val: 100}, &Varchar{val: "label1"}}},
 					},
 				},
+				&UpsertIntoStmt{
+					tableRef: &tableRef{table: "table2"},
+					cols:     []string{"id"},
+					rows: []*RowSpec{
+						{Values: []ValueExp{&Number{val: 10}}},
+					},
+				},
+				&RollbackStmt{},
 			},
 			expectedError: nil,
 		},
 		{
-			input: "CREATE TABLE table1 (id INTEGER, label VARCHAR, PRIMARY KEY id); BEGIN TRANSACTION UPSERT INTO table1 (id, label) VALUES (100, 'label1'); COMMIT;",
+			input: "CREATE TABLE table1 (id INTEGER, label VARCHAR, PRIMARY KEY id); BEGIN TRANSACTION; UPSERT INTO table1 (id, label) VALUES (100, 'label1'); COMMIT;",
 			expectedOutput: []SQLStmt{
 				&CreateTableStmt{
 					table: "table1",
@@ -563,54 +566,59 @@ func TestTxStmt(t *testing.T) {
 					},
 					pkColNames: []string{"id"},
 				},
-				&TxStmt{
-					stmts: []SQLStmt{
-						&UpsertIntoStmt{
-							tableRef: &tableRef{table: "table1"},
-							cols:     []string{"id", "label"},
-							rows: []*RowSpec{
-								{Values: []ValueExp{&Number{val: 100}, &Varchar{val: "label1"}}},
-							},
-						},
+				&BeginTransactionStmt{},
+				&UpsertIntoStmt{
+					tableRef: &tableRef{table: "table1"},
+					cols:     []string{"id", "label"},
+					rows: []*RowSpec{
+						{Values: []ValueExp{&Number{val: 100}, &Varchar{val: "label1"}}},
 					},
 				},
+				&CommitStmt{},
 			},
 			expectedError: nil,
 		},
 		{
-			input: "BEGIN TRANSACTION CREATE TABLE table1 (id INTEGER, label VARCHAR NOT NULL, PRIMARY KEY id); UPSERT INTO table1 (id, label) VALUES (100, 'label1'); COMMIT;",
+			input: "BEGIN TRANSACTION; UPDATE table1 SET label = 'label1' WHERE id = 100; COMMIT;",
 			expectedOutput: []SQLStmt{
-				&TxStmt{
-					stmts: []SQLStmt{
-						&CreateTableStmt{
-							table: "table1",
-							colsSpec: []*ColSpec{
-								{colName: "id", colType: IntegerType},
-								{colName: "label", colType: VarcharType, notNull: true},
-							},
-							pkColNames: []string{"id"},
-						},
-						&UpsertIntoStmt{
-							tableRef: &tableRef{table: "table1"},
-							cols:     []string{"id", "label"},
-							rows: []*RowSpec{
-								{Values: []ValueExp{&Number{val: 100}, &Varchar{val: "label1"}}},
-							},
-						},
+				&BeginTransactionStmt{},
+				&UpdateStmt{
+					tableRef: &tableRef{table: "table1"},
+					updates: []*colUpdate{
+						{col: "label", op: EQ, val: &Varchar{val: "label1"}},
+					},
+					where: &CmpBoolExp{
+						op:    EQ,
+						left:  &ColSelector{col: "id"},
+						right: &Number{val: 100},
 					},
 				},
+				&CommitStmt{},
 			},
 			expectedError: nil,
 		},
 		{
-			input:          "BEGIN TRANSACTION UPSERT INTO table1 (id, label) VALUES (100, 'label1');",
-			expectedOutput: nil,
-			expectedError:  errors.New("syntax error: unexpected $end, expecting COMMIT"),
-		},
-		{
-			input:          "BEGIN TRANSACTION UPSERT INTO table1 (id, label) VALUES (100, 'label1'); BEGIN TRANSACTION CREATE TABLE table1 (id INTEGER, label VARCHAR, PRIMARY KEY id) COMMIT; COMMIT",
-			expectedOutput: nil,
-			expectedError:  errors.New("syntax error: unexpected BEGIN, expecting COMMIT"),
+			input: "BEGIN TRANSACTION; CREATE TABLE table1 (id INTEGER, label VARCHAR NOT NULL, PRIMARY KEY id); UPSERT INTO table1 (id, label) VALUES (100, 'label1'); COMMIT;",
+			expectedOutput: []SQLStmt{
+				&BeginTransactionStmt{},
+				&CreateTableStmt{
+					table: "table1",
+					colsSpec: []*ColSpec{
+						{colName: "id", colType: IntegerType},
+						{colName: "label", colType: VarcharType, notNull: true},
+					},
+					pkColNames: []string{"id"},
+				},
+				&UpsertIntoStmt{
+					tableRef: &tableRef{table: "table1"},
+					cols:     []string{"id", "label"},
+					rows: []*RowSpec{
+						{Values: []ValueExp{&Number{val: 100}, &Varchar{val: "label1"}}},
+					},
+				},
+				&CommitStmt{},
+			},
+			expectedError: nil,
 		},
 	}
 
@@ -654,13 +662,12 @@ func TestSelectStmt(t *testing.T) {
 						&ColSelector{col: "id"},
 						&ColSelector{col: "title"},
 					},
-					ds: &tableRef{db: "db1", table: "table1"},
-					as: "t1",
+					ds: &tableRef{db: "db1", table: "table1", as: "t1"},
 				}},
 			expectedError: nil,
 		},
 		{
-			input: "SELECT t1.id, title FROM (db1.table1 AS t1)",
+			input: "SELECT t1.id, title FROM db1.table1 t1",
 			expectedOutput: []SQLStmt{
 				&SelectStmt{
 					distinct: false,
@@ -673,7 +680,7 @@ func TestSelectStmt(t *testing.T) {
 			expectedError: nil,
 		},
 		{
-			input: "SELECT db1.table1.id, title FROM (db1.table1 AS t1) WHERE payload >= x'AED0393F'",
+			input: "SELECT db1.table1.id, title FROM db1.table1 AS t1 WHERE payload >= x'AED0393F'",
 			expectedOutput: []SQLStmt{
 				&SelectStmt{
 					distinct: false,
@@ -745,8 +752,8 @@ func TestSelectStmt(t *testing.T) {
 					},
 					ds: &tableRef{table: "table1"},
 					orderBy: []*OrdCol{
-						{sel: &ColSelector{col: "title"}, order: AscOrder},
-						{sel: &ColSelector{col: "year"}, order: DescOrder},
+						{sel: &ColSelector{col: "title"}},
+						{sel: &ColSelector{col: "year"}, descOrder: true},
 					},
 				}},
 			expectedError: nil,
@@ -785,7 +792,46 @@ func TestSelectStmt(t *testing.T) {
 						right: &Varchar{val: "John"},
 					},
 					orderBy: []*OrdCol{
-						{sel: &ColSelector{col: "name"}, order: DescOrder},
+						{sel: &ColSelector{col: "name"}, descOrder: true},
+					},
+				}},
+			expectedError: nil,
+		},
+		{
+			input: "SELECT id, name, table2.status FROM table1 JOIN table2 ON table1.id = table2.id WHERE name = 'John' ORDER BY name DESC",
+			expectedOutput: []SQLStmt{
+				&SelectStmt{
+					distinct: false,
+					selectors: []Selector{
+						&ColSelector{col: "id"},
+						&ColSelector{col: "name"},
+						&ColSelector{table: "table2", col: "status"},
+					},
+					ds: &tableRef{table: "table1"},
+					joins: []*JoinSpec{
+						{
+							joinType: InnerJoin,
+							ds:       &tableRef{table: "table2"},
+							cond: &CmpBoolExp{
+								op: EQ,
+								left: &ColSelector{
+									table: "table1",
+									col:   "id",
+								},
+								right: &ColSelector{
+									table: "table2",
+									col:   "id",
+								},
+							},
+						},
+					},
+					where: &CmpBoolExp{
+						op:    EQ,
+						left:  &ColSelector{col: "name"},
+						right: &Varchar{val: "John"},
+					},
+					orderBy: []*OrdCol{
+						{sel: &ColSelector{col: "name"}, descOrder: true},
 					},
 				}},
 			expectedError: nil,
@@ -824,7 +870,7 @@ func TestSelectStmt(t *testing.T) {
 						right: &Varchar{val: "John"},
 					},
 					orderBy: []*OrdCol{
-						{sel: &ColSelector{col: "name"}, order: DescOrder},
+						{sel: &ColSelector{col: "name"}, descOrder: true},
 					},
 				}},
 			expectedError: nil,
@@ -901,7 +947,7 @@ func TestAggFnStmt(t *testing.T) {
 		expectedError  error
 	}{
 		{
-			input: "SELECT COUNT() FROM table1",
+			input: "SELECT COUNT(*) FROM table1",
 			expectedOutput: []SQLStmt{
 				&SelectStmt{
 					distinct: false,
@@ -1093,11 +1139,30 @@ func TestExpressions(t *testing.T) {
 					},
 					ds: &tableRef{table: "table1"},
 					where: &LikeBoolExp{
-						sel: &ColSelector{
+						val: &ColSelector{
 							table: "table1",
 							col:   "title",
 						},
-						pattern: "J%O",
+						pattern: &Varchar{val: "J%O"},
+					},
+				}},
+			expectedError: nil,
+		},
+		{
+			input: "SELECT id FROM table1 WHERE table1.title LIKE @param1",
+			expectedOutput: []SQLStmt{
+				&SelectStmt{
+					distinct: false,
+					selectors: []Selector{
+						&ColSelector{col: "id"},
+					},
+					ds: &tableRef{table: "table1"},
+					where: &LikeBoolExp{
+						val: &ColSelector{
+							table: "table1",
+							col:   "title",
+						},
+						pattern: &Param{id: "param1"},
 					},
 				}},
 			expectedError: nil,
@@ -1134,11 +1199,11 @@ func TestExpressions(t *testing.T) {
 							},
 						},
 						right: &LikeBoolExp{
-							sel: &ColSelector{
+							val: &ColSelector{
 								table: "table1",
 								col:   "title",
 							},
-							pattern: "J%O",
+							pattern: &Varchar{val: "J%O"},
 						},
 					},
 				}},
@@ -1174,6 +1239,46 @@ func TestExpressions(t *testing.T) {
 				}},
 			expectedError: nil,
 		},
+		{
+			input: "SELECT id FROM clients WHERE deleted_at IS NULL",
+			expectedOutput: []SQLStmt{
+				&SelectStmt{
+					selectors: []Selector{
+						&ColSelector{col: "id"},
+					},
+					ds: &tableRef{table: "clients"},
+					where: &CmpBoolExp{
+						left: &ColSelector{
+							col: "deleted_at",
+						},
+						op: EQ,
+						right: &NullValue{
+							t: AnyType,
+						},
+					},
+				}},
+			expectedError: nil,
+		},
+		{
+			input: "SELECT id FROM clients WHERE deleted_at IS NOT NULL",
+			expectedOutput: []SQLStmt{
+				&SelectStmt{
+					selectors: []Selector{
+						&ColSelector{col: "id"},
+					},
+					ds: &tableRef{table: "clients"},
+					where: &CmpBoolExp{
+						left: &ColSelector{
+							col: "deleted_at",
+						},
+						op: NE,
+						right: &NullValue{
+							t: AnyType,
+						},
+					},
+				}},
+			expectedError: nil,
+		},
 	}
 
 	for i, tc := range testCases {
@@ -1204,7 +1309,7 @@ func TestMultiLineStmts(t *testing.T) {
 
 			CREATE TABLE table1 (id INTEGER, name VARCHAR NULL, ts TIMESTAMP NOT NULL, active BOOLEAN, content BLOB, PRIMARY KEY id);
 
-			BEGIN TRANSACTION
+			BEGIN TRANSACTION;
 				UPSERT INTO table1 (id, label) VALUES (100, 'label1');
 				
 				UPSERT INTO table2 (id) VALUES (10);
@@ -1226,24 +1331,22 @@ func TestMultiLineStmts(t *testing.T) {
 					},
 					pkColNames: []string{"id"},
 				},
-				&TxStmt{
-					stmts: []SQLStmt{
-						&UpsertIntoStmt{
-							tableRef: &tableRef{table: "table1"},
-							cols:     []string{"id", "label"},
-							rows: []*RowSpec{
-								{Values: []ValueExp{&Number{val: 100}, &Varchar{val: "label1"}}},
-							},
-						},
-						&UpsertIntoStmt{
-							tableRef: &tableRef{table: "table2"},
-							cols:     []string{"id"},
-							rows: []*RowSpec{
-								{Values: []ValueExp{&Number{val: 10}}},
-							},
-						},
+				&BeginTransactionStmt{},
+				&UpsertIntoStmt{
+					tableRef: &tableRef{table: "table1"},
+					cols:     []string{"id", "label"},
+					rows: []*RowSpec{
+						{Values: []ValueExp{&Number{val: 100}, &Varchar{val: "label1"}}},
 					},
 				},
+				&UpsertIntoStmt{
+					tableRef: &tableRef{table: "table2"},
+					cols:     []string{"id"},
+					rows: []*RowSpec{
+						{Values: []ValueExp{&Number{val: 10}}},
+					},
+				},
+				&CommitStmt{},
 				&SelectStmt{
 					distinct: false,
 					selectors: []Selector{

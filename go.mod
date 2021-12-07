@@ -17,7 +17,7 @@ require (
 	github.com/huandu/xstrings v1.3.2 // indirect
 	github.com/imdario/mergo v0.3.12 // indirect
 	github.com/jackc/pgx/v4 v4.12.0
-	github.com/jaswdr/faker v1.4.2
+	github.com/jaswdr/faker v1.4.3
 	github.com/kr/pretty v0.2.0 // indirect
 	github.com/lib/pq v1.10.2
 	github.com/mattn/go-isatty v0.0.13 // indirect
@@ -37,7 +37,7 @@ require (
 	github.com/rogpeppe/go-internal v1.8.0
 	github.com/rs/xid v1.3.0
 	github.com/spf13/cobra v1.2.1
-	github.com/spf13/pflag v1.0.5 // indirect
+	github.com/spf13/pflag v1.0.5
 	github.com/spf13/viper v1.8.1
 	github.com/stretchr/testify v1.7.0
 	github.com/takama/daemon v0.12.0
@@ -50,3 +50,5 @@ require (
 )
 
 replace github.com/takama/daemon v0.12.0 => github.com/codenotary/daemon v0.0.0-20200507161650-3d4bcb5230f4
+
+replace github.com/spf13/afero => github.com/spf13/afero v1.5.1

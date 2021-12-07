@@ -23,10 +23,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"github.com/codenotary/immudb/pkg/client/heartbeater"
+	"github.com/codenotary/immudb/pkg/client/tokenservice"
 	"io"
 	"io/ioutil"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/codenotary/immudb/pkg/client/errors"
@@ -56,32 +57,43 @@ import (
 type ImmuClient interface {
 	Disconnect() error
 	IsConnected() bool
+	// Deprecated: grpc retry mechanism can be implemented with WithConnectParams dialOption
 	WaitForHealthCheck(ctx context.Context) (err error)
 	HealthCheck(ctx context.Context) error
+	// Deprecated: connection is handled in OpenSession
 	Connect(ctx context.Context) (clientConn *grpc.ClientConn, err error)
 
+	// Deprecated: use OpenSession
 	Login(ctx context.Context, user []byte, pass []byte) (*schema.LoginResponse, error)
+	// Deprecated: use CloseSession
 	Logout(ctx context.Context) error
+
+	OpenSession(ctx context.Context, user []byte, pass []byte, database string) (err error)
+	CloseSession(ctx context.Context) error
 
 	CreateUser(ctx context.Context, user []byte, pass []byte, permission uint32, databasename string) error
 	ListUsers(ctx context.Context) (*schema.UserList, error)
 	ChangePassword(ctx context.Context, user []byte, oldPass []byte, newPass []byte) error
 	ChangePermission(ctx context.Context, action schema.PermissionAction, username string, database string, permissions uint32) error
+	// Deprecated: will be removed in future versions
 	UpdateAuthConfig(ctx context.Context, kind auth.Kind) error
+	// Deprecated: will be removed in future versions
 	UpdateMTLSConfig(ctx context.Context, enabled bool) error
 
 	WithOptions(options *Options) *immuClient
 	WithLogger(logger logger.Logger) *immuClient
 	WithStateService(rs state.StateService) *immuClient
+	// Deprecated: will be removed in future versions
 	WithClientConn(clientConn *grpc.ClientConn) *immuClient
+	// Deprecated: will be removed in future versions
 	WithServiceClient(serviceClient schema.ImmuServiceClient) *immuClient
-	WithTokenService(tokenService TokenService) *immuClient
+	WithTokenService(tokenService tokenservice.TokenService) *immuClient
 	WithServerSigningPubKey(serverSigningPubKey *ecdsa.PublicKey) *immuClient
 	WithStreamServiceFactory(ssf stream.ServiceFactory) *immuClient
 
 	GetServiceClient() schema.ImmuServiceClient
 	GetOptions() *Options
-	SetupDialOptions(options *Options) *[]grpc.DialOption
+	SetupDialOptions(options *Options) []grpc.DialOption
 
 	DatabaseList(ctx context.Context) (*schema.DatabaseListResponse, error)
 	CreateDatabase(ctx context.Context, d *schema.DatabaseSettings) error
@@ -94,8 +106,8 @@ type ImmuClient interface {
 
 	CurrentState(ctx context.Context) (*schema.ImmutableState, error)
 
-	Set(ctx context.Context, key []byte, value []byte) (*schema.TxMetadata, error)
-	VerifiedSet(ctx context.Context, key []byte, value []byte) (*schema.TxMetadata, error)
+	Set(ctx context.Context, key []byte, value []byte) (*schema.TxHeader, error)
+	VerifiedSet(ctx context.Context, key []byte, value []byte) (*schema.TxHeader, error)
 
 	Get(ctx context.Context, key []byte) (*schema.Entry, error)
 	GetSince(ctx context.Context, key []byte, tx uint64) (*schema.Entry, error)
@@ -107,11 +119,11 @@ type ImmuClient interface {
 
 	History(ctx context.Context, req *schema.HistoryRequest) (*schema.Entries, error)
 
-	ZAdd(ctx context.Context, set []byte, score float64, key []byte) (*schema.TxMetadata, error)
-	VerifiedZAdd(ctx context.Context, set []byte, score float64, key []byte) (*schema.TxMetadata, error)
+	ZAdd(ctx context.Context, set []byte, score float64, key []byte) (*schema.TxHeader, error)
+	VerifiedZAdd(ctx context.Context, set []byte, score float64, key []byte) (*schema.TxHeader, error)
 
-	ZAddAt(ctx context.Context, set []byte, score float64, key []byte, atTx uint64) (*schema.TxMetadata, error)
-	VerifiedZAddAt(ctx context.Context, set []byte, score float64, key []byte, atTx uint64) (*schema.TxMetadata, error)
+	ZAddAt(ctx context.Context, set []byte, score float64, key []byte, atTx uint64) (*schema.TxHeader, error)
+	VerifiedZAddAt(ctx context.Context, set []byte, score float64, key []byte, atTx uint64) (*schema.TxHeader, error)
 
 	Scan(ctx context.Context, req *schema.ScanRequest) (*schema.Entries, error)
 	ZScan(ctx context.Context, req *schema.ZScanRequest) (*schema.ZEntries, error)
@@ -123,38 +135,41 @@ type ImmuClient interface {
 	Count(ctx context.Context, prefix []byte) (*schema.EntryCount, error)
 	CountAll(ctx context.Context) (*schema.EntryCount, error)
 
-	SetAll(ctx context.Context, kvList *schema.SetRequest) (*schema.TxMetadata, error)
+	SetAll(ctx context.Context, kvList *schema.SetRequest) (*schema.TxHeader, error)
 	GetAll(ctx context.Context, keys [][]byte) (*schema.Entries, error)
 
-	ExecAll(ctx context.Context, in *schema.ExecAllRequest) (*schema.TxMetadata, error)
+	Delete(ctx context.Context, req *schema.DeleteKeysRequest) (*schema.TxHeader, error)
 
-	SetReference(ctx context.Context, key []byte, referencedKey []byte) (*schema.TxMetadata, error)
-	VerifiedSetReference(ctx context.Context, key []byte, referencedKey []byte) (*schema.TxMetadata, error)
+	ExecAll(ctx context.Context, in *schema.ExecAllRequest) (*schema.TxHeader, error)
 
-	SetReferenceAt(ctx context.Context, key []byte, referencedKey []byte, atTx uint64) (*schema.TxMetadata, error)
-	VerifiedSetReferenceAt(ctx context.Context, key []byte, referencedKey []byte, atTx uint64) (*schema.TxMetadata, error)
+	SetReference(ctx context.Context, key []byte, referencedKey []byte) (*schema.TxHeader, error)
+	VerifiedSetReference(ctx context.Context, key []byte, referencedKey []byte) (*schema.TxHeader, error)
+
+	SetReferenceAt(ctx context.Context, key []byte, referencedKey []byte, atTx uint64) (*schema.TxHeader, error)
+	VerifiedSetReferenceAt(ctx context.Context, key []byte, referencedKey []byte, atTx uint64) (*schema.TxHeader, error)
 
 	Dump(ctx context.Context, writer io.WriteSeeker) (int64, error)
 
-	StreamSet(ctx context.Context, kv []*stream.KeyValue) (*schema.TxMetadata, error)
+	StreamSet(ctx context.Context, kv []*stream.KeyValue) (*schema.TxHeader, error)
 	StreamGet(ctx context.Context, k *schema.KeyRequest) (*schema.Entry, error)
-	StreamVerifiedSet(ctx context.Context, kv []*stream.KeyValue) (*schema.TxMetadata, error)
+	StreamVerifiedSet(ctx context.Context, kv []*stream.KeyValue) (*schema.TxHeader, error)
 	StreamVerifiedGet(ctx context.Context, k *schema.VerifiableGetRequest) (*schema.Entry, error)
 	StreamScan(ctx context.Context, req *schema.ScanRequest) (*schema.Entries, error)
 	StreamZScan(ctx context.Context, req *schema.ZScanRequest) (*schema.ZEntries, error)
 	StreamHistory(ctx context.Context, req *schema.HistoryRequest) (*schema.Entries, error)
-	StreamExecAll(ctx context.Context, req *stream.ExecAllRequest) (*schema.TxMetadata, error)
+	StreamExecAll(ctx context.Context, req *stream.ExecAllRequest) (*schema.TxHeader, error)
 
 	ExportTx(ctx context.Context, req *schema.TxRequest) (schema.ImmuService_ExportTxClient, error)
 	ReplicateTx(ctx context.Context) (schema.ImmuService_ReplicateTxClient, error)
 
 	SQLExec(ctx context.Context, sql string, params map[string]interface{}) (*schema.SQLExecResult, error)
-	UseSnapshot(ctx context.Context, sinceTx, asBeforeTx uint64) error
 	SQLQuery(ctx context.Context, sql string, params map[string]interface{}, renewSnapshot bool) (*schema.SQLQueryResult, error)
 	ListTables(ctx context.Context) (*schema.SQLQueryResult, error)
 	DescribeTable(ctx context.Context, tableName string) (*schema.SQLQueryResult, error)
 
 	VerifyRow(ctx context.Context, row *schema.Row, table string, pkVals []*schema.SQLValue) error
+
+	NewTx(ctx context.Context) (Tx, error)
 }
 
 const DefaultDB = "defaultdb"
@@ -166,31 +181,34 @@ type immuClient struct {
 	clientConn           *grpc.ClientConn
 	ServiceClient        schema.ImmuServiceClient
 	StateService         state.StateService
-	Tkns                 TokenService
+	Tkns                 tokenservice.TokenService
 	serverSigningPubKey  *ecdsa.PublicKey
 	StreamServiceFactory stream.ServiceFactory
-	sync.RWMutex
+	SessionID            string
+	HeartBeater          heartbeater.HeartBeater
 }
 
-// DefaultClient ...
-func DefaultClient() ImmuClient {
-	return &immuClient{
+// NewClient ...
+func NewClient() *immuClient {
+	c := &immuClient{
 		Dir:                  "",
 		Options:              DefaultOptions(),
 		Logger:               logger.NewSimpleLogger("immuclient", os.Stderr),
 		StreamServiceFactory: stream.NewStreamServiceFactory(DefaultOptions().StreamChunkSize),
+		Tkns:                 tokenservice.NewInmemoryTokenService(),
 	}
+	return c
 }
 
 // NewImmuClient ...
-func NewImmuClient(options *Options) (c ImmuClient, err error) {
+// Deprecated: use NewClient instead.
+func NewImmuClient(options *Options) (*immuClient, error) {
 	ctx := context.Background()
 
-	c = DefaultClient()
+	c := NewClient()
 	c.WithOptions(options)
 	l := logger.NewSimpleLogger("immuclient", os.Stderr)
 	c.WithLogger(l)
-	c.WithTokenService(options.Tkns.WithTokenFileName(options.TokenFileName))
 
 	if options.ServerSigningPubKey != "" {
 		pk, err := signer.ParsePublicKeyFile(options.ServerSigningPubKey)
@@ -201,7 +219,7 @@ func NewImmuClient(options *Options) (c ImmuClient, err error) {
 	}
 
 	options.DialOptions = c.SetupDialOptions(options)
-	if db, err := options.Tkns.GetDatabase(); err == nil && len(db) > 0 {
+	if db, err := c.Tkns.GetDatabase(); err == nil && len(db) > 0 {
 		options.CurrentDatabase = db
 	}
 
@@ -211,8 +229,8 @@ func NewImmuClient(options *Options) (c ImmuClient, err error) {
 
 	c.WithOptions(options)
 
-	var clientConn *grpc.ClientConn
-	if clientConn, err = c.Connect(ctx); err != nil {
+	clientConn, err := c.Connect(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -242,10 +260,8 @@ func NewImmuClient(options *Options) (c ImmuClient, err error) {
 	return c, nil
 }
 
-func (c *immuClient) SetupDialOptions(options *Options) *[]grpc.DialOption {
-	opts := *options.DialOptions
-	opts = append(opts, grpc.WithInsecure())
-
+func (c *immuClient) SetupDialOptions(options *Options) []grpc.DialOption {
+	opts := options.DialOptions
 	//---------- TLS Setting -----------//
 	if options.MTLs {
 		//LoadX509KeyPair reads and parses a public/private key pair from a pair of files.
@@ -313,22 +329,27 @@ func (c *immuClient) SetupDialOptions(options *Options) *[]grpc.DialOption {
 		token, err := c.Tkns.GetToken()
 		uic = append(uic, auth.ClientUnaryInterceptor(token))
 		if err == nil {
-			opts = append(opts, grpc.WithStreamInterceptor(auth.ClientStreamInterceptor(token)))
+			// todo here is possible to remove ClientUnaryInterceptor and use only tokenInterceptor
+			opts = append(opts, grpc.WithStreamInterceptor(auth.ClientStreamInterceptor(token)), grpc.WithStreamInterceptor(c.SessionIDInjectorStreamInterceptor))
 		}
 	}
+	uic = append(uic, c.TokenInterceptor, c.SessionIDInjectorInterceptor)
+
 	opts = append(opts, grpc.WithUnaryInterceptor(grpc_middleware.ChainUnaryClient(uic...)), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(options.MaxRecvMsgSize)))
 
-	return &opts
+	return opts
 }
 
+// Deprecated: use NewClient and OpenSession instead.
 func (c *immuClient) Connect(ctx context.Context) (clientConn *grpc.ClientConn, err error) {
-	if c.clientConn, err = grpc.Dial(c.Options.Bind(), *c.Options.DialOptions...); err != nil {
+	if c.clientConn, err = grpc.Dial(c.Options.Bind(), c.Options.DialOptions...); err != nil {
 		c.Logger.Debugf("dialed %v", c.Options)
 		return nil, err
 	}
 	return c.clientConn, nil
 }
 
+// Deprecated: use NewClient and CloseSession instead.
 func (c *immuClient) Disconnect() error {
 	start := time.Now()
 
@@ -472,10 +493,17 @@ func (c *immuClient) Login(ctx context.Context, user []byte, pass []byte) (*sche
 		User:     user,
 		Password: pass,
 	})
-
+	if err != nil {
+		return nil, errors.FromError(err)
+	}
 	c.Logger.Debugf("login finished in %s", time.Since(start))
 
-	return result, errors.FromError(err)
+	err = c.Tkns.SetToken("defaultdb", result.Token)
+	if err != nil {
+		return nil, errors.FromError(err)
+	}
+
+	return result, nil
 }
 
 // Logout ...
@@ -584,8 +612,13 @@ func (c *immuClient) verifiedGet(ctx context.Context, kReq *schema.KeyRequest) (
 		return nil, err
 	}
 
-	inclusionProof := schema.InclusionProofFrom(vEntry.InclusionProof)
-	dualProof := schema.DualProofFrom(vEntry.VerifiableTx.DualProof)
+	entrySpecDigest, err := store.EntrySpecDigestFor(int(vEntry.VerifiableTx.Tx.Header.Version))
+	if err != nil {
+		return nil, err
+	}
+
+	inclusionProof := schema.InclusionProofFromProto(vEntry.InclusionProof)
+	dualProof := schema.DualProofFromProto(vEntry.VerifiableTx.DualProof)
 
 	var eh [sha256.Size]byte
 
@@ -593,35 +626,36 @@ func (c *immuClient) verifiedGet(ctx context.Context, kReq *schema.KeyRequest) (
 	var sourceAlh, targetAlh [sha256.Size]byte
 
 	var vTx uint64
-	var kv *store.KV
+	var e *store.EntrySpec
 
 	if vEntry.Entry.ReferencedBy == nil {
 		vTx = vEntry.Entry.Tx
-		kv = database.EncodeKV(kReq.Key, vEntry.Entry.Value)
+		e = database.EncodeEntrySpec(kReq.Key, schema.KVMetadataFromProto(vEntry.Entry.Metadata), vEntry.Entry.Value)
 	} else {
-		vTx = vEntry.Entry.ReferencedBy.Tx
-		kv = database.EncodeReference(vEntry.Entry.ReferencedBy.Key, vEntry.Entry.Key, vEntry.Entry.ReferencedBy.AtTx)
+		ref := vEntry.Entry.ReferencedBy
+		vTx = ref.Tx
+		e = database.EncodeReference(ref.Key, schema.KVMetadataFromProto(ref.Metadata), vEntry.Entry.Key, ref.AtTx)
 	}
 
 	if state.TxId <= vTx {
-		eh = schema.DigestFrom(vEntry.VerifiableTx.DualProof.TargetTxMetadata.EH)
+		eh = schema.DigestFromProto(vEntry.VerifiableTx.DualProof.TargetTxHeader.EH)
 
 		sourceID = state.TxId
-		sourceAlh = schema.DigestFrom(state.TxHash)
+		sourceAlh = schema.DigestFromProto(state.TxHash)
 		targetID = vTx
-		targetAlh = dualProof.TargetTxMetadata.Alh()
+		targetAlh = dualProof.TargetTxHeader.Alh()
 	} else {
-		eh = schema.DigestFrom(vEntry.VerifiableTx.DualProof.SourceTxMetadata.EH)
+		eh = schema.DigestFromProto(vEntry.VerifiableTx.DualProof.SourceTxHeader.EH)
 
 		sourceID = vTx
-		sourceAlh = dualProof.SourceTxMetadata.Alh()
+		sourceAlh = dualProof.SourceTxHeader.Alh()
 		targetID = state.TxId
-		targetAlh = schema.DigestFrom(state.TxHash)
+		targetAlh = schema.DigestFromProto(state.TxHash)
 	}
 
 	verifies := store.VerifyInclusion(
 		inclusionProof,
-		kv,
+		entrySpecDigest(e),
 		eh)
 	if !verifies {
 		return nil, store.ErrCorruptedData
@@ -724,7 +758,7 @@ func (c *immuClient) CountAll(ctx context.Context) (*schema.EntryCount, error) {
 }
 
 // Set ...
-func (c *immuClient) Set(ctx context.Context, key []byte, value []byte) (*schema.TxMetadata, error) {
+func (c *immuClient) Set(ctx context.Context, key []byte, value []byte) (*schema.TxHeader, error) {
 	if !c.IsConnected() {
 		return nil, errors.FromError(ErrNotConnected)
 	}
@@ -745,7 +779,7 @@ func (c *immuClient) Set(ctx context.Context, key []byte, value []byte) (*schema
 }
 
 // VerifiedSet ...
-func (c *immuClient) VerifiedSet(ctx context.Context, key []byte, value []byte) (*schema.TxMetadata, error) {
+func (c *immuClient) VerifiedSet(ctx context.Context, key []byte, value []byte) (*schema.TxHeader, error) {
 	err := c.StateService.CacheLock()
 	if err != nil {
 		return nil, err
@@ -780,23 +814,36 @@ func (c *immuClient) VerifiedSet(ctx context.Context, key []byte, value []byte) 
 		return nil, err
 	}
 
-	if verifiableTx.Tx.Metadata.Nentries != 1 {
+	if verifiableTx.Tx.Header.Nentries != 1 || len(verifiableTx.Tx.Entries) != 1 {
 		return nil, store.ErrCorruptedData
 	}
 
-	tx := schema.TxFrom(verifiableTx.Tx)
+	tx := schema.TxFromProto(verifiableTx.Tx)
+
+	entrySpecDigest, err := store.EntrySpecDigestFor(tx.Header().Version)
+	if err != nil {
+		return nil, err
+	}
 
 	inclusionProof, err := tx.Proof(database.EncodeKey(key))
 	if err != nil {
 		return nil, err
 	}
 
-	verifies := store.VerifyInclusion(inclusionProof, database.EncodeKV(key, value), tx.Eh())
+	md := tx.Entries()[0].Metadata()
+
+	if md != nil && md.Deleted() {
+		return nil, store.ErrCorruptedData
+	}
+
+	e := database.EncodeEntrySpec(key, md, value)
+
+	verifies := store.VerifyInclusion(inclusionProof, entrySpecDigest(e), tx.Header().Eh)
 	if !verifies {
 		return nil, store.ErrCorruptedData
 	}
 
-	if tx.Eh() != schema.DigestFrom(verifiableTx.DualProof.TargetTxMetadata.EH) {
+	if tx.Header().Eh != schema.DigestFromProto(verifiableTx.DualProof.TargetTxHeader.EH) {
 		return nil, store.ErrCorruptedData
 	}
 
@@ -804,13 +851,13 @@ func (c *immuClient) VerifiedSet(ctx context.Context, key []byte, value []byte) 
 	var sourceAlh, targetAlh [sha256.Size]byte
 
 	sourceID = state.TxId
-	sourceAlh = schema.DigestFrom(state.TxHash)
-	targetID = tx.ID
-	targetAlh = tx.Alh
+	sourceAlh = schema.DigestFromProto(state.TxHash)
+	targetID = tx.Header().ID
+	targetAlh = tx.Header().Alh()
 
 	if state.TxId > 0 {
 		verifies = store.VerifyDualProof(
-			schema.DualProofFrom(verifiableTx.DualProof),
+			schema.DualProofFromProto(verifiableTx.DualProof),
 			sourceID,
 			targetID,
 			sourceAlh,
@@ -844,10 +891,10 @@ func (c *immuClient) VerifiedSet(ctx context.Context, key []byte, value []byte) 
 		return nil, err
 	}
 
-	return verifiableTx.Tx.Metadata, nil
+	return verifiableTx.Tx.Header, nil
 }
 
-func (c *immuClient) SetAll(ctx context.Context, req *schema.SetRequest) (*schema.TxMetadata, error) {
+func (c *immuClient) SetAll(ctx context.Context, req *schema.SetRequest) (*schema.TxHeader, error) {
 	if !c.IsConnected() {
 		return nil, errors.FromError(ErrNotConnected)
 	}
@@ -865,17 +912,17 @@ func (c *immuClient) SetAll(ctx context.Context, req *schema.SetRequest) (*schem
 }
 
 // ExecAll ...
-func (c *immuClient) ExecAll(ctx context.Context, req *schema.ExecAllRequest) (*schema.TxMetadata, error) {
-	txmd, err := c.ServiceClient.ExecAll(ctx, req)
+func (c *immuClient) ExecAll(ctx context.Context, req *schema.ExecAllRequest) (*schema.TxHeader, error) {
+	txhdr, err := c.ServiceClient.ExecAll(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 
-	if int(txmd.Nentries) != len(req.Operations) {
+	if int(txhdr.Nentries) != len(req.Operations) {
 		return nil, store.ErrCorruptedData
 	}
 
-	return txmd, nil
+	return txhdr, nil
 }
 
 // GetAll ...
@@ -892,6 +939,14 @@ func (c *immuClient) GetAll(ctx context.Context, keys [][]byte) (*schema.Entries
 	keyList.Keys = append(keyList.Keys, keys...)
 
 	return c.ServiceClient.GetAll(ctx, keyList)
+}
+
+func (c *immuClient) Delete(ctx context.Context, req *schema.DeleteKeysRequest) (*schema.TxHeader, error) {
+	if !c.IsConnected() {
+		return nil, errors.FromError(ErrNotConnected)
+	}
+
+	return c.ServiceClient.Delete(ctx, req)
 }
 
 // TxByID ...
@@ -944,21 +999,21 @@ func (c *immuClient) VerifiedTxByID(ctx context.Context, tx uint64) (*schema.Tx,
 		return nil, err
 	}
 
-	dualProof := schema.DualProofFrom(vTx.DualProof)
+	dualProof := schema.DualProofFromProto(vTx.DualProof)
 
 	var sourceID, targetID uint64
 	var sourceAlh, targetAlh [sha256.Size]byte
 
-	if state.TxId <= vTx.Tx.Metadata.Id {
+	if state.TxId <= vTx.Tx.Header.Id {
 		sourceID = state.TxId
-		sourceAlh = schema.DigestFrom(state.TxHash)
-		targetID = vTx.Tx.Metadata.Id
-		targetAlh = dualProof.TargetTxMetadata.Alh()
+		sourceAlh = schema.DigestFromProto(state.TxHash)
+		targetID = vTx.Tx.Header.Id
+		targetAlh = dualProof.TargetTxHeader.Alh()
 	} else {
-		sourceID = vTx.Tx.Metadata.Id
-		sourceAlh = dualProof.SourceTxMetadata.Alh()
+		sourceID = vTx.Tx.Header.Id
+		sourceAlh = dualProof.SourceTxHeader.Alh()
 		targetID = state.TxId
-		targetAlh = schema.DigestFrom(state.TxHash)
+		targetAlh = schema.DigestFromProto(state.TxHash)
 	}
 
 	if state.TxId > 0 {
@@ -1023,12 +1078,12 @@ func (c *immuClient) History(ctx context.Context, req *schema.HistoryRequest) (s
 }
 
 // SetReference ...
-func (c *immuClient) SetReference(ctx context.Context, key []byte, referencedKey []byte) (*schema.TxMetadata, error) {
+func (c *immuClient) SetReference(ctx context.Context, key []byte, referencedKey []byte) (*schema.TxHeader, error) {
 	return c.SetReferenceAt(ctx, key, referencedKey, 0)
 }
 
 // SetReferenceAt ...
-func (c *immuClient) SetReferenceAt(ctx context.Context, key []byte, referencedKey []byte, atTx uint64) (*schema.TxMetadata, error) {
+func (c *immuClient) SetReferenceAt(ctx context.Context, key []byte, referencedKey []byte, atTx uint64) (*schema.TxHeader, error) {
 	if !c.IsConnected() {
 		return nil, errors.FromError(ErrNotConnected)
 	}
@@ -1036,7 +1091,7 @@ func (c *immuClient) SetReferenceAt(ctx context.Context, key []byte, referencedK
 	start := time.Now()
 	defer c.Logger.Debugf("SetReference finished in %s", time.Since(start))
 
-	txmd, err := c.ServiceClient.SetReference(ctx, &schema.ReferenceRequest{
+	txhdr, err := c.ServiceClient.SetReference(ctx, &schema.ReferenceRequest{
 		Key:           key,
 		ReferencedKey: referencedKey,
 		AtTx:          atTx,
@@ -1046,20 +1101,20 @@ func (c *immuClient) SetReferenceAt(ctx context.Context, key []byte, referencedK
 		return nil, err
 	}
 
-	if int(txmd.Nentries) != 1 {
+	if int(txhdr.Nentries) != 1 {
 		return nil, store.ErrCorruptedData
 	}
 
-	return txmd, nil
+	return txhdr, nil
 }
 
 // VerifiedSetReference ...
-func (c *immuClient) VerifiedSetReference(ctx context.Context, key []byte, referencedKey []byte) (*schema.TxMetadata, error) {
+func (c *immuClient) VerifiedSetReference(ctx context.Context, key []byte, referencedKey []byte) (*schema.TxHeader, error) {
 	return c.VerifiedSetReferenceAt(ctx, key, referencedKey, 0)
 }
 
 // VerifiedSetReferenceAt ...
-func (c *immuClient) VerifiedSetReferenceAt(ctx context.Context, key []byte, referencedKey []byte, atTx uint64) (*schema.TxMetadata, error) {
+func (c *immuClient) VerifiedSetReferenceAt(ctx context.Context, key []byte, referencedKey []byte, atTx uint64) (*schema.TxHeader, error) {
 	err := c.StateService.CacheLock()
 	if err != nil {
 		return nil, err
@@ -1098,23 +1153,30 @@ func (c *immuClient) VerifiedSetReferenceAt(ctx context.Context, key []byte, ref
 		return nil, err
 	}
 
-	if verifiableTx.Tx.Metadata.Nentries != 1 {
+	if verifiableTx.Tx.Header.Nentries != 1 {
 		return nil, store.ErrCorruptedData
 	}
 
-	tx := schema.TxFrom(verifiableTx.Tx)
+	tx := schema.TxFromProto(verifiableTx.Tx)
+
+	entrySpecDigest, err := store.EntrySpecDigestFor(tx.Header().Version)
+	if err != nil {
+		return nil, err
+	}
 
 	inclusionProof, err := tx.Proof(database.EncodeKey(key))
 	if err != nil {
 		return nil, err
 	}
 
-	verifies := store.VerifyInclusion(inclusionProof, database.EncodeReference(key, referencedKey, atTx), tx.Eh())
+	e := database.EncodeReference(key, nil, referencedKey, atTx)
+
+	verifies := store.VerifyInclusion(inclusionProof, entrySpecDigest(e), tx.Header().Eh)
 	if !verifies {
 		return nil, store.ErrCorruptedData
 	}
 
-	if tx.Eh() != schema.DigestFrom(verifiableTx.DualProof.TargetTxMetadata.EH) {
+	if tx.Header().Eh != schema.DigestFromProto(verifiableTx.DualProof.TargetTxHeader.EH) {
 		return nil, store.ErrCorruptedData
 	}
 
@@ -1122,13 +1184,13 @@ func (c *immuClient) VerifiedSetReferenceAt(ctx context.Context, key []byte, ref
 	var sourceAlh, targetAlh [sha256.Size]byte
 
 	sourceID = state.TxId
-	sourceAlh = schema.DigestFrom(state.TxHash)
-	targetID = tx.ID
-	targetAlh = tx.Alh
+	sourceAlh = schema.DigestFromProto(state.TxHash)
+	targetID = tx.Header().ID
+	targetAlh = tx.Header().Alh()
 
 	if state.TxId > 0 {
 		verifies = store.VerifyDualProof(
-			schema.DualProofFrom(verifiableTx.DualProof),
+			schema.DualProofFromProto(verifiableTx.DualProof),
 			sourceID,
 			targetID,
 			sourceAlh,
@@ -1161,16 +1223,16 @@ func (c *immuClient) VerifiedSetReferenceAt(ctx context.Context, key []byte, ref
 		return nil, err
 	}
 
-	return verifiableTx.Tx.Metadata, nil
+	return verifiableTx.Tx.Header, nil
 }
 
 // ZAdd ...
-func (c *immuClient) ZAdd(ctx context.Context, set []byte, score float64, key []byte) (*schema.TxMetadata, error) {
+func (c *immuClient) ZAdd(ctx context.Context, set []byte, score float64, key []byte) (*schema.TxHeader, error) {
 	return c.ZAddAt(ctx, set, score, key, 0)
 }
 
 // ZAddAt ...
-func (c *immuClient) ZAddAt(ctx context.Context, set []byte, score float64, key []byte, atTx uint64) (*schema.TxMetadata, error) {
+func (c *immuClient) ZAddAt(ctx context.Context, set []byte, score float64, key []byte, atTx uint64) (*schema.TxHeader, error) {
 	if !c.IsConnected() {
 		return nil, errors.FromError(ErrNotConnected)
 	}
@@ -1197,12 +1259,12 @@ func (c *immuClient) ZAddAt(ctx context.Context, set []byte, score float64, key 
 }
 
 // ZAdd ...
-func (c *immuClient) VerifiedZAdd(ctx context.Context, set []byte, score float64, key []byte) (*schema.TxMetadata, error) {
+func (c *immuClient) VerifiedZAdd(ctx context.Context, set []byte, score float64, key []byte) (*schema.TxHeader, error) {
 	return c.VerifiedZAddAt(ctx, set, score, key, 0)
 }
 
 // VerifiedZAdd ...
-func (c *immuClient) VerifiedZAddAt(ctx context.Context, set []byte, score float64, key []byte, atTx uint64) (*schema.TxMetadata, error) {
+func (c *immuClient) VerifiedZAddAt(ctx context.Context, set []byte, score float64, key []byte, atTx uint64) (*schema.TxHeader, error) {
 	err := c.StateService.CacheLock()
 	if err != nil {
 		return nil, err
@@ -1242,11 +1304,16 @@ func (c *immuClient) VerifiedZAddAt(ctx context.Context, set []byte, score float
 		return nil, err
 	}
 
-	if vtx.Tx.Metadata.Nentries != 1 {
+	if vtx.Tx.Header.Nentries != 1 {
 		return nil, store.ErrCorruptedData
 	}
 
-	tx := schema.TxFrom(vtx.Tx)
+	tx := schema.TxFromProto(vtx.Tx)
+
+	entrySpecDigest, err := store.EntrySpecDigestFor(tx.Header().Version)
+	if err != nil {
+		return nil, err
+	}
 
 	ekv := database.EncodeZAdd(req.ZAddRequest.Set,
 		req.ZAddRequest.Score,
@@ -1259,12 +1326,12 @@ func (c *immuClient) VerifiedZAddAt(ctx context.Context, set []byte, score float
 		return nil, err
 	}
 
-	verifies := store.VerifyInclusion(inclusionProof, ekv, tx.Eh())
+	verifies := store.VerifyInclusion(inclusionProof, entrySpecDigest(ekv), tx.Header().Eh)
 	if !verifies {
 		return nil, store.ErrCorruptedData
 	}
 
-	if tx.Eh() != schema.DigestFrom(vtx.DualProof.TargetTxMetadata.EH) {
+	if tx.Header().Eh != schema.DigestFromProto(vtx.DualProof.TargetTxHeader.EH) {
 		return nil, store.ErrCorruptedData
 	}
 
@@ -1272,13 +1339,13 @@ func (c *immuClient) VerifiedZAddAt(ctx context.Context, set []byte, score float
 	var sourceAlh, targetAlh [sha256.Size]byte
 
 	sourceID = state.TxId
-	sourceAlh = schema.DigestFrom(state.TxHash)
-	targetID = tx.ID
-	targetAlh = tx.Alh
+	sourceAlh = schema.DigestFromProto(state.TxHash)
+	targetID = tx.Header().ID
+	targetAlh = tx.Header().Alh()
 
 	if state.TxId > 0 {
 		verifies = store.VerifyDualProof(
-			schema.DualProofFrom(vtx.DualProof),
+			schema.DualProofFromProto(vtx.DualProof),
 			sourceID,
 			targetID,
 			sourceAlh,
@@ -1311,7 +1378,7 @@ func (c *immuClient) VerifiedZAddAt(ctx context.Context, set []byte, score float
 		return nil, err
 	}
 
-	return vtx.Tx.Metadata, nil
+	return vtx.Tx.Header, nil
 }
 
 // Dump to be used from Immu CLI
@@ -1371,12 +1438,21 @@ func (c *immuClient) UseDatabase(ctx context.Context, db *schema.Database) (*sch
 	}
 
 	result, err := c.ServiceClient.UseDatabase(ctx, db)
+	if err != nil {
+		return nil, errors.FromError(err)
+	}
 
 	c.Options.CurrentDatabase = db.DatabaseName
 
+	if c.SessionID == "" {
+		if err = c.Tkns.SetToken(db.DatabaseName, result.Token); err != nil {
+			return nil, errors.FromError(err)
+		}
+	}
+
 	c.Logger.Debugf("UseDatabase finished in %s", time.Since(start))
 
-	return result, err
+	return result, errors.FromError(err)
 }
 
 // UpdateDatabase updates database settings
@@ -1463,7 +1539,7 @@ func (c *immuClient) CurrentRoot(ctx context.Context) (*schema.ImmutableState, e
 }
 
 // DEPRECATED: Please use VerifiedSet
-func (c *immuClient) SafeSet(ctx context.Context, key []byte, value []byte) (*schema.TxMetadata, error) {
+func (c *immuClient) SafeSet(ctx context.Context, key []byte, value []byte) (*schema.TxHeader, error) {
 	return c.VerifiedSet(ctx, key, value)
 }
 
@@ -1473,12 +1549,12 @@ func (c *immuClient) SafeGet(ctx context.Context, key []byte, opts ...grpc.CallO
 }
 
 // DEPRECATED: Please use VerifiedZAdd
-func (c *immuClient) SafeZAdd(ctx context.Context, set []byte, score float64, key []byte) (*schema.TxMetadata, error) {
+func (c *immuClient) SafeZAdd(ctx context.Context, set []byte, score float64, key []byte) (*schema.TxHeader, error) {
 	return c.VerifiedZAdd(ctx, set, score, key)
 }
 
 // DEPRECATED: Please use VerifiedSetRefrence
-func (c *immuClient) SafeReference(ctx context.Context, key []byte, referencedKey []byte) (*schema.TxMetadata, error) {
+func (c *immuClient) SafeReference(ctx context.Context, key []byte, referencedKey []byte) (*schema.TxHeader, error) {
 	return c.VerifiedSetReference(ctx, key, referencedKey)
 }
 

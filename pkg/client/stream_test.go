@@ -1,4 +1,3 @@
-// +build streams
 /*
 Copyright 2021 CodeNotary, Inc. All rights reserved.
 
@@ -27,7 +26,7 @@ import (
 )
 
 func TestImmuClient_Errors(t *testing.T) {
-	client := DefaultClient().(*immuClient)
+	client := NewClient()
 	ctx := context.TODO()
 
 	_, err := client.StreamVerifiedSet(ctx, nil)

@@ -38,7 +38,8 @@ func TestTxReader(t *testing.T) {
 	eCount := 10
 
 	for i := 0; i < txCount; i++ {
-		kvs := make([]*KV, eCount)
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
 
 		for j := 0; j < eCount; j++ {
 			k := make([]byte, 8)
@@ -47,12 +48,13 @@ func TestTxReader(t *testing.T) {
 			v := make([]byte, 8)
 			binary.BigEndian.PutUint64(v, uint64(i))
 
-			kvs[j] = &KV{Key: k, Value: v}
+			err = tx.Set(k, nil, v)
+			require.NoError(t, err)
 		}
 
-		txMetadata, err := immuStore.Commit(kvs, false)
+		txhdr, err := tx.AsyncCommit()
 		require.NoError(t, err)
-		require.Equal(t, uint64(i+1), txMetadata.ID)
+		require.Equal(t, uint64(i+1), txhdr.ID)
 	}
 
 	_, err = immuStore.NewTxReader(0, false, nil)
@@ -62,7 +64,7 @@ func TestTxReader(t *testing.T) {
 	require.Equal(t, ErrIllegalArguments, err)
 
 	currTxID := uint64(1)
-	txReader, err := immuStore.NewTxReader(currTxID, false, immuStore.NewTx())
+	txReader, err := immuStore.NewTxReader(currTxID, false, immuStore.NewTxHolder())
 	require.NoError(t, err)
 
 	for {
@@ -71,14 +73,14 @@ func TestTxReader(t *testing.T) {
 			break
 		}
 		require.NoError(t, err)
-		require.Equal(t, currTxID, tx.ID)
+		require.Equal(t, currTxID, tx.header.ID)
 		currTxID++
 	}
 
 	require.Equal(t, uint64(txCount), currTxID-1)
 
 	currTxID = uint64(txCount)
-	txReader, err = immuStore.NewTxReader(currTxID, true, immuStore.NewTx())
+	txReader, err = immuStore.NewTxReader(currTxID, true, immuStore.NewTxHolder())
 	require.NoError(t, err)
 
 	for {
@@ -87,7 +89,7 @@ func TestTxReader(t *testing.T) {
 			break
 		}
 		require.NoError(t, err)
-		require.Equal(t, currTxID, tx.ID)
+		require.Equal(t, currTxID, tx.header.ID)
 		currTxID--
 	}
 

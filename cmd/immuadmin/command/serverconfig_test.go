@@ -48,7 +48,7 @@ func TestCommandLine_ServerconfigAuth(t *testing.T) {
 		grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 	}
 	cliopt := Options()
-	cliopt.DialOptions = &dialOptions
+	cliopt.DialOptions = dialOptions
 
 	hds := clienttest.DefaultHomedirServiceMock()
 	hds.FileExistsInUserHomeDirF = func(string) (bool, error) {
@@ -60,7 +60,7 @@ func TestCommandLine_ServerconfigAuth(t *testing.T) {
 		immuClient:     &scIClientMock{*new(client.ImmuClient)},
 		passwordReader: pwReaderMock,
 		context:        context.Background(),
-		ts:             client.NewTokenService().WithHds(hds).WithTokenFileName("tokenFileName"),
+		ts:             tokenservice.NewTokenService().WithHds(hds).WithTokenFileName("tokenFileName"),
 	}
 
 	cmdso, err := cl.NewCmd()
@@ -105,14 +105,14 @@ func TestCommandLine_ServerconfigMtls(t *testing.T) {
 		grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 	}
 	cliopt := Options()
-	cliopt.DialOptions = &dialOptions
+	cliopt.DialOptions = dialOptions
 
 	cl := commandline{
 		options:        cliopt,
 		immuClient:     &scIClientMock{*new(client.ImmuClient)},
 		passwordReader: pwReaderMock,
 		context:        context.Background(),
-		ts:             client.NewTokenService().WithHds(newHomedirServiceMock()).WithTokenFileName("tokenFileName"),
+		ts:             tokenservice.NewTokenService().WithHds(newHomedirServiceMock()).WithTokenFileName("tokenFileName"),
 	}
 
 	cmdso, _ := cl.NewCmd()
@@ -157,7 +157,7 @@ func (c scIClientMock) Logout(ctx context.Context) error {
 func (c scIClientMock) GetOptions() *client.Options {
 	dialOptions := []grpc.DialOption{}
 	return &client.Options{
-		DialOptions: &dialOptions,
+		DialOptions: dialOptions,
 	}
 }
 

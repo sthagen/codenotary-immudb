@@ -16,6 +16,8 @@ limitations under the License.
 package schema
 
 import (
+	"time"
+
 	"github.com/codenotary/immudb/embedded/sql"
 )
 
@@ -44,9 +46,24 @@ func asSQLValue(v interface{}) (*SQLValue, error) {
 	if v == nil {
 		return &SQLValue{Value: &SQLValue_Null{}}, nil
 	}
-
 	switch tv := v.(type) {
 	case uint:
+		{
+			return &SQLValue{Value: &SQLValue_N{N: int64(tv)}}, nil
+		}
+	case uint8:
+		{
+			return &SQLValue{Value: &SQLValue_N{N: int64(tv)}}, nil
+		}
+	case uint16:
+		{
+			return &SQLValue{Value: &SQLValue_N{N: int64(tv)}}, nil
+		}
+	case uint32:
+		{
+			return &SQLValue{Value: &SQLValue_N{N: int64(tv)}}, nil
+		}
+	case uint64:
 		{
 			return &SQLValue{Value: &SQLValue_N{N: int64(tv)}}, nil
 		}
@@ -54,13 +71,21 @@ func asSQLValue(v interface{}) (*SQLValue, error) {
 		{
 			return &SQLValue{Value: &SQLValue_N{N: int64(tv)}}, nil
 		}
+	case int8:
+		{
+			return &SQLValue{Value: &SQLValue_N{N: int64(tv)}}, nil
+		}
+	case int16:
+		{
+			return &SQLValue{Value: &SQLValue_N{N: int64(tv)}}, nil
+		}
+	case int32:
+		{
+			return &SQLValue{Value: &SQLValue_N{N: int64(tv)}}, nil
+		}
 	case int64:
 		{
 			return &SQLValue{Value: &SQLValue_N{N: tv}}, nil
-		}
-	case uint64:
-		{
-			return &SQLValue{Value: &SQLValue_N{N: int64(tv)}}, nil
 		}
 	case string:
 		{
@@ -74,7 +99,10 @@ func asSQLValue(v interface{}) (*SQLValue, error) {
 		{
 			return &SQLValue{Value: &SQLValue_Bs{Bs: tv}}, nil
 		}
+	case time.Time:
+		{
+			return &SQLValue{Value: &SQLValue_Ts{Ts: tv.UnixNano()}}, nil
+		}
 	}
-
 	return nil, sql.ErrInvalidValue
 }

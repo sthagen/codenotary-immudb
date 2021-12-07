@@ -26,11 +26,18 @@ type dummyRowReader struct {
 	failInferringParams  bool
 }
 
-func (r *dummyRowReader) ImplicitDB() string {
-	return "db1"
+func (r *dummyRowReader) onClose(callback func()) {
 }
 
-func (r *dummyRowReader) ImplicitTable() string {
+func (r *dummyRowReader) Tx() *SQLTx {
+	return nil
+}
+
+func (r *dummyRowReader) Database() *Database {
+	return nil
+}
+
+func (r *dummyRowReader) TableAlias() string {
 	return "table1"
 }
 
@@ -42,7 +49,7 @@ func (r *dummyRowReader) Close() error {
 	return errDummy
 }
 
-func (r *dummyRowReader) OrderBy() []*ColDescriptor {
+func (r *dummyRowReader) OrderBy() []ColDescriptor {
 	return nil
 }
 
@@ -50,7 +57,7 @@ func (r *dummyRowReader) ScanSpecs() *ScanSpecs {
 	return nil
 }
 
-func (r *dummyRowReader) Columns() ([]*ColDescriptor, error) {
+func (r *dummyRowReader) Columns() ([]ColDescriptor, error) {
 	if r.failReturningColumns {
 		return nil, errDummy
 	}
@@ -58,7 +65,8 @@ func (r *dummyRowReader) Columns() ([]*ColDescriptor, error) {
 	return nil, nil
 }
 
-func (r *dummyRowReader) SetParameters(params map[string]interface{}) {
+func (r *dummyRowReader) SetParameters(params map[string]interface{}) error {
+	return nil
 }
 
 func (r *dummyRowReader) InferParameters(params map[string]SQLValueType) error {
@@ -69,6 +77,6 @@ func (r *dummyRowReader) InferParameters(params map[string]SQLValueType) error {
 	return nil
 }
 
-func (r *dummyRowReader) colsBySelector() (map[string]*ColDescriptor, error) {
+func (r *dummyRowReader) colsBySelector() (map[string]ColDescriptor, error) {
 	return nil, errDummy
 }

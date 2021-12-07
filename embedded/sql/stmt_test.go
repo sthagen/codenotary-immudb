@@ -18,23 +18,25 @@ package sql
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
 func TestRequiresTypeColSelectorsValueExp(t *testing.T) {
-	cols := make(map[string]*ColDescriptor)
-	cols["(db1.mytable.id)"] = &ColDescriptor{Type: IntegerType}
-	cols["(db1.mytable.title)"] = &ColDescriptor{Type: VarcharType}
-	cols["(db1.mytable.active)"] = &ColDescriptor{Type: BooleanType}
-	cols["(db1.mytable.payload)"] = &ColDescriptor{Type: BLOBType}
-	cols["COUNT(db1.mytable.*)"] = &ColDescriptor{Type: IntegerType}
+	cols := make(map[string]ColDescriptor)
+	cols["(db1.mytable.id)"] = ColDescriptor{Type: IntegerType}
+	cols["(db1.mytable.ts)"] = ColDescriptor{Type: TimestampType}
+	cols["(db1.mytable.title)"] = ColDescriptor{Type: VarcharType}
+	cols["(db1.mytable.active)"] = ColDescriptor{Type: BooleanType}
+	cols["(db1.mytable.payload)"] = ColDescriptor{Type: BLOBType}
+	cols["COUNT(db1.mytable.*)"] = ColDescriptor{Type: IntegerType}
 
 	params := make(map[string]SQLValueType)
 
 	testCases := []struct {
 		exp           ValueExp
-		cols          map[string]*ColDescriptor
+		cols          map[string]ColDescriptor
 		params        map[string]SQLValueType
 		implicitDB    string
 		implicitTable string
@@ -57,10 +59,28 @@ func TestRequiresTypeColSelectorsValueExp(t *testing.T) {
 			implicitDB:    "db1",
 			implicitTable: "mytable",
 			requiredType:  IntegerType,
-			expectedError: ErrInvalidColumn,
+			expectedError: ErrColumnDoesNotExist,
 		},
 		{
 			exp:           &ColSelector{db: "db1", table: "mytable", col: "id"},
+			cols:          cols,
+			params:        params,
+			implicitDB:    "db1",
+			implicitTable: "mytable",
+			requiredType:  BooleanType,
+			expectedError: ErrInvalidTypes,
+		},
+		{
+			exp:           &ColSelector{db: "db1", table: "mytable", col: "ts"},
+			cols:          cols,
+			params:        params,
+			implicitDB:    "db1",
+			implicitTable: "mytable",
+			requiredType:  TimestampType,
+			expectedError: nil,
+		},
+		{
+			exp:           &ColSelector{db: "db1", table: "mytable", col: "ts"},
 			cols:          cols,
 			params:        params,
 			implicitDB:    "db1",
@@ -102,7 +122,7 @@ func TestRequiresTypeColSelectorsValueExp(t *testing.T) {
 			implicitDB:    "db1",
 			implicitTable: "mytable",
 			requiredType:  VarcharType,
-			expectedError: ErrInvalidColumn,
+			expectedError: ErrColumnDoesNotExist,
 		},
 		{
 			exp:           &AggColSelector{aggFn: "SUM", db: "db1", table: "mytable", col: "id"},
@@ -126,7 +146,7 @@ func TestRequiresTypeColSelectorsValueExp(t *testing.T) {
 
 	for i, tc := range testCases {
 		err := tc.exp.requiresType(tc.requiredType, tc.cols, tc.params, tc.implicitDB, tc.implicitTable)
-		require.Equal(t, tc.expectedError, err, fmt.Sprintf("failed on iteration %d", i))
+		require.ErrorIs(t, err, tc.expectedError, fmt.Sprintf("failed on iteration %d", i))
 
 		if tc.expectedError == nil {
 			it, err := tc.exp.inferType(tc.cols, params, tc.implicitDB, tc.implicitTable)
@@ -137,18 +157,18 @@ func TestRequiresTypeColSelectorsValueExp(t *testing.T) {
 }
 
 func TestRequiresTypeNumExpValueExp(t *testing.T) {
-	cols := make(map[string]*ColDescriptor)
-	cols["(db1.mytable.id)"] = &ColDescriptor{Type: IntegerType}
-	cols["(db1.mytable.title)"] = &ColDescriptor{Type: VarcharType}
-	cols["(db1.mytable.active)"] = &ColDescriptor{Type: BooleanType}
-	cols["(db1.mytable.payload)"] = &ColDescriptor{Type: BLOBType}
-	cols["COUNT(db1.mytable.*)"] = &ColDescriptor{Type: IntegerType}
+	cols := make(map[string]ColDescriptor)
+	cols["(db1.mytable.id)"] = ColDescriptor{Type: IntegerType}
+	cols["(db1.mytable.title)"] = ColDescriptor{Type: VarcharType}
+	cols["(db1.mytable.active)"] = ColDescriptor{Type: BooleanType}
+	cols["(db1.mytable.payload)"] = ColDescriptor{Type: BLOBType}
+	cols["COUNT(db1.mytable.*)"] = ColDescriptor{Type: IntegerType}
 
 	params := make(map[string]SQLValueType)
 
 	testCases := []struct {
 		exp           ValueExp
-		cols          map[string]*ColDescriptor
+		cols          map[string]ColDescriptor
 		params        map[string]SQLValueType
 		implicitDB    string
 		implicitTable string
@@ -195,7 +215,7 @@ func TestRequiresTypeNumExpValueExp(t *testing.T) {
 
 	for i, tc := range testCases {
 		err := tc.exp.requiresType(tc.requiredType, tc.cols, tc.params, tc.implicitDB, tc.implicitTable)
-		require.Equal(t, tc.expectedError, err, fmt.Sprintf("failed on iteration %d", i))
+		require.ErrorIs(t, err, tc.expectedError, fmt.Sprintf("failed on iteration %d", i))
 
 		if tc.expectedError == nil {
 			it, err := tc.exp.inferType(tc.cols, params, tc.implicitDB, tc.implicitTable)
@@ -206,18 +226,18 @@ func TestRequiresTypeNumExpValueExp(t *testing.T) {
 }
 
 func TestRequiresTypeSimpleValueExp(t *testing.T) {
-	cols := make(map[string]*ColDescriptor)
-	cols["(db1.mytable.id)"] = &ColDescriptor{Type: IntegerType}
-	cols["(db1.mytable.title)"] = &ColDescriptor{Type: VarcharType}
-	cols["(db1.mytable.active)"] = &ColDescriptor{Type: BooleanType}
-	cols["(db1.mytable.payload)"] = &ColDescriptor{Type: BLOBType}
-	cols["COUNT(db1.mytable.*)"] = &ColDescriptor{Type: IntegerType}
+	cols := make(map[string]ColDescriptor)
+	cols["(db1.mytable.id)"] = ColDescriptor{Type: IntegerType}
+	cols["(db1.mytable.title)"] = ColDescriptor{Type: VarcharType}
+	cols["(db1.mytable.active)"] = ColDescriptor{Type: BooleanType}
+	cols["(db1.mytable.payload)"] = ColDescriptor{Type: BLOBType}
+	cols["COUNT(db1.mytable.*)"] = ColDescriptor{Type: IntegerType}
 
 	params := make(map[string]SQLValueType)
 
 	testCases := []struct {
 		exp           ValueExp
-		cols          map[string]*ColDescriptor
+		cols          map[string]ColDescriptor
 		params        map[string]SQLValueType
 		implicitDB    string
 		implicitTable string
@@ -351,7 +371,7 @@ func TestRequiresTypeSimpleValueExp(t *testing.T) {
 			expectedError: ErrInvalidTypes,
 		},
 		{
-			exp:           &LikeBoolExp{},
+			exp:           &LikeBoolExp{val: &ColSelector{col: "col1"}, pattern: &Varchar{val: ""}},
 			cols:          cols,
 			params:        params,
 			implicitDB:    "db1",
@@ -360,7 +380,7 @@ func TestRequiresTypeSimpleValueExp(t *testing.T) {
 			expectedError: nil,
 		},
 		{
-			exp:           &LikeBoolExp{},
+			exp:           &LikeBoolExp{val: &ColSelector{col: "col1"}, pattern: &Varchar{val: ""}},
 			cols:          cols,
 			params:        params,
 			implicitDB:    "db1",
@@ -368,11 +388,20 @@ func TestRequiresTypeSimpleValueExp(t *testing.T) {
 			requiredType:  VarcharType,
 			expectedError: ErrInvalidTypes,
 		},
+		{
+			exp:           &LikeBoolExp{},
+			cols:          cols,
+			params:        params,
+			implicitDB:    "db1",
+			implicitTable: "mytable",
+			requiredType:  VarcharType,
+			expectedError: ErrInvalidCondition,
+		},
 	}
 
 	for i, tc := range testCases {
 		err := tc.exp.requiresType(tc.requiredType, tc.cols, tc.params, tc.implicitDB, tc.implicitTable)
-		require.Equal(t, tc.expectedError, err, fmt.Sprintf("failed on iteration %d", i))
+		require.ErrorIs(t, err, tc.expectedError, fmt.Sprintf("failed on iteration %d", i))
 
 		if tc.expectedError == nil {
 			it, err := tc.exp.inferType(tc.cols, params, tc.implicitDB, tc.implicitTable)
@@ -383,18 +412,18 @@ func TestRequiresTypeSimpleValueExp(t *testing.T) {
 }
 
 func TestRequiresTypeSysFnValueExp(t *testing.T) {
-	cols := make(map[string]*ColDescriptor)
-	cols["(db1.mytable.id)"] = &ColDescriptor{Type: IntegerType}
-	cols["(db1.mytable.title)"] = &ColDescriptor{Type: VarcharType}
-	cols["(db1.mytable.active)"] = &ColDescriptor{Type: BooleanType}
-	cols["(db1.mytable.payload)"] = &ColDescriptor{Type: BLOBType}
-	cols["COUNT(db1.mytable.*)"] = &ColDescriptor{Type: IntegerType}
+	cols := make(map[string]ColDescriptor)
+	cols["(db1.mytable.id)"] = ColDescriptor{Type: IntegerType}
+	cols["(db1.mytable.title)"] = ColDescriptor{Type: VarcharType}
+	cols["(db1.mytable.active)"] = ColDescriptor{Type: BooleanType}
+	cols["(db1.mytable.payload)"] = ColDescriptor{Type: BLOBType}
+	cols["COUNT(db1.mytable.*)"] = ColDescriptor{Type: IntegerType}
 
 	params := make(map[string]SQLValueType)
 
 	testCases := []struct {
 		exp           ValueExp
-		cols          map[string]*ColDescriptor
+		cols          map[string]ColDescriptor
 		params        map[string]SQLValueType
 		implicitDB    string
 		implicitTable string
@@ -407,7 +436,7 @@ func TestRequiresTypeSysFnValueExp(t *testing.T) {
 			params:        params,
 			implicitDB:    "db1",
 			implicitTable: "mytable",
-			requiredType:  IntegerType,
+			requiredType:  TimestampType,
 			expectedError: nil,
 		},
 		{
@@ -432,7 +461,7 @@ func TestRequiresTypeSysFnValueExp(t *testing.T) {
 
 	for i, tc := range testCases {
 		err := tc.exp.requiresType(tc.requiredType, tc.cols, tc.params, tc.implicitDB, tc.implicitTable)
-		require.Equal(t, tc.expectedError, err, fmt.Sprintf("failed on iteration %d", i))
+		require.ErrorIs(t, err, tc.expectedError, fmt.Sprintf("failed on iteration %d", i))
 
 		if tc.expectedError == nil {
 			it, err := tc.exp.inferType(tc.cols, params, tc.implicitDB, tc.implicitTable)
@@ -443,18 +472,18 @@ func TestRequiresTypeSysFnValueExp(t *testing.T) {
 }
 
 func TestRequiresTypeBinValueExp(t *testing.T) {
-	cols := make(map[string]*ColDescriptor)
-	cols["(db1.mytable.id)"] = &ColDescriptor{Type: IntegerType}
-	cols["(db1.mytable.title)"] = &ColDescriptor{Type: VarcharType}
-	cols["(db1.mytable.active)"] = &ColDescriptor{Type: BooleanType}
-	cols["(db1.mytable.payload)"] = &ColDescriptor{Type: BLOBType}
-	cols["COUNT(db1.mytable.*)"] = &ColDescriptor{Type: IntegerType}
+	cols := make(map[string]ColDescriptor)
+	cols["(db1.mytable.id)"] = ColDescriptor{Type: IntegerType}
+	cols["(db1.mytable.title)"] = ColDescriptor{Type: VarcharType}
+	cols["(db1.mytable.active)"] = ColDescriptor{Type: BooleanType}
+	cols["(db1.mytable.payload)"] = ColDescriptor{Type: BLOBType}
+	cols["COUNT(db1.mytable.*)"] = ColDescriptor{Type: IntegerType}
 
 	params := make(map[string]SQLValueType)
 
 	testCases := []struct {
 		exp           ValueExp
-		cols          map[string]*ColDescriptor
+		cols          map[string]ColDescriptor
 		params        map[string]SQLValueType
 		implicitDB    string
 		implicitTable string
@@ -537,7 +566,7 @@ func TestRequiresTypeBinValueExp(t *testing.T) {
 
 	for i, tc := range testCases {
 		err := tc.exp.requiresType(tc.requiredType, tc.cols, tc.params, tc.implicitDB, tc.implicitTable)
-		require.Equal(t, tc.expectedError, err, fmt.Sprintf("failed on iteration %d", i))
+		require.ErrorIs(t, err, tc.expectedError, fmt.Sprintf("failed on iteration %d", i))
 
 		if tc.expectedError == nil {
 			it, err := tc.exp.inferType(tc.cols, params, tc.implicitDB, tc.implicitTable)
@@ -570,6 +599,63 @@ func TestYetUnsupportedExistsBoolExp(t *testing.T) {
 	require.Nil(t, exp.selectorRanges(nil, "", nil, nil))
 }
 
+func TestYetUnsupportedInSubQueryExp(t *testing.T) {
+	exp := &InSubQueryExp{}
+
+	_, err := exp.inferType(nil, nil, "", "")
+	require.ErrorIs(t, err, ErrNoSupported)
+
+	err = exp.requiresType(BooleanType, nil, nil, "", "")
+	require.ErrorIs(t, err, ErrNoSupported)
+
+	rexp, err := exp.substitute(nil)
+	require.NoError(t, err)
+	require.Equal(t, exp, rexp)
+
+	_, err = exp.reduce(nil, nil, "", "")
+	require.ErrorIs(t, err, ErrNoSupported)
+
+	require.Equal(t, exp, exp.reduceSelectors(nil, "", ""))
+
+	require.False(t, exp.isConstant())
+
+	require.Nil(t, exp.selectorRanges(nil, "", nil, nil))
+}
+
+func TestLikeBoolExpEdgeCases(t *testing.T) {
+	exp := &LikeBoolExp{}
+
+	_, err := exp.inferType(nil, nil, "", "")
+	require.ErrorIs(t, err, ErrInvalidCondition)
+
+	err = exp.requiresType(BooleanType, nil, nil, "", "")
+	require.ErrorIs(t, err, ErrInvalidCondition)
+
+	_, err = exp.substitute(nil)
+	require.ErrorIs(t, err, ErrInvalidCondition)
+
+	_, err = exp.reduce(nil, nil, "", "")
+	require.ErrorIs(t, err, ErrInvalidCondition)
+
+	require.Equal(t, exp, exp.reduceSelectors(nil, "", ""))
+	require.False(t, exp.isConstant())
+	require.Nil(t, exp.selectorRanges(nil, "", nil, nil))
+
+	t.Run("like expression with invalid types", func(t *testing.T) {
+		exp := &LikeBoolExp{val: &ColSelector{col: "col1"}, pattern: &Number{}}
+
+		_, err = exp.inferType(nil, nil, "", "")
+		require.ErrorIs(t, err, ErrInvalidTypes)
+
+		err = exp.requiresType(BooleanType, nil, nil, "", "")
+		require.ErrorIs(t, err, ErrInvalidTypes)
+
+		_, err = exp.reduce(nil, &Row{Values: map[string]TypedValue{"(db1.table1.col1)": &NullValue{}}}, "db1", "table1")
+		require.ErrorIs(t, err, ErrInvalidTypes)
+	})
+
+}
+
 func TestAliasing(t *testing.T) {
 	stmt := &SelectStmt{ds: &tableRef{table: "table1"}}
 	require.Equal(t, "table1", stmt.Alias())
@@ -579,12 +665,12 @@ func TestAliasing(t *testing.T) {
 }
 
 func TestEdgeCases(t *testing.T) {
-	exp := &CreateIndexStmt{}
-	_, err := exp.compileUsing(nil, nil, nil)
+	stmt := &CreateIndexStmt{}
+	_, err := stmt.execAt(nil, nil)
 	require.ErrorIs(t, err, ErrIllegalArguments)
 
-	exp.cols = make([]string, MaxNumberOfColumnsInIndex+1)
-	_, err = exp.compileUsing(nil, nil, nil)
+	stmt.cols = make([]string, MaxNumberOfColumnsInIndex+1)
+	_, err = stmt.execAt(nil, nil)
 	require.ErrorIs(t, err, ErrMaxNumberOfColumnsInIndexExceeded)
 }
 
@@ -594,6 +680,7 @@ func TestIsConstant(t *testing.T) {
 	require.True(t, (&Varchar{}).isConstant())
 	require.True(t, (&Bool{}).isConstant())
 	require.True(t, (&Blob{}).isConstant())
+	require.True(t, (&Timestamp{}).isConstant())
 	require.True(t, (&Param{}).isConstant())
 	require.False(t, (&ColSelector{}).isConstant())
 	require.False(t, (&AggColSelector{}).isConstant())
@@ -628,4 +715,60 @@ func TestIsConstant(t *testing.T) {
 	require.False(t, (&SysFn{}).isConstant())
 
 	require.False(t, (&ExistsBoolExp{}).isConstant())
+}
+
+func TestTimestmapType(t *testing.T) {
+
+	ts := &Timestamp{val: time.Date(2021, 12, 6, 11, 53, 0, 0, time.UTC)}
+
+	t.Run("comparison functions", func(t *testing.T) {
+
+		cmp, err := ts.Compare(&Timestamp{val: time.Date(2021, 12, 6, 11, 53, 0, 0, time.UTC)})
+		require.NoError(t, err)
+		require.Equal(t, 0, cmp)
+
+		cmp, err = ts.Compare(&Timestamp{val: time.Date(2021, 12, 6, 11, 52, 0, 0, time.UTC)})
+		require.NoError(t, err)
+		require.Greater(t, cmp, 0)
+
+		cmp, err = ts.Compare(&Timestamp{val: time.Date(2021, 12, 6, 11, 54, 0, 0, time.UTC)})
+		require.NoError(t, err)
+		require.Less(t, cmp, 0)
+
+		cmp, err = ts.Compare(&NullValue{t: TimestampType})
+		require.NoError(t, err)
+		require.Equal(t, 1, cmp)
+
+		cmp, err = ts.Compare(&NullValue{t: AnyType})
+		require.NoError(t, err)
+		require.Equal(t, 1, cmp)
+
+		cmp, err = (&NullValue{t: TimestampType}).Compare(ts)
+		require.NoError(t, err)
+		require.Equal(t, -1, cmp)
+
+		cmp, err = (&NullValue{t: AnyType}).Compare(ts)
+		require.NoError(t, err)
+		require.Equal(t, -1, cmp)
+	})
+
+	it, err := ts.inferType(map[string]ColDescriptor{}, map[string]string{}, "", "")
+	require.NoError(t, err)
+	require.Equal(t, TimestampType, it)
+
+	err = ts.requiresType(TimestampType, map[string]ColDescriptor{}, map[string]string{}, "", "")
+	require.NoError(t, err)
+
+	err = ts.requiresType(IntegerType, map[string]ColDescriptor{}, map[string]string{}, "", "")
+	require.ErrorIs(t, err, ErrInvalidTypes)
+
+	v, err := ts.substitute(map[string]interface{}{})
+	require.NoError(t, err)
+	require.Equal(t, ts, v)
+
+	v = ts.reduceSelectors(&Row{}, "", "")
+	require.Equal(t, ts, v)
+
+	err = ts.selectorRanges(&Table{}, "", map[string]interface{}{}, map[uint32]*typedValueRange{})
+	require.NoError(t, err)
 }

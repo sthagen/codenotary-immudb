@@ -15,13 +15,9 @@ limitations under the License.
 */
 package sql
 
-import "fmt"
-
 type Catalog struct {
 	dbsByID   map[uint32]*Database
 	dbsByName map[string]*Database
-
-	mutated bool
 }
 
 type Database struct {
@@ -307,10 +303,6 @@ func (db *Database) newTable(name string, colsSpec []*ColSpec) (table *Table, er
 			return nil, ErrLimitedAutoIncrement
 		}
 
-		if cs.colType == TimestampType {
-			return nil, fmt.Errorf("%w (%v)", ErrNoSupported, TimestampType)
-		}
-
 		if !validMaxLenForType(cs.maxLen, cs.colType) {
 			return nil, ErrLimitedMaxLen
 		}
@@ -334,7 +326,6 @@ func (db *Database) newTable(name string, colsSpec []*ColSpec) (table *Table, er
 
 	db.tablesByID[table.id] = table
 	db.tablesByName[table.name] = table
-	db.catalog.mutated = true
 
 	return table, nil
 }
@@ -389,8 +380,6 @@ func (t *Table) newIndex(unique bool, colIDs []uint32) (index *Index, err error)
 		t.primaryIndex = index
 		t.autoIncrementPK = len(index.cols) == 1 && index.cols[0].autoIncrement
 	}
-
-	t.db.catalog.mutated = true
 
 	return index, nil
 }
