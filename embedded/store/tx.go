@@ -326,6 +326,15 @@ func (tx *Tx) IndexOf(key []byte) (int, error) {
 	return 0, ErrKeyNotFound
 }
 
+func (tx *Tx) EntryOf(key []byte) (*TxEntry, error) {
+	for _, e := range tx.Entries() {
+		if bytes.Equal(e.key(), key) {
+			return e, nil
+		}
+	}
+	return nil, ErrKeyNotFound
+}
+
 func (tx *Tx) Proof(key []byte) (*htree.InclusionProof, error) {
 	kindex, err := tx.IndexOf(key)
 	if err != nil {
@@ -434,16 +443,16 @@ func (tx *Tx) readFrom(r *appendable.Reader) error {
 		var kvmd *KVMetadata
 
 		if mdLen > 0 {
-			var mdbs [maxKVMetadataLen]byte
+			mdbs := make([]byte, mdLen)
 
-			_, err = r.Read(mdbs[:mdLen])
+			_, err = r.Read(mdbs)
 			if err != nil {
 				return err
 			}
 
-			kvmd = &KVMetadata{}
+			kvmd = NewKVMetadata()
 
-			err = kvmd.ReadFrom(mdbs[:mdLen])
+			err = kvmd.ReadFrom(mdbs)
 			if err != nil {
 				return err
 			}

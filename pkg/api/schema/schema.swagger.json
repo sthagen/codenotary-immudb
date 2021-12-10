@@ -1539,6 +1539,9 @@
         },
         "metadata": {
           "$ref": "#/definitions/schemaKVMetadata"
+        },
+        "expired": {
+          "type": "boolean"
         }
       }
     },
@@ -1562,6 +1565,15 @@
         },
         "noWait": {
           "type": "boolean"
+        }
+      }
+    },
+    "schemaExpiration": {
+      "type": "object",
+      "properties": {
+        "expiresAt": {
+          "type": "string",
+          "format": "int64"
         }
       }
     },
@@ -1644,6 +1656,9 @@
       "properties": {
         "deleted": {
           "type": "boolean"
+        },
+        "expiration": {
+          "$ref": "#/definitions/schemaExpiration"
         }
       }
     },
@@ -2129,13 +2144,6 @@
           "type": "string",
           "format": "int64"
         },
-        "version": {
-          "type": "integer",
-          "format": "int32"
-        },
-        "metadata": {
-          "$ref": "#/definitions/schemaTxMD"
-        },
         "nentries": {
           "type": "integer",
           "format": "int32"
@@ -2151,6 +2159,13 @@
         "blRoot": {
           "type": "string",
           "format": "byte"
+        },
+        "version": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "metadata": {
+          "$ref": "#/definitions/schemaTxMD"
         }
       }
     },

@@ -1042,6 +1042,9 @@ func (stmt *DeleteFromStmt) execAt(tx *SQLTx, params map[string]interface{}) (*S
 		if err == ErrNoMoreRows {
 			break
 		}
+		if err != nil {
+			return nil, err
+		}
 
 		valuesByColID := make(map[uint32]TypedValue, len(row.Values))
 
@@ -1692,7 +1695,7 @@ func (c *Cast) getConverter(src, dst SQLValueType) (converterFunc, error) {
 				if val.Value() == nil {
 					return &NullValue{t: TimestampType}, nil
 				}
-				return &Timestamp{val: time.Unix(0, val.Value().(int64)).UTC()}, nil
+				return &Timestamp{val: time.Unix(val.Value().(int64), 0).UTC()}, nil
 			}, nil
 		}
 
@@ -1704,7 +1707,7 @@ func (c *Cast) getConverter(src, dst SQLValueType) (converterFunc, error) {
 
 				str := val.Value().(string)
 				for _, layout := range []string{
-					"2006-01-02 15:04:05.999999999",
+					"2006-01-02 15:04:05.999999",
 					"2006-01-02 15:04",
 					"2006-01-02",
 				} {

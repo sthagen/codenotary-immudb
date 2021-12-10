@@ -144,9 +144,10 @@ type lexer struct {
 }
 
 type aheadByteReader struct {
-	nextChar byte
-	nextErr  error
-	r        io.ByteReader
+	nextChar  byte
+	nextErr   error
+	r         io.ByteReader
+	readCount int
 }
 
 func newAheadByteReader(r io.ByteReader) *aheadByteReader {
@@ -162,7 +163,13 @@ func (ar *aheadByteReader) ReadByte() (byte, error) {
 		}
 	}()
 
+	ar.readCount++
+
 	return ar.nextChar, ar.nextErr
+}
+
+func (ar *aheadByteReader) ReadCount() int {
+	return ar.readCount
 }
 
 func (ar *aheadByteReader) NextByte() (byte, error) {
@@ -202,11 +209,11 @@ func (l *lexer) Lex(lval *yySymType) int {
 			return ERROR
 		}
 
-		if '\t' == ch {
+		if ch == '\t' {
 			continue
 		}
 
-		if '/' == ch && '*' == l.r.nextChar {
+		if ch == '/' && l.r.nextChar == '*' {
 			l.r.ReadByte()
 
 			for {
@@ -219,7 +226,7 @@ func (l *lexer) Lex(lval *yySymType) int {
 					return ERROR
 				}
 
-				if '*' == ch && '/' == l.r.nextChar {
+				if ch == '*' && l.r.nextChar == '/' {
 					l.r.ReadByte() // consume closing slash
 					break
 				}
@@ -252,13 +259,6 @@ func (l *lexer) Lex(lval *yySymType) int {
 			lval.err = err
 			return ERROR
 		}
-
-		if !isQuote(l.r.nextChar) {
-			lval.err = fmt.Errorf("syntax error: unexpected char %c, expecting quote", l.r.nextChar)
-			return ERROR
-		}
-
-		l.r.ReadByte() // consume closing quote
 
 		val, err := hex.DecodeString(tail)
 		if err != nil {
@@ -348,7 +348,7 @@ func (l *lexer) Lex(lval *yySymType) int {
 
 		cmpOp, ok := cmpOps[op]
 		if !ok {
-			lval.err = fmt.Errorf("Invalid comparison operator %s", op)
+			lval.err = fmt.Errorf("invalid comparison operator %s", op)
 			return ERROR
 		}
 
@@ -362,8 +362,6 @@ func (l *lexer) Lex(lval *yySymType) int {
 			lval.err = err
 			return ERROR
 		}
-
-		l.r.ReadByte() // consume closing quote
 
 		lval.str = tail
 		return VARCHAR
@@ -438,7 +436,7 @@ func (l *lexer) Lex(lval *yySymType) int {
 }
 
 func (l *lexer) Error(err string) {
-	l.err = errors.New(err)
+	l.err = fmt.Errorf("%s at position %d", err, l.r.ReadCount())
 }
 
 func (l *lexer) readWord() (string, error) {
@@ -452,9 +450,28 @@ func (l *lexer) readNumber() (string, error) {
 }
 
 func (l *lexer) readString() (string, error) {
-	return l.readWhile(func(ch byte) bool {
-		return !isQuote(ch)
-	})
+	var b bytes.Buffer
+
+	for {
+		ch, err := l.r.ReadByte()
+		if err != nil {
+			return "", err
+		}
+
+		nextCh, _ := l.r.NextByte()
+
+		if isQuote(ch) {
+			if isQuote(nextCh) {
+				l.r.ReadByte() // consume escaped quote
+			} else {
+				break // string completely read
+			}
+		}
+
+		b.WriteByte(ch)
+	}
+
+	return b.String(), nil
 }
 
 func (l *lexer) readComparison() (string, error) {
@@ -487,19 +504,19 @@ func (l *lexer) readWhile(condFn func(b byte) bool) (string, error) {
 }
 
 func isBLOBPrefix(ch byte) bool {
-	return 'x' == ch
+	return ch == 'x'
 }
 
 func isSeparator(ch byte) bool {
-	return ';' == ch
+	return ch == ';'
 }
 
 func isLineBreak(ch byte) bool {
-	return '\r' == ch || '\n' == ch
+	return ch == '\r' || ch == '\n'
 }
 
 func isSpace(ch byte) bool {
-	return 32 == ch || 9 == ch //SPACE or TAB
+	return ch == 32 || ch == 9 //SPACE or TAB
 }
 
 func isNumber(ch byte) bool {
@@ -511,9 +528,9 @@ func isLetter(ch byte) bool {
 }
 
 func isComparison(ch byte) bool {
-	return '!' == ch || '<' == ch || '=' == ch || '>' == ch
+	return ch == '!' || ch == '<' || ch == '=' || ch == '>'
 }
 
 func isQuote(ch byte) bool {
-	return '\'' == ch
+	return ch == 0x27
 }

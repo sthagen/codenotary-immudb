@@ -23,6 +23,7 @@
     - [EntryCount](#immudb.schema.EntryCount)
     - [ErrorInfo](#immudb.schema.ErrorInfo)
     - [ExecAllRequest](#immudb.schema.ExecAllRequest)
+    - [Expiration](#immudb.schema.Expiration)
     - [HealthResponse](#immudb.schema.HealthResponse)
     - [HistoryRequest](#immudb.schema.HistoryRequest)
     - [ImmutableState](#immudb.schema.ImmutableState)
@@ -376,6 +377,7 @@
 | value | [bytes](#bytes) |  |  |
 | referencedBy | [Reference](#immudb.schema.Reference) |  |  |
 | metadata | [KVMetadata](#immudb.schema.KVMetadata) |  |  |
+| expired | [bool](#bool) |  |  |
 
 
 
@@ -423,6 +425,21 @@
 | ----- | ---- | ----- | ----------- |
 | Operations | [Op](#immudb.schema.Op) | repeated |  |
 | noWait | [bool](#bool) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.Expiration"></a>
+
+### Expiration
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| expiresAt | [int64](#int64) |  |  |
 
 
 
@@ -508,6 +525,7 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | deleted | [bool](#bool) |  |  |
+| expiration | [Expiration](#immudb.schema.Expiration) |  |  |
 
 
 
@@ -1103,12 +1121,12 @@
 | id | [uint64](#uint64) |  |  |
 | prevAlh | [bytes](#bytes) |  |  |
 | ts | [int64](#int64) |  |  |
-| version | [int32](#int32) |  |  |
-| metadata | [TxMD](#immudb.schema.TxMD) |  |  |
 | nentries | [int32](#int32) |  |  |
 | eH | [bytes](#bytes) |  |  |
 | blTxId | [uint64](#uint64) |  |  |
 | blRoot | [bytes](#bytes) |  |  |
+| version | [int32](#int32) |  |  |
+| metadata | [TxMD](#immudb.schema.TxMD) |  |  |
 
 
 

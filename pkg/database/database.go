@@ -405,14 +405,27 @@ func (d *db) getAt(key []byte, atTx uint64, resolved int, index store.KeyIndex, 
 	} else {
 		txID = atTx
 
-		md, val, err = d.readValue(key, atTx, tx)
+		md, val, err = d.readMetadataAndValue(key, atTx, tx)
 		if err != nil {
 			return nil, err
 		}
 	}
 
+	if len(val) < 1 {
+		return nil, fmt.Errorf(
+			"%w: internal value consistency error - missing value prefix",
+			store.ErrCorruptedData,
+		)
+	}
+
 	//Reference lookup
 	if val[0] == ReferenceValuePrefix {
+		if len(val) < 1+8 {
+			return nil, fmt.Errorf(
+				"%w: internal value consistency error - invalid reference",
+				store.ErrCorruptedData,
+			)
+		}
 		if resolved == MaxKeyResolutionLimit {
 			return nil, ErrMaxKeyResolutionLimitReached
 		}
@@ -444,13 +457,23 @@ func (d *db) getAt(key []byte, atTx uint64, resolved int, index store.KeyIndex, 
 	}, err
 }
 
-func (d *db) readValue(key []byte, atTx uint64, tx *store.Tx) (*store.KVMetadata, []byte, error) {
+func (d *db) readMetadataAndValue(key []byte, atTx uint64, tx *store.Tx) (*store.KVMetadata, []byte, error) {
 	err := d.st.ReadTx(atTx, tx)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return d.st.ReadValue(tx, key)
+	entry, err := tx.EntryOf(key)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	v, err := d.st.ReadValue(atTx, tx, key)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return entry.Metadata(), v, nil
 }
 
 // CurrentState ...
@@ -900,16 +923,25 @@ func (d *db) History(req *schema.HistoryRequest) (*schema.Entries, error) {
 			return nil, err
 		}
 
-		md, val, err := d.st.ReadValue(tx, key)
+		entry, err := tx.EntryOf(key)
 		if err != nil {
 			return nil, err
+		}
+
+		val, err := d.st.ReadValue(txID, tx, key)
+		if err != nil && err != store.ErrExpiredEntry {
+			return nil, err
+		}
+		if len(val) > 0 {
+			val = TrimPrefix(val)
 		}
 
 		list.Entries[i] = &schema.Entry{
 			Tx:       txID,
 			Key:      req.Key,
-			Metadata: schema.KVMetadataToProto(md),
-			Value:    TrimPrefix(val),
+			Metadata: schema.KVMetadataToProto(entry.Metadata()),
+			Value:    val,
+			Expired:  err == store.ErrExpiredEntry,
 		}
 	}
 

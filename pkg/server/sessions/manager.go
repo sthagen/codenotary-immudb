@@ -24,12 +24,15 @@ import (
 	"github.com/codenotary/immudb/pkg/logger"
 	"github.com/codenotary/immudb/pkg/server/sessions/internal/transactions"
 	"github.com/rs/xid"
+	"math"
 	"os"
 	"sync"
 	"time"
 )
 
 const MaxSessions = 100
+
+const infinity = time.Duration(math.MaxInt64)
 
 type manager struct {
 	running    bool
@@ -47,7 +50,6 @@ type Manager interface {
 	SessionPresent(sessionID string) bool
 	DeleteSession(sessionID string) error
 	UpdateSessionActivityTime(sessionID string)
-	UpdateHeartBeatTime(sessionID string)
 	StartSessionsGuard() error
 	StopSessionsGuard() error
 	GetSession(sessionID string) (*Session, error)
@@ -62,6 +64,15 @@ type Manager interface {
 func NewManager(options *Options) (*manager, error) {
 	if options == nil {
 		return nil, ErrInvalidOptionsProvided
+	}
+	if options.MaxSessionAgeTime == 0 {
+		options.MaxSessionAgeTime = infinity
+	}
+	if options.MaxSessionInactivityTime == 0 {
+		options.MaxSessionInactivityTime = infinity
+	}
+	if options.Timeout == 0 {
+		options.Timeout = infinity
 	}
 	guard := &manager{
 		sessions: make(map[string]*Session),
@@ -129,16 +140,6 @@ func (sm *manager) UpdateSessionActivityTime(sessionID string) {
 	}
 }
 
-func (sm *manager) UpdateHeartBeatTime(sessionID string) {
-	sm.sessionMux.Lock()
-	defer sm.sessionMux.Unlock()
-	if sess, ok := sm.sessions[sessionID]; ok {
-		now := time.Now()
-		sess.SetLastHeartBeat(now)
-		sm.logger.Debugf("updated last heart beat time for %s at %s", sessionID, now.Format(time.UnixDate))
-	}
-}
-
 func (sm *manager) SessionCount() int {
 	sm.sessionMux.RLock()
 	defer sm.sessionMux.RUnlock()
@@ -195,37 +196,30 @@ func (sm *manager) expireSessions() {
 
 	now := time.Now()
 
-	idleSessCount := 0
+	inactiveSessCount := 0
 	sm.logger.Debugf("checking at %s", now.Format(time.UnixDate))
 	for ID, sess := range sm.sessions {
-		if sess.GetLastHeartBeat().Add(sm.options.MaxSessionIdleTime).Before(now) && sess.GetStatus() != Idle {
-			sess.setStatus(Idle)
-			sm.logger.Debugf("session %s became Idle, no more heartbeat received", ID)
-		}
-		if sess.GetLastActivityTime().Add(sm.options.MaxSessionIdleTime).Before(now) && sess.GetStatus() != Idle {
-			sess.setStatus(Idle)
-			sm.logger.Debugf("session %s became Idle due to max inactivity time", ID)
+		if sess.GetLastActivityTime().Add(sm.options.MaxSessionInactivityTime).Before(now) && sess.GetStatus() != inactive {
+			sess.setStatus(inactive)
+			sm.logger.Debugf("session %s became Inactive due to max inactivity time", ID)
 		}
 		if sess.GetCreationTime().Add(sm.options.MaxSessionAgeTime).Before(now) {
-			sess.setStatus(Dead)
-			sm.logger.Debugf("session %s exceeded MaxSessionAgeTime and became Dead", ID)
+			sess.setStatus(dead)
+			sm.logger.Debugf("session %s exceeded MaxSessionAgeTime and became dead", ID)
 		}
-		if sess.GetStatus() == Idle {
-			idleSessCount++
+		if sess.GetStatus() == inactive {
 			if sess.GetLastActivityTime().Add(sm.options.Timeout).Before(now) {
-				sess.setStatus(Dead)
-				sm.logger.Debugf("Idle session %s is Dead", ID)
-			}
-			if sess.GetLastHeartBeat().Add(sm.options.Timeout).Before(now) {
-				sess.setStatus(Dead)
-				sm.logger.Debugf("Idle session %s is Dead", ID)
+				sess.setStatus(dead)
+				sm.logger.Debugf("Inactive session %s is dead", ID)
+			} else {
+				inactiveSessCount++
 			}
 		}
-		if sess.GetStatus() == Dead {
+		if sess.GetStatus() == dead {
 			sm.DeleteSession(ID)
-			sm.logger.Debugf("removed Dead session %s", ID)
+			sm.logger.Debugf("removed dead session %s", ID)
 		}
-		sm.logger.Debugf("Open sessions count: %d\nIdle sessions count: %d\n", len(sm.sessions), idleSessCount)
+		sm.logger.Debugf("Open sessions count: %d\nInactive sessions count: %d\n", len(sm.sessions), inactiveSessCount)
 	}
 }
 

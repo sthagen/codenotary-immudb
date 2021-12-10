@@ -17,6 +17,7 @@ package schema
 
 import (
 	"crypto/sha256"
+	"time"
 
 	"github.com/codenotary/immudb/embedded/htree"
 	"github.com/codenotary/immudb/embedded/store"
@@ -47,9 +48,16 @@ func KVMetadataToProto(md *store.KVMetadata) *KVMetadata {
 		return nil
 	}
 
-	return &KVMetadata{
+	kvmd := &KVMetadata{
 		Deleted: md.Deleted(),
 	}
+
+	if md.IsExpirable() {
+		expTime, _ := md.ExpirationTime()
+		kvmd.Expiration = &Expiration{ExpiresAt: expTime.Unix()}
+	}
+
+	return kvmd
 }
 
 func TxFromProto(stx *Tx) *store.Tx {
@@ -81,7 +89,13 @@ func KVMetadataFromProto(md *KVMetadata) *store.KVMetadata {
 		return nil
 	}
 
-	return store.NewKVMetadata().AsDeleted(md.Deleted)
+	kvmd := store.NewKVMetadata().AsDeleted(md.Deleted)
+
+	if md.Expiration != nil {
+		kvmd.ExpiresAt(time.Unix(md.Expiration.ExpiresAt, 0))
+	}
+
+	return kvmd
 }
 
 func InclusionProofToProto(iproof *htree.InclusionProof) *InclusionProof {
