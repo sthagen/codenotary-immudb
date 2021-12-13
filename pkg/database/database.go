@@ -468,7 +468,7 @@ func (d *db) readMetadataAndValue(key []byte, atTx uint64, tx *store.Tx) (*store
 		return nil, nil, err
 	}
 
-	v, err := d.st.ReadValue(atTx, tx, key)
+	v, err := d.st.ReadValue(entry)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -662,7 +662,11 @@ func (d *db) Delete(req *schema.DeleteKeysRequest) (*schema.TxHeader, error) {
 			return nil, ErrIllegalArguments
 		}
 
-		e := EncodeEntrySpec(k, store.NewKVMetadata().AsDeleted(true), nil)
+		md := store.NewKVMetadata()
+
+		md.AsDeleted(true)
+
+		e := EncodeEntrySpec(k, md, nil)
 
 		err = tx.Delete(e.Key)
 		if err != nil {
@@ -928,7 +932,7 @@ func (d *db) History(req *schema.HistoryRequest) (*schema.Entries, error) {
 			return nil, err
 		}
 
-		val, err := d.st.ReadValue(txID, tx, key)
+		val, err := d.st.ReadValue(entry)
 		if err != nil && err != store.ErrExpiredEntry {
 			return nil, err
 		}
