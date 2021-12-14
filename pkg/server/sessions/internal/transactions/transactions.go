@@ -71,16 +71,17 @@ func (tx *transaction) Rollback() error {
 	if tx.sqlTx == nil {
 		return nil
 	}
+	defer func() { tx.sqlTx = nil }()
 	return tx.sqlTx.Cancel()
 }
 func (tx *transaction) Commit() ([]*sql.SQLTx, error) {
 	tx.mutex.Lock()
 	defer tx.mutex.Unlock()
-	ntx, cTxs, err := tx.db.SQLExec(&schema.SQLExecRequest{Sql: "COMMIT;"}, tx.sqlTx)
+	defer func() { tx.sqlTx = nil }()
+	_, cTxs, err := tx.db.SQLExec(&schema.SQLExecRequest{Sql: "COMMIT;"}, tx.sqlTx)
 	if err != nil {
 		return nil, err
 	}
-	tx.sqlTx = ntx
 	return cTxs, nil
 }
 
@@ -90,14 +91,10 @@ func (tx *transaction) GetSessionID() string {
 	return tx.sessionID
 }
 
-func (tx *transaction) SQLExec(request *schema.SQLExecRequest) error {
+func (tx *transaction) SQLExec(request *schema.SQLExecRequest) (err error) {
 	tx.mutex.Lock()
 	defer tx.mutex.Unlock()
-	ntx, _, err := tx.db.SQLExec(request, tx.sqlTx)
-	if err != nil {
-		return err
-	}
-	tx.sqlTx = ntx
+	tx.sqlTx, _, err = tx.db.SQLExec(request, tx.sqlTx)
 	return err
 }
 

@@ -48,6 +48,7 @@ var (
 	ErrNoSessionIDPresent          = errors.New("no sessionID provided")
 	ErrTxNotProperlyClosed         = errors.New("tx not properly closed")
 	ErrReadWriteTxNotOngoing       = errors.New("read write transaction not ongoing")
+	ErrTxReadConflict              = errors.New(store.ErrTxReadConflict.Error()).WithCode(errors.CodInFailedSqlTransaction)
 )
 
 func mapServerError(err error) error {
@@ -56,6 +57,8 @@ func mapServerError(err error) error {
 		return ErrIllegalState
 	case store.ErrIllegalArguments:
 		return ErrIllegalArguments
+	case store.ErrTxReadConflict:
+		return ErrTxReadConflict
 	}
 	return err
 }
