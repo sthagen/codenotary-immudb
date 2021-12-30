@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codenotary/immudb/embedded/sql"
 	"github.com/codenotary/immudb/pkg/api/schema"
 )
 
@@ -172,6 +173,7 @@ func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
 }
 
 func (r *Rows) Close() error {
+	// no reader here
 	return nil
 }
 
@@ -318,7 +320,7 @@ func RenderValue(op interface{}) interface{} {
 		}
 	case *schema.SQLValue_Ts:
 		{
-			return time.Unix(v.Ts/1e6, (v.Ts%1e6)*1e3).UTC()
+			return sql.TimeFromInt64(v.Ts)
 		}
 	}
 	return []byte(fmt.Sprintf("%v", op))
@@ -331,15 +333,12 @@ type RowsAffected struct {
 }
 
 func (rows RowsAffected) LastInsertId() (int64, error) {
-	// TODO: consider the case when multiple txs are committed
-	if len(rows.er.Txs) == 1 {
-		if rows.er != nil && rows.er.Txs[0].LastInsertedPKs != nil && len(rows.er.Txs[0].LastInsertedPKs) == 1 {
-			for _, v := range rows.er.Txs[0].LastInsertedPKs {
-				return v.GetN(), nil
-			}
+	// if immudb will returns a no monotonic primary key sequence this will not work anymore
+	if rows.er != nil && len(rows.er.Txs) >= 1 {
+		for _, v := range rows.er.FirstInsertedPks() {
+			return v.GetN(), nil
 		}
 	}
-
 	return 0, errors.New("unable to retrieve LastInsertId")
 }
 

@@ -27,7 +27,7 @@ immudb!](https://img.shields.io/twitter/url/http/shields.io.svg?style=social&lab
 Don't forget to ⭐ this repo if you like immudb!
 ```
 
-[:tada: 5M pulls from docker hub!](https://hub.docker.com/r/codenotary)
+[:tada: 7M pulls from docker hub!](https://hub.docker.com/r/codenotary)
 
 ---
 
@@ -37,21 +37,18 @@ Detailed documentation can be found at https://docs.immudb.io/
 
 <img align="right" src="img/immudb-mascot-small.png" width="256px"/>
 
-immudb is a database with built-in cryptographic proof and verification. It tracks changes in sensitive data and the integrity of the history will be protected by the clients, without the need to trust the server. It can operate as a key-value store or as relational database (SQL).
+immudb is a database with built-in cryptographic proof and verification. It tracks changes in sensitive data and the integrity of the history will be protected by the clients, without the need to trust the database. It can operate both as a key-value store, and/or as relational database (SQL).
 
-Traditional database transactions and logs are hard to scale and are mutable, so there is no way to know for sure if your data has been compromised. immudb is immutable. You can add new versions of existing records, but never change or delete records. This lets you store critical data without fear of it being tampered.
+Traditional database transactions and logs are mutable, and therefore there is no way to know for sure if your data has been compromised. immudb is immutable. You can add new versions of existing records, but never change or delete records. This lets you store critical data without fear of it being tampered.
 
-Data stored in immudb is cryptographically coherent and verifiable, just like with blockchains, but without all the complexity. Unlike blockchains, immudb can handle millions of transactions per second, and can be used both as a lightweight service or embedded in your application as a library. immudb runs everywhere, on an IoT device, your notebook, a server, on-premise or in the cloud.
+Data stored in immudb is cryptographically coherent and verifiable. Unlike blockchains, immudb can handle millions of transactions per second, and can be used both as a lightweight service or embedded in your application as a library. immudb runs everywhere, on an IoT device, your notebook, a server, on-premise or in the cloud.
 
 
-immudb is already used by hundreds of projects to store tamper-proof data and to keep the data change history immutable. 
-immudb can be used as a key-value store or relational data structure and supports both transactions and blobs, so there are no limits to the use cases.
- 
-Companies use immudb to secure and tamper-evident log data, sensor data, sensitive data, transactions, software build recipes, rule-base data, even artifacts or even video streams.
+immudb can be used as a key-value store or relational data structure and supports both transactions and blobs, so there are no limits to the use cases. Companies use immudb to secure and tamper-evident log data, sensor data, sensitive data, transactions, software build recipes, rule-base data, even artifacts and even video streams. [Examples of organizations using immudb today.](https://www.immudb.io)
 
 ### Online demo environment
 
-Your own temporary immudb web console access to start using immudb in an [online demo environment](https://demo.immudb.io) (username: immudb; password: immudb)
+Click here to try out the immudb web console access in an [online demo environment](https://demo.immudb.io) (username: immudb; password: immudb)
 
 <div align="center">
   <a href="https://demo.immudb.io">
@@ -60,7 +57,7 @@ Your own temporary immudb web console access to start using immudb in an [online
 </div>
 
 
-### Tech specs
+### Some immudb tech specs
 
 | Topic                   | Description                                        |
 | ----------------------- | -------------------------------------------------- |
@@ -90,8 +87,8 @@ Your own temporary immudb web console access to start using immudb in an [online
 You may download the immudb binary from [the latest releases on Github](https://github.com/codenotary/immudb/releases/latest). Once you have downloaded immudb, rename it to `immudb`, make sure to mark it as executable, then run it. The following example shows how to obtain v1.0.0 for linux amd64:
 
 ```bash
-wget https://github.com/vchain-us/immudb/releases/download/v1.0.0/immudb-v1.0.0-linux-amd64
-mv immudb-v1.0.0-linux-amd64 immudb
+wget https://github.com/codenotary/immudb/releases/download/v1.2.1/immudb-v1.2.1-linux-amd64
+mv immudb-v1.2.1-linux-amd64 immudb
 chmod +x immudb
 
 # run immudb in the foreground to see all output
@@ -165,8 +162,8 @@ docker run --net=host -it --entrypoint /bin/sh minio/mc -c "
 You may download the immuclient binary from [the latest releases on Github](https://github.com/codenotary/immudb/releases/latest). Once you have downloaded immuclient, rename it to `immuclient`, make sure to mark it as executable, then run it. The following example shows how to obtain v1.0.0 for linux amd64:
 
 ```bash
-wget https://github.com/vchain-us/immudb/releases/download/v1.0.0/immuclient-v1.0.0-linux-amd64
-mv immuclient-v1.0.0-linux-amd64 immuclient
+wget https://github.com/codenotary/immudb/releases/download/v1.2.1/immuclient-v1.2.1-linux-amd64
+mv immuclient-v1.2.1-linux-amd64 immuclient
 chmod +x immuclient
 
 # start the interactive shell
@@ -241,14 +238,12 @@ You can generate your own benchmarks using the `stress_tool` under `embedded/too
 The following topics are important to us and are planned or already being worked on:
 
 
-* GDPR compliance
-* Replication (Follower)
-* Other storage backends (eg. Cloud)
-* Hot backups
+
 * Data pruning
 * Compression
-* Improving SDK API and errors
-* time and date support in SQL 
+* compatibility with other database storage files
+* Easier API for developers
+* API compatibility with other, well-known embedded databases
 
 
 ## Contributing
@@ -259,6 +254,6 @@ Learn how to [build](BUILD.md) immudb components in both binary and Docker image
 
 To report bugs or get help, use [GitHub's issues](https://github.com/codenotary/immudb/issues).
 
-immudb is [Apache v2.0 License](LICENSE).
+immudb is licensed under the [Apache v2.0 License](LICENSE).
 
 immudb re-distributes other open-source tools and libraries - [Acknowledgements](ACKNOWLEDGEMENTS.md).

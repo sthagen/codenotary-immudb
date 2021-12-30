@@ -40,7 +40,6 @@ var ErrColumnDoesNotExist = errors.New("column does not exist")
 var ErrColumnNotIndexed = errors.New("column is not indexed")
 var ErrLimitedKeyType = errors.New("indexed key of invalid type. Supported types are: INTEGER, VARCHAR[256] OR BLOB[256]")
 var ErrLimitedAutoIncrement = errors.New("only INTEGER single-column primary keys can be set as auto incremental")
-var ErrNoValueForAutoIncrementalColumn = errors.New("no value should be specified for auto incremental columns")
 var ErrLimitedMaxLen = errors.New("only VARCHAR and BLOB types support max length")
 var ErrDuplicatedColumn = errors.New("duplicated column")
 var ErrInvalidColumn = errors.New("invalid column")
@@ -112,8 +111,9 @@ type SQLTx struct {
 
 	explicitClose bool
 
-	updatedRows     int
-	lastInsertedPKs map[string]int64 // last inserted PK by table name
+	updatedRows      int
+	lastInsertedPKs  map[string]int64 // last inserted PK by table name
+	firstInsertedPKs map[string]int64 // first inserted PK by table name
 
 	txHeader *store.TxHeader // header is set once tx is committed
 
@@ -196,12 +196,13 @@ func (e *Engine) newTx(explicitClose bool) (*SQLTx, error) {
 	}
 
 	return &SQLTx{
-		engine:          e,
-		tx:              tx,
-		catalog:         catalog,
-		currentDB:       currentDB,
-		lastInsertedPKs: make(map[string]int64),
-		explicitClose:   explicitClose,
+		engine:           e,
+		tx:               tx,
+		catalog:          catalog,
+		currentDB:        currentDB,
+		lastInsertedPKs:  make(map[string]int64),
+		firstInsertedPKs: make(map[string]int64),
+		explicitClose:    explicitClose,
 	}, nil
 }
 
@@ -226,6 +227,10 @@ func (sqlTx *SQLTx) UpdatedRows() int {
 
 func (sqlTx *SQLTx) LastInsertedPKs() map[string]int64 {
 	return sqlTx.lastInsertedPKs
+}
+
+func (sqlTx *SQLTx) FirstInsertedPKs() map[string]int64 {
+	return sqlTx.firstInsertedPKs
 }
 
 func (sqlTx *SQLTx) TxHeader() *store.TxHeader {
@@ -858,7 +863,7 @@ func EncodeValue(val interface{}, colType SQLValueType, maxLen int) ([]byte, err
 			// len(v) + v
 			var encv [EncLenLen + 8]byte
 			binary.BigEndian.PutUint32(encv[:], uint32(8))
-			binary.BigEndian.PutUint64(encv[EncLenLen:], uint64(timeToInt64(timeVal)))
+			binary.BigEndian.PutUint64(encv[EncLenLen:], uint64(TimeToInt64(timeVal)))
 
 			return encv[:], nil
 		}
@@ -1058,7 +1063,7 @@ func DecodeValue(b []byte, colType SQLValueType) (TypedValue, int, error) {
 			v := binary.BigEndian.Uint64(b[voff:])
 			voff += vlen
 
-			return &Timestamp{val: timeFromInt64(int64(v))}, voff, nil
+			return &Timestamp{val: TimeFromInt64(int64(v))}, voff, nil
 		}
 	}
 

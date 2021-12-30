@@ -18,13 +18,13 @@ package sql
 
 import "time"
 
-func timeToInt64(t time.Time) int64 {
+func TimeToInt64(t time.Time) int64 {
 	unix := t.Unix()
 	nano := t.Nanosecond()
 
 	return unix*1e6 + int64(nano)/1e3
 }
 
-func timeFromInt64(t int64) time.Time {
+func TimeFromInt64(t int64) time.Time {
 	return time.Unix(t/1e6, (t%1e6)*1e3).UTC()
 }
