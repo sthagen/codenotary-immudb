@@ -17,6 +17,7 @@ package database
 
 import (
 	"crypto/sha256"
+	"fmt"
 
 	"github.com/codenotary/immudb/embedded/store"
 	"github.com/codenotary/immudb/pkg/api/schema"
@@ -41,10 +42,12 @@ func (d *db) ExecAll(req *schema.ExecAllRequest) (*schema.TxHeader, error) {
 		return nil, ErrIsReplica
 	}
 
-	lastTxID, _ := d.st.Alh()
-	err := d.st.WaitForIndexingUpto(lastTxID, nil)
-	if err != nil {
-		return nil, err
+	if !req.NoWait {
+		lastTxID, _ := d.st.Alh()
+		err := d.st.WaitForIndexingUpto(lastTxID, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	callback := func(txID uint64, index store.KeyIndex) ([]*store.EntrySpec, error) {
@@ -56,7 +59,11 @@ func (d *db) ExecAll(req *schema.ExecAllRequest) (*schema.TxHeader, error) {
 		// we build a map in which we store sha256 sum as key and the index as value
 		kmap := make(map[[sha256.Size]byte]bool)
 
-		tx := d.st.NewTxHolder()
+		var tx *store.Tx
+
+		if !req.NoWait {
+			tx = d.st.NewTxHolder()
+		}
 
 		for i, op := range req.Operations {
 
@@ -82,29 +89,43 @@ func (d *db) ExecAll(req *schema.ExecAllRequest) (*schema.TxHeader, error) {
 					return nil, store.ErrIllegalArguments
 				}
 
-				// check key does not exists or it's already a reference
-				entry, err := d.getAt(EncodeKey(x.Ref.Key), 0, 0, index, tx)
-				if err != nil && err != store.ErrKeyNotFound {
-					return nil, err
+				if req.NoWait && (x.Ref.AtTx != 0 || !x.Ref.BoundRef) {
+					return nil, fmt.Errorf(
+						"%w: can only set references to keys added within same transaction, please use bound references with AtTx set to 0",
+						ErrNoWaitOperationMustBeSelfContained)
 				}
-				if entry != nil && entry.ReferencedBy == nil {
-					return nil, ErrFinalKeyCannotBeConvertedIntoReference
+
+				_, exists := kmap[sha256.Sum256(x.Ref.ReferencedKey)]
+
+				if req.NoWait && !exists {
+					return nil, fmt.Errorf(
+						"%w: can not create a reference to a key that was not set in the same transaction",
+						ErrNoWaitOperationMustBeSelfContained)
+				}
+
+				if !req.NoWait {
+					// check key does not exists or it's already a reference
+					entry, err := d.getAt(EncodeKey(x.Ref.Key), 0, 0, index, tx)
+					if err != nil && err != store.ErrKeyNotFound {
+						return nil, err
+					}
+					if entry != nil && entry.ReferencedBy == nil {
+						return nil, ErrFinalKeyCannotBeConvertedIntoReference
+					}
+
+					if !exists || x.Ref.AtTx > 0 {
+						// check referenced key exists and it's not a reference
+						refEntry, err := d.getAt(EncodeKey(x.Ref.ReferencedKey), x.Ref.AtTx, 0, index, tx)
+						if err != nil {
+							return nil, err
+						}
+						if refEntry.ReferencedBy != nil {
+							return nil, ErrReferencedKeyCannotBeAReference
+						}
+					}
 				}
 
 				// reference arguments are converted in regular key value items and then atomically inserted
-				_, exists := kmap[sha256.Sum256(x.Ref.ReferencedKey)]
-
-				if !exists || x.Ref.AtTx > 0 {
-					// check referenced key exists and it's not a reference
-					refEntry, err := d.getAt(EncodeKey(x.Ref.ReferencedKey), x.Ref.AtTx, 0, index, tx)
-					if err != nil {
-						return nil, err
-					}
-					if refEntry.ReferencedBy != nil {
-						return nil, ErrReferencedKeyCannotBeAReference
-					}
-				}
-
 				if x.Ref.BoundRef && x.Ref.AtTx == 0 {
 					e = EncodeReference(x.Ref.Key, nil, x.Ref.ReferencedKey, txID)
 				} else {
@@ -120,20 +141,34 @@ func (d *db) ExecAll(req *schema.ExecAllRequest) (*schema.TxHeader, error) {
 					return nil, store.ErrIllegalArguments
 				}
 
-				// zAdd arguments are converted in regular key value items and then atomically inserted
+				if req.NoWait && (x.ZAdd.AtTx != 0 || !x.ZAdd.BoundRef) {
+					return nil, fmt.Errorf(
+						"%w: can only set references to keys added within same transaction, please use bound references with AtTx set to 0",
+						ErrNoWaitOperationMustBeSelfContained)
+				}
+
 				_, exists := kmap[sha256.Sum256(x.ZAdd.Key)]
 
-				if !exists || x.ZAdd.AtTx > 0 {
-					// check referenced key exists and it's not a reference
-					refEntry, err := d.getAt(EncodeKey(x.ZAdd.Key), x.ZAdd.AtTx, 0, index, tx)
-					if err != nil {
-						return nil, err
-					}
-					if refEntry.ReferencedBy != nil {
-						return nil, ErrReferencedKeyCannotBeAReference
+				if req.NoWait && !exists {
+					return nil, fmt.Errorf(
+						"%w: can not create a reference into a set for a key that was not set in the same transaction",
+						ErrNoWaitOperationMustBeSelfContained)
+				}
+
+				if !req.NoWait {
+					if !exists || x.ZAdd.AtTx > 0 {
+						// check referenced key exists and it's not a reference
+						refEntry, err := d.getAt(EncodeKey(x.ZAdd.Key), x.ZAdd.AtTx, 0, index, tx)
+						if err != nil {
+							return nil, err
+						}
+						if refEntry.ReferencedBy != nil {
+							return nil, ErrReferencedKeyCannotBeAReference
+						}
 					}
 				}
 
+				// zAdd arguments are converted in regular key value items and then atomically inserted
 				key := EncodeKey(x.ZAdd.Key)
 
 				if x.ZAdd.BoundRef && x.ZAdd.AtTx == 0 {
