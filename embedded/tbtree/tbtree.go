@@ -34,6 +34,8 @@ import (
 	"github.com/codenotary/immudb/embedded/cache"
 	"github.com/codenotary/immudb/embedded/multierr"
 	"github.com/codenotary/immudb/pkg/logger"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 var ErrIllegalArguments = errors.New("illegal arguments")
@@ -478,26 +480,54 @@ func (t *TBtree) cachePut(n node) {
 	t.nmutex.Lock()
 	defer t.nmutex.Unlock()
 
-	t.cache.Put(n.offset(), n)
+	r, _, _ := t.cache.Put(n.offset(), n)
+	if r != nil {
+		metricsCacheEvict.WithLabelValues(t.path).Inc()
+	}
 }
+
+var metricsCacheSizeStats = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "immudb_btree_cache_size",
+}, []string{"id"})
+
+var metricsCacheHit = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "immudb_btree_cache_hit",
+}, []string{"id"})
+
+var metricsCacheMiss = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "immudb_btree_cache_miss",
+}, []string{"id"})
+
+var metricsCacheEvict = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "immudb_btree_cache_evict",
+}, []string{"id"})
 
 func (t *TBtree) nodeAt(offset int64) (node, error) {
 	t.nmutex.Lock()
 	defer t.nmutex.Unlock()
 
+	size := t.cache.EntriesCount()
+	metricsCacheSizeStats.WithLabelValues(t.path).Set(float64(size))
+
 	v, err := t.cache.Get(offset)
 	if err == nil {
+		metricsCacheHit.WithLabelValues(t.path).Inc()
 		return v.(node), nil
 	}
 
 	if err == cache.ErrKeyNotFound {
+		metricsCacheMiss.WithLabelValues(t.path).Inc()
+
 		n, err := t.readNodeAt(offset)
 
 		if err != nil {
 			return nil, err
 		}
 
-		t.cache.Put(n.offset(), n)
+		r, _, _ := t.cache.Put(n.offset(), n)
+		if r != nil {
+			metricsCacheEvict.WithLabelValues(t.path).Inc()
+		}
 
 		return n, nil
 	}
@@ -1450,12 +1480,27 @@ func (n *innerNode) maxKey() []byte {
 }
 
 func (n *innerNode) indexOf(key []byte) int {
-	for i := 0; i < len(n.nodes); i++ {
-		if bytes.Compare(key, n.nodes[i].maxKey()) < 1 {
-			return i
+	left := 0
+	right := len(n.nodes) - 1
+
+	var middle int
+	var diff int
+
+	for left < right {
+		middle = left + (right-left)/2
+
+		diff = bytes.Compare(n.nodes[middle].maxKey(), key)
+
+		if diff == 0 {
+			return middle
+		} else if diff < 0 {
+			left = middle + 1
+		} else {
+			right = middle
 		}
 	}
-	return len(n.nodes) - 1
+
+	return left
 }
 
 func (n *innerNode) split() (node, error) {
@@ -1851,17 +1896,27 @@ func (l *leafNode) findLeafNode(keyPrefix []byte, path path, neqKey []byte, desc
 }
 
 func (l *leafNode) indexOf(key []byte) (index int, found bool) {
-	for i := 0; i < len(l.values); i++ {
-		if bytes.Equal(l.values[i].key, key) {
-			return i, true
-		}
+	left := 0
+	right := len(l.values)
 
-		if bytes.Compare(l.values[i].key, key) == 1 {
-			return i, false
+	var middle int
+	var diff int
+
+	for left < right {
+		middle = left + (right-left)/2
+
+		diff = bytes.Compare(l.values[middle].key, key)
+
+		if diff == 0 {
+			return middle, true
+		} else if diff < 0 {
+			left = middle + 1
+		} else {
+			right = middle
 		}
 	}
 
-	return len(l.values), false
+	return left, false
 }
 
 func (l *leafNode) minKey() []byte {
