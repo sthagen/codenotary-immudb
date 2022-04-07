@@ -70,11 +70,19 @@ var ErrOffsetOutOfRange = tbtree.ErrOffsetOutOfRange
 var ErrUnexpectedError = errors.New("unexpected error")
 var ErrUnsupportedTxVersion = errors.New("unsupported tx version")
 var ErrNewerVersionOrCorruptedData = errors.New("tx created with a newer version or data is corrupted")
+var ErrInvalidOptions = errors.New("invalid options")
 
 var ErrSourceTxNewerThanTargetTx = errors.New("source tx is newer than target tx")
 var ErrLinearProofMaxLenExceeded = errors.New("max linear proof length limit exceeded")
 
 var ErrCompactionUnsupported = errors.New("compaction is unsupported when remote storage is used")
+
+var ErrMetadataUnsupported = errors.New(
+	"metadata is unsupported when in 1.1 compatibility mode, " +
+		"do not use metadata-related features such as expiration and logical deletion",
+)
+
+var ErrUnsupportedTxHeaderVersion = errors.New("missing tx header serialization method")
 
 const MaxKeyLen = 1024 // assumed to be not lower than hash size
 const MaxParallelIO = 127
@@ -88,7 +96,7 @@ const sszSize = 2
 const offsetSize = 8
 
 const Version = 1
-const TxHeaderVersion = 1
+const MaxTxHeaderVersion = 1
 
 const (
 	metaVersion      = "VERSION"
@@ -133,6 +141,8 @@ type ImmuStore struct {
 
 	maxTxSize int
 
+	writeTxHeaderVersion int
+
 	timeFunc TimeFunc
 
 	_txs     *list.List // pre-allocated txs
@@ -164,8 +174,9 @@ type refVLog struct {
 }
 
 func Open(path string, opts *Options) (*ImmuStore, error) {
-	if !validOptions(opts) {
-		return nil, ErrIllegalArguments
+	err := opts.Validate()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrIllegalArguments, err)
 	}
 
 	finfo, err := os.Stat(path)
@@ -239,8 +250,13 @@ func Open(path string, opts *Options) (*ImmuStore, error) {
 }
 
 func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable.Appendable, opts *Options) (*ImmuStore, error) {
-	if !validOptions(opts) || len(vLogs) == 0 || txLog == nil || cLog == nil {
+	if len(vLogs) == 0 || txLog == nil || cLog == nil {
 		return nil, ErrIllegalArguments
+	}
+
+	err := opts.Validate()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrIllegalArguments, err)
 	}
 
 	metadata := appendable.NewMetadata(cLog.Metadata())
@@ -400,6 +416,8 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 
 		maxTxSize: maxTxSize,
 
+		writeTxHeaderVersion: opts.WriteTxHeaderVersion,
+
 		timeFunc: opts.TimeFunc,
 
 		aht:      aht,
@@ -424,11 +442,16 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		WithFileMode(opts.FileMode).
 		WithLog(opts.log).
 		WithFileSize(fileSize).
-		WithSynced(opts.Synced). // built from derived data, but temporarily modified to reduce chances of data inconsistencies until a better solution is implemented
 		WithCacheSize(opts.IndexOpts.CacheSize).
 		WithFlushThld(opts.IndexOpts.FlushThld).
+		WithSyncThld(opts.IndexOpts.SyncThld).
+		WithFlushBufferSize(opts.IndexOpts.FlushBufferSize).
+		WithCleanupPercentage(opts.IndexOpts.CleanupPercentage).
 		WithMaxActiveSnapshots(opts.IndexOpts.MaxActiveSnapshots).
 		WithMaxNodeSize(opts.IndexOpts.MaxNodeSize).
+		WithNodesLogMaxOpenedFiles(opts.IndexOpts.NodesLogMaxOpenedFiles).
+		WithHistoryLogMaxOpenedFiles(opts.IndexOpts.HistoryLogMaxOpenedFiles).
+		WithCommitLogMaxOpenedFiles(opts.IndexOpts.CommitLogMaxOpenedFiles).
 		WithRenewSnapRootAfter(opts.IndexOpts.RenewSnapRootAfter).
 		WithCompactionThld(opts.IndexOpts.CompactionThld).
 		WithDelayDuringCompaction(opts.IndexOpts.DelayDuringCompaction)
@@ -688,6 +711,10 @@ func (s *ImmuStore) CompactIndex() error {
 	return s.indexer.CompactIndex()
 }
 
+func (s *ImmuStore) FlushIndex(cleanupPercentage float32, synced bool) error {
+	return s.indexer.FlushIndex(cleanupPercentage, synced)
+}
+
 func maxTxSize(maxTxEntries, maxKeyLen, maxTxMetadataLen, maxKVMetadataLen int) int {
 	return txIDSize /*txID*/ +
 		tsSize /*ts*/ +
@@ -886,7 +913,7 @@ func (s *ImmuStore) commit(otx *OngoingTx, expectedHeader *TxHeader, waitForInde
 	if expectedHeader == nil {
 		ts = s.timeFunc().Unix()
 		blTxID = s.aht.Size()
-		version = TxHeaderVersion
+		version = s.writeTxHeaderVersion
 	} else {
 		ts = expectedHeader.Ts
 		blTxID = expectedHeader.BlTxID
@@ -1255,7 +1282,7 @@ func (s *ImmuStore) commitWith(callback func(txID uint64, index KeyIndex) ([]*En
 	}
 	defer s.releaseAllocTx(tx)
 
-	tx.header.Version = TxHeaderVersion
+	tx.header.Version = s.writeTxHeaderVersion
 	tx.header.NEntries = len(entries)
 
 	for i, e := range entries {
@@ -1328,7 +1355,7 @@ func (s *ImmuStore) DualProof(sourceTx, targetTx *Tx) (proof *DualProof, err err
 	}
 
 	if sourceTx.header.BlTxID > targetTx.header.BlTxID {
-		return nil, ErrorCorruptedTxData
+		return nil, fmt.Errorf("%w: binary linking mismatch at tx %d", ErrorCorruptedTxData, sourceTx.header.ID)
 	}
 
 	if sourceTx.header.BlTxID > 0 {
@@ -1487,7 +1514,10 @@ func (s *ImmuStore) ExportTx(txID uint64, tx *Tx) ([]byte, error) {
 
 	var buf bytes.Buffer
 
-	hdrBs := tx.Header().Bytes()
+	hdrBs, err := tx.Header().Bytes()
+	if err != nil {
+		return nil, err
+	}
 
 	var b [lszSize]byte
 	binary.BigEndian.PutUint32(b[:], uint32(len(hdrBs)))
@@ -1673,7 +1703,7 @@ func (s *ImmuStore) ReadTx(txID uint64, tx *Tx) error {
 
 	err = tx.readFrom(r)
 	if err == io.EOF {
-		return ErrorCorruptedTxData
+		return fmt.Errorf("%w: unexpected EOF while reading tx %d", ErrorCorruptedTxData, txID)
 	}
 
 	return err

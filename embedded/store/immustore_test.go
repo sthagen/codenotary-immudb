@@ -218,21 +218,24 @@ func TestImmudbStoreOnClosedStore(t *testing.T) {
 	require.NoError(t, err)
 
 	err = immuStore.Close()
-	require.Equal(t, ErrAlreadyClosed, err)
+	require.ErrorIs(t, err, ErrAlreadyClosed)
 
 	err = immuStore.Sync()
-	require.Equal(t, ErrAlreadyClosed, err)
+	require.ErrorIs(t, err, ErrAlreadyClosed)
+
+	err = immuStore.FlushIndex(100, true)
+	require.ErrorIs(t, err, ErrAlreadyClosed)
 
 	_, err = immuStore.commit(&OngoingTx{entries: []*EntrySpec{
 		{Key: []byte("key1")},
 	}}, nil, false)
-	require.Equal(t, ErrAlreadyClosed, err)
+	require.ErrorIs(t, err, ErrAlreadyClosed)
 
 	err = immuStore.ReadTx(1, nil)
-	require.Equal(t, ErrAlreadyClosed, err)
+	require.ErrorIs(t, err, ErrAlreadyClosed)
 
 	_, err = immuStore.NewTxReader(1, false, nil)
-	require.Equal(t, ErrAlreadyClosed, err)
+	require.ErrorIs(t, err, ErrAlreadyClosed)
 }
 
 func TestImmudbStoreSettings(t *testing.T) {
@@ -254,15 +257,15 @@ func TestImmudbStoreEdgeCases(t *testing.T) {
 	defer os.RemoveAll("edge_cases")
 
 	_, err := Open("edge_cases", nil)
-	require.Equal(t, ErrIllegalArguments, err)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 
 	_, err = OpenWith("edge_cases", nil, nil, nil, nil)
-	require.Equal(t, ErrIllegalArguments, err)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 
 	opts := DefaultOptions().WithMaxConcurrency(1)
 
 	_, err = OpenWith("edge_cases", nil, nil, nil, opts)
-	require.Equal(t, ErrIllegalArguments, err)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 
 	_, err = Open("invalid\x00_dir_name", DefaultOptions())
 	require.EqualError(t, err, "stat invalid\x00_dir_name: invalid argument")
@@ -462,44 +465,81 @@ func TestImmudbStoreEdgeCases(t *testing.T) {
 	vLog.CloseFn = func() error { return nil }
 	txLog.CloseFn = func() error { return nil }
 	cLog.CloseFn = func() error { return nil }
+
 	_, err = OpenWith("edge_cases", vLogs, txLog, cLog,
 		optsCopy.WithAppFactory(func(rootPath, subPath string, opts *multiapp.Options) (appendable.Appendable, error) {
+			nLog := &mocked.MockedAppendable{
+				ReadAtFn: func(bs []byte, off int64) (int, error) {
+					buff := []byte{
+						tbtree.LeafNodeType,
+						0, 1, // One node
+						0, 1, // Key size
+						'k',  // key
+						0, 1, // Value size
+						'v',                    // value
+						0, 0, 0, 0, 0, 0, 0, 1, // Timestamp
+						0, 0, 0, 0, 0, 0, 0, 0, // hOffs
+						0, 0, 0, 0, 0, 0, 0, 0, // hSize
+					}
+					require.Less(t, off, int64(len(buff)))
+					return copy(bs, buff[off:]), nil
+				},
+				SyncFn:  func() error { return nil },
+				CloseFn: func() error { return nil },
+			}
+
+			hLog := &mocked.MockedAppendable{
+				SetOffsetFn: func(off int64) error { return nil },
+				SizeFn: func() (int64, error) {
+					return 0, nil
+				},
+				SyncFn:  func() error { return nil },
+				CloseFn: func() error { return nil },
+			}
+
 			switch subPath {
 			case "index/nodes":
-				return &mocked.MockedAppendable{
-					ReadAtFn: func(bs []byte, off int64) (int, error) {
-						buff := []byte{
-							tbtree.LeafNodeType,
-							0, 0, 0, 0,
-							0, 0, 0, 1, // One node
-							0, 0, 0, 1, // Key size
-							'k',        // key
-							0, 0, 0, 1, // Value size
-							'v',                    // value
-							0, 0, 0, 0, 0, 0, 0, 1, // Timestamp
-							0, 0, 0, 0, 0, 0, 0, 0, // hOffs
-							0, 0, 0, 0, 0, 0, 0, 0, // hSize
-						}
-						require.Less(t, off, int64(len(buff)))
-						return copy(bs, buff[off:]), nil
-					},
-					CloseFn: func() error { return nil },
-				}, nil
+				return nLog, nil
+			case "index/history":
+				return hLog, nil
 			case "index/commit":
 				return &mocked.MockedAppendable{
 					SizeFn: func() (int64, error) {
 						// One clog entry
-						return 8, nil
+						return 100, nil
+					},
+					AppendFn: func(bs []byte) (off int64, n int, err error) {
+						return 0, 0, nil
 					},
 					ReadAtFn: func(bs []byte, off int64) (int, error) {
-						buff := []byte{0, 0, 0, 0, 0, 0, 0, 0}
+						buff := [20 + 32 + 16 + 32]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 0, 0, 0, 33}
+						nLogChecksum, err := appendable.Checksum(nLog, 0, 33)
+						if err != nil {
+							return 0, err
+						}
+						copy(buff[20:], nLogChecksum[:])
+
+						hLogChecksum, err := appendable.Checksum(hLog, 0, 0)
+						if err != nil {
+							return 0, err
+						}
+						copy(buff[20+32+16:], hLogChecksum[:])
+
 						require.Less(t, off, int64(len(buff)))
 						return copy(bs, buff[off:]), nil
 					},
 					MetadataFn: func() []byte {
 						md := appendable.NewMetadata(nil)
+						md.PutInt(tbtree.MetaVersion, tbtree.Version)
 						md.PutInt(tbtree.MetaMaxNodeSize, tbtree.DefaultMaxNodeSize)
 						return md.Bytes()
+					},
+					SetOffsetFn: func(off int64) error { return nil },
+					FlushFn: func() error {
+						return nil
+					},
+					SyncFn: func() error {
+						return nil
 					},
 					CloseFn: func() error { return nil },
 				}, nil
@@ -573,10 +613,10 @@ func TestImmudbStoreEdgeCases(t *testing.T) {
 	immuStore.releaseAllocTx(tx1)
 
 	_, err = immuStore.NewTxReader(1, false, nil)
-	require.Equal(t, ErrIllegalArguments, err)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 
 	_, err = immuStore.DualProof(nil, nil)
-	require.Equal(t, ErrIllegalArguments, err)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 
 	sourceTx := newTx(1, 1)
 	sourceTx.header.ID = 2
@@ -635,7 +675,7 @@ func TestImmudbTxOffsetAndSize(t *testing.T) {
 	defer immuStore.mutex.Unlock()
 
 	_, _, err = immuStore.txOffsetAndSize(0)
-	require.Equal(t, ErrIllegalArguments, err)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 }
 
 func TestImmudbStoreIndexing(t *testing.T) {
@@ -762,6 +802,12 @@ func TestImmudbStoreIndexing(t *testing.T) {
 	}
 
 	wg.Wait()
+
+	err = immuStore.FlushIndex(-10, true)
+	require.ErrorIs(t, err, tbtree.ErrIllegalArguments)
+
+	err = immuStore.FlushIndex(100, true)
+	require.NoError(t, err)
 
 	t.Run("latest set value should be committed", func(t *testing.T) {
 		tx, err := immuStore.NewWriteOnlyTx()
@@ -1053,7 +1099,7 @@ func TestImmudbStoreRWTransactions(t *testing.T) {
 	})
 
 	t.Run("non-expired keys should be reachable", func(t *testing.T) {
-		nearFuture := time.Now().Add(1 * time.Second)
+		nearFuture := time.Now().Add(2 * time.Second)
 
 		tx, err := immuStore.NewTx()
 		require.NoError(t, err)
@@ -1076,7 +1122,7 @@ func TestImmudbStoreRWTransactions(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, []byte("expirableValue"), val)
 
-		time.Sleep(1 * time.Second)
+		time.Sleep(2 * time.Second)
 
 		// already expired
 		_, err = immuStore.Get([]byte("expirableKey"))
@@ -1182,6 +1228,73 @@ func TestImmudbStoreKVMetadata(t *testing.T) {
 	require.Equal(t, []byte{1, 1, 1}, v)
 }
 
+func TestImmudbStoreNonIndexableEntries(t *testing.T) {
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
+	immuStore, _ := Open("data_kv_metadata_non_indexable", opts)
+	defer os.RemoveAll("data_kv_metadata_non_indexable")
+
+	tx, err := immuStore.NewTx()
+	require.NoError(t, err)
+	require.NotNil(t, tx)
+
+	md := NewKVMetadata()
+	err = md.AsNonIndexable(true)
+	require.NoError(t, err)
+
+	err = tx.Set([]byte("nonIndexedKey"), md, []byte("nonIndexedValue"))
+	require.NoError(t, err)
+
+	err = tx.Set([]byte("indexedKey"), nil, []byte("indexedValue"))
+	require.NoError(t, err)
+
+	_, err = tx.Commit()
+	require.NoError(t, err)
+
+	_, err = immuStore.Get([]byte("nonIndexedKey"))
+	require.ErrorIs(t, err, ErrKeyNotFound)
+
+	valRef, err := immuStore.Get([]byte("indexedKey"))
+	require.NoError(t, err)
+	require.NotNil(t, valRef)
+
+	val, err := valRef.Resolve()
+	require.NoError(t, err)
+	require.Equal(t, []byte("indexedValue"), val)
+
+	// commit tx with all non-indexable entries
+	tx, err = immuStore.NewTx()
+	require.NoError(t, err)
+	require.NotNil(t, tx)
+
+	err = tx.Set([]byte("nonIndexedKey1"), md, []byte("nonIndexedValue1"))
+	require.NoError(t, err)
+
+	_, err = tx.Commit()
+	require.NoError(t, err)
+
+	_, err = immuStore.Get([]byte("nonIndexedKey1"))
+	require.ErrorIs(t, err, ErrKeyNotFound)
+
+	// commit simple tx with an indexable entry
+	tx, err = immuStore.NewTx()
+	require.NoError(t, err)
+	require.NotNil(t, tx)
+
+	err = tx.Set([]byte("indexedKey1"), nil, []byte("indexedValue1"))
+	require.NoError(t, err)
+
+	_, err = tx.Commit()
+	require.NoError(t, err)
+
+	valRef, err = immuStore.Get([]byte("indexedKey1"))
+	require.NoError(t, err)
+	require.NotNil(t, valRef)
+
+	val, err = valRef.Resolve()
+	require.NoError(t, err)
+	require.Equal(t, []byte("indexedValue1"), val)
+}
+
 func TestImmudbStoreCommitWith(t *testing.T) {
 	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
 	immuStore, err := Open("data_commit_with", opts)
@@ -1192,7 +1305,7 @@ func TestImmudbStoreCommitWith(t *testing.T) {
 	defer immuStore.Close()
 
 	_, err = immuStore.CommitWith(nil, false)
-	require.Equal(t, ErrIllegalArguments, err)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 
 	callback := func(txID uint64, index KeyIndex) ([]*EntrySpec, error) {
 		return nil, nil
@@ -1270,7 +1383,7 @@ func TestImmudbStoreHistoricalValues(t *testing.T) {
 	require.NoError(t, err)
 
 	err = immuStore.CompactIndex()
-	require.Equal(t, tbtree.ErrCompactionThresholdNotReached, err)
+	require.ErrorIs(t, err, tbtree.ErrCompactionThresholdNotReached)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -1393,7 +1506,7 @@ func TestImmudbStoreInclusionProof(t *testing.T) {
 			{Key: []byte(fmt.Sprintf("keyInsertedAtTx%d", txID)), Value: nil},
 		}, nil
 	}, false)
-	require.Equal(t, ErrAlreadyClosed, err)
+	require.ErrorIs(t, err, ErrAlreadyClosed)
 
 	immuStore, err = Open("data_inclusion_proof", opts)
 	require.NoError(t, err)
@@ -2041,7 +2154,7 @@ func TestExportAndReplicateTx(t *testing.T) {
 	require.Equal(t, hdr.Alh(), rhdr.Alh())
 
 	_, err = replicaStore.ReplicateTx(nil, false)
-	require.Equal(t, ErrIllegalArguments, err)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 }
 
 var errEmulatedAppendableError = errors.New("emulated appendable error")

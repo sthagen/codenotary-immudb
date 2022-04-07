@@ -27,19 +27,23 @@ func TxToProto(tx *store.Tx) *Tx {
 	entries := make([]*TxEntry, len(tx.Entries()))
 
 	for i, e := range tx.Entries() {
-		hValue := e.HVal()
-
-		entries[i] = &TxEntry{
-			Key:      e.Key(),
-			Metadata: KVMetadataToProto(e.Metadata()),
-			HValue:   hValue[:],
-			VLen:     int32(e.VLen()),
-		}
+		entries[i] = TxEntryToProto(e)
 	}
 
 	return &Tx{
 		Header:  TxHeaderToProto(tx.Header()),
 		Entries: entries,
+	}
+}
+
+func TxEntryToProto(e *store.TxEntry) *TxEntry {
+	hValue := e.HVal()
+
+	return &TxEntry{
+		Key:      e.Key(),
+		Metadata: KVMetadataToProto(e.Metadata()),
+		HValue:   hValue[:],
+		VLen:     int32(e.VLen()),
 	}
 }
 
@@ -49,7 +53,8 @@ func KVMetadataToProto(md *store.KVMetadata) *KVMetadata {
 	}
 
 	kvmd := &KVMetadata{
-		Deleted: md.Deleted(),
+		Deleted:      md.Deleted(),
+		NonIndexable: md.NonIndexable(),
 	}
 
 	if md.IsExpirable() {
@@ -96,6 +101,8 @@ func KVMetadataFromProto(md *KVMetadata) *store.KVMetadata {
 	if md.Expiration != nil {
 		kvmd.ExpiresAt(time.Unix(md.Expiration.ExpiresAt, 0))
 	}
+
+	kvmd.AsNonIndexable(md.NonIndexable)
 
 	return kvmd
 }

@@ -18,6 +18,9 @@ package integration
 
 import (
 	"context"
+	"os"
+	"testing"
+
 	"github.com/codenotary/immudb/pkg/api/schema"
 	ic "github.com/codenotary/immudb/pkg/client"
 	"github.com/codenotary/immudb/pkg/client/errors"
@@ -25,8 +28,6 @@ import (
 	"github.com/codenotary/immudb/pkg/server/servertest"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
-	"os"
-	"testing"
 )
 
 func TestTransaction_SetAndGet(t *testing.T) {

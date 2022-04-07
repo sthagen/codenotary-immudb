@@ -595,6 +595,7 @@ func TestImmuClientDisconnect(t *testing.T) {
 	require.True(t, errors.Is(client.UpdateAuthConfig(ctx, auth.KindPassword), ic.ErrNotConnected))
 	require.True(t, errors.Is(client.UpdateMTLSConfig(ctx, false), ic.ErrNotConnected))
 	require.True(t, errors.Is(client.CompactIndex(ctx, &emptypb.Empty{}), ic.ErrNotConnected))
+	require.True(t, errors.Is(client.FlushIndex(ctx, 100, true), ic.ErrNotConnected))
 
 	_, err = client.Login(context.TODO(), []byte("user"), []byte("passwd"))
 	require.True(t, errors.Is(err.(immuErrors.ImmuError), ic.ErrNotConnected))
@@ -937,21 +938,24 @@ func TestImmuClient_SetAll(t *testing.T) {
 
 	setRequest = &schema.SetRequest{KVs: []*schema.KeyValue{
 		{Key: []byte("1,2,3"), Value: []byte("3,2,1")},
-		{Key: []byte("4,5,6"), Value: []byte("6,5,4")},
+		{Key: []byte("4,5,6"), Value: []byte("6,5,4"), Metadata: &schema.KVMetadata{NonIndexable: true}},
 	}}
 
 	_, err = client.SetAll(ctx, setRequest)
 	require.NoError(t, err)
-
-	time.Sleep(1 * time.Millisecond)
 
 	err = client.CompactIndex(ctx, &emptypb.Empty{})
 	require.NoError(t, err)
 
 	for _, kv := range setRequest.KVs {
 		i, err := client.Get(ctx, kv.Key)
-		require.NoError(t, err)
-		require.Equal(t, kv.Value, i.GetValue())
+
+		if kv.Metadata != nil && kv.Metadata.NonIndexable {
+			require.Contains(t, err.Error(), "key not found")
+		} else {
+			require.NoError(t, err)
+			require.Equal(t, kv.Value, i.GetValue())
+		}
 	}
 
 	err = client.Disconnect()
@@ -987,7 +991,13 @@ func TestImmuClient_GetAll(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries.Entries, 1)
 
+	err = client.FlushIndex(ctx, 10, true)
+	require.NoError(t, err)
+
 	_, err = client.VerifiedSet(ctx, []byte(`bbb`), []byte(`val`))
+	require.NoError(t, err)
+
+	err = client.FlushIndex(ctx, 10, true)
 	require.NoError(t, err)
 
 	entries, err = client.GetAll(ctx, [][]byte{[]byte(`aaa`), []byte(`bbb`)})
@@ -1282,12 +1292,18 @@ func TestImmuClient_CurrentRoot(t *testing.T) {
 	md := metadata.Pairs("authorization", lr.Token)
 	ctx := metadata.NewOutgoingContext(context.Background(), md)
 
-	_, _ = client.VerifiedSet(ctx, []byte(`key1`), []byte(`val1`))
+	_, err = client.VerifiedSet(ctx, []byte(`key1`), []byte(`val1`))
+	require.NoError(t, err)
 
 	r, err := client.CurrentState(ctx)
-
+	require.NoError(t, err)
 	require.IsType(t, &schema.ImmutableState{}, r)
-	require.Nil(t, err)
+
+	healthRes, err := client.Health(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, healthRes)
+	require.Equal(t, uint32(0x0), healthRes.PendingRequests)
+
 	client.Disconnect()
 }
 

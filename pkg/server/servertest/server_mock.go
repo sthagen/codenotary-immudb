@@ -105,7 +105,7 @@ func (s *ServerMock) StreamHistory(request *schema.HistoryRequest, historyServer
 	return s.Srv.StreamHistory(request, historyServer)
 }
 
-func (s *ServerMock) ExportTx(req *schema.TxRequest, txsServer schema.ImmuService_ExportTxServer) error {
+func (s *ServerMock) ExportTx(req *schema.ExportTxRequest, txsServer schema.ImmuService_ExportTxServer) error {
 	return s.Srv.ExportTx(req, txsServer)
 }
 
@@ -268,6 +268,10 @@ func (s *ServerMock) CreateDatabaseWith(ctx context.Context, req *schema.Databas
 	return s.Srv.CreateDatabaseWith(ctx, req)
 }
 
+func (s *ServerMock) CreateDatabaseV2(ctx context.Context, req *schema.CreateDatabaseRequest) (*schema.CreateDatabaseResponse, error) {
+	return s.Srv.CreateDatabaseV2(ctx, req)
+}
+
 func (s *ServerMock) DatabaseList(ctx context.Context, req *empty.Empty) (*schema.DatabaseListResponse, error) {
 	return s.Srv.DatabaseList(ctx, req)
 }
@@ -276,8 +280,28 @@ func (s *ServerMock) UseDatabase(ctx context.Context, req *schema.Database) (*sc
 	return s.Srv.UseDatabase(ctx, req)
 }
 
+func (s *ServerMock) DatabaseHealth(ctx context.Context, req *empty.Empty) (*schema.DatabaseHealthResponse, error) {
+	return s.Srv.DatabaseHealth(ctx, req)
+}
+
 func (s *ServerMock) UpdateDatabase(ctx context.Context, req *schema.DatabaseSettings) (*empty.Empty, error) {
 	return s.Srv.UpdateDatabase(ctx, req)
+}
+
+func (s *ServerMock) UpdateDatabaseV2(ctx context.Context, req *schema.UpdateDatabaseRequest) (*schema.UpdateDatabaseResponse, error) {
+	return s.Srv.UpdateDatabaseV2(ctx, req)
+}
+
+func (s *ServerMock) GetDatabaseSettings(ctx context.Context, req *empty.Empty) (*schema.DatabaseSettings, error) {
+	return s.Srv.GetDatabaseSettings(ctx, req)
+}
+
+func (s *ServerMock) GetDatabaseSettingsV2(ctx context.Context, req *schema.DatabaseSettingsRequest) (*schema.DatabaseSettingsResponse, error) {
+	return s.Srv.GetDatabaseSettingsV2(ctx, req)
+}
+
+func (s *ServerMock) FlushIndex(ctx context.Context, req *schema.FlushIndexRequest) (*schema.FlushIndexResponse, error) {
+	return s.Srv.FlushIndex(ctx, req)
 }
 
 func (s *ServerMock) CompactIndex(ctx context.Context, req *empty.Empty) (*empty.Empty, error) {

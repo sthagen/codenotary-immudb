@@ -214,22 +214,42 @@ func (idx *indexer) CompactIndex() (err error) {
 	idx.compactionMutex.Lock()
 	defer idx.compactionMutex.Unlock()
 
-	idx.store.notify(Info, true, "Compacting index '%s'...", idx.store.path)
+	idx.store.log.Infof("Compacting index '%s'...", idx.store.path)
 
 	defer func() {
 		if err == nil {
-			idx.store.notify(Info, true, "Index '%s' sucessfully compacted", idx.store.path)
+			idx.store.log.Infof("Index '%s' sucessfully compacted", idx.store.path)
+		} else if err == tbtree.ErrCompactionThresholdNotReached {
+			idx.store.log.Infof("Compaction of index '%s' not needed: %v", idx.store.path, err)
 		} else {
-			idx.store.notify(Info, true, "Compaction of index '%s' returned: %v", idx.store.path, err)
+			idx.store.log.Warningf("%v: while compacting index '%s'", err, idx.store.path)
 		}
 	}()
 
 	_, err = idx.index.Compact()
+	if err == tbtree.ErrAlreadyClosed {
+		return ErrAlreadyClosed
+	}
 	if err != nil {
 		return err
 	}
 
 	return idx.restartIndex()
+}
+
+func (idx *indexer) FlushIndex(cleanupPercentage float32, synced bool) (err error) {
+	idx.compactionMutex.Lock()
+	defer idx.compactionMutex.Unlock()
+
+	_, _, err = idx.index.FlushWith(cleanupPercentage, synced)
+	if err == tbtree.ErrAlreadyClosed {
+		return ErrAlreadyClosed
+	}
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (idx *indexer) stop() {
@@ -311,7 +331,7 @@ func (idx *indexer) doIndexing(cancellation <-chan struct{}) {
 			return
 		}
 		if err != nil {
-			idx.store.notify(Error, true, "Indexing failed at '%s' due to error: %v", idx.store.path, err)
+			idx.store.log.Errorf("Indexing failed at '%s' due to error: %v", idx.store.path, err)
 			time.Sleep(60 * time.Second)
 		}
 
@@ -334,87 +354,91 @@ func (idx *indexer) doIndexing(cancellation <-chan struct{}) {
 		}
 		idx.stateCond.L.Unlock()
 
-		err = idx.indexSince(lastIndexedTx+1, 10)
+		err = idx.indexTX(lastIndexedTx + 1)
 		if err == ErrAlreadyClosed || err == tbtree.ErrAlreadyClosed {
 			return
 		}
 		if err != nil {
-			idx.store.notify(Error, true, "Indexing failed at '%s' due to error: %v", idx.store.path, err)
+			idx.store.log.Errorf("Indexing failed at '%s' due to error: %v", idx.store.path, err)
 			time.Sleep(60 * time.Second)
 		}
 	}
 }
 
-func (idx *indexer) indexSince(txID uint64, limit int) error {
-	txReader, err := idx.store.newTxReader(txID, false, idx.tx)
+func (idx *indexer) indexTX(txID uint64) error {
+	err := idx.store.ReadTx(txID, idx.tx)
 	if err != nil {
 		return err
 	}
 
-	for i := 0; i < limit; i++ {
-		tx, err := txReader.Read()
-		if err == ErrNoMoreEntries {
-			break
-		}
-		if err != nil {
-			return err
-		}
+	txEntries := idx.tx.Entries()
 
-		txEntries := tx.Entries()
+	var txmd []byte
 
-		var txmd []byte
-
-		if tx.header.Metadata != nil {
-			txmd = tx.header.Metadata.Bytes()
-		}
-
-		txmdLen := len(txmd)
-
-		for i, e := range txEntries {
-			// vLen + vOff + vHash + txmdLen + txmd + kvmdLen + kvmd
-			var b [lszSize + offsetSize + sha256.Size + sszSize + maxTxMetadataLen + sszSize + maxKVMetadataLen]byte
-			o := 0
-
-			binary.BigEndian.PutUint32(b[o:], uint32(e.vLen))
-			o += lszSize
-
-			binary.BigEndian.PutUint64(b[o:], uint64(e.vOff))
-			o += offsetSize
-
-			copy(b[o:], e.hVal[:])
-			o += sha256.Size
-
-			binary.BigEndian.PutUint16(b[o:], uint16(txmdLen))
-			o += sszSize
-
-			copy(b[o:], txmd)
-			o += txmdLen
-
-			var kvmd []byte
-
-			if e.md != nil {
-				kvmd = e.md.Bytes()
-			}
-
-			kvmdLen := len(kvmd)
-
-			binary.BigEndian.PutUint16(b[o:], uint16(kvmdLen))
-			o += sszSize
-
-			copy(b[o:], kvmd)
-			o += kvmdLen
-
-			idx.store._kvs[i].K = e.key()
-			idx.store._kvs[i].V = b[:o]
-		}
-
-		err = idx.index.BulkInsert(idx.store._kvs[:len(txEntries)])
-		if err != nil {
-			return err
-		}
-
-		idx.metricsLastIndexedTrx.Set(float64(txID + uint64(i)))
+	if idx.tx.header.Metadata != nil {
+		txmd = idx.tx.header.Metadata.Bytes()
 	}
+
+	txmdLen := len(txmd)
+
+	indexableEntries := 0
+
+	now := time.Now()
+
+	for _, e := range txEntries {
+		if e.md != nil && (e.md.NonIndexable() || e.md.ExpiredAt(now)) {
+			continue
+		}
+
+		// vLen + vOff + vHash + txmdLen + txmd + kvmdLen + kvmd
+		var b [lszSize + offsetSize + sha256.Size + sszSize + maxTxMetadataLen + sszSize + maxKVMetadataLen]byte
+		o := 0
+
+		binary.BigEndian.PutUint32(b[o:], uint32(e.vLen))
+		o += lszSize
+
+		binary.BigEndian.PutUint64(b[o:], uint64(e.vOff))
+		o += offsetSize
+
+		copy(b[o:], e.hVal[:])
+		o += sha256.Size
+
+		binary.BigEndian.PutUint16(b[o:], uint16(txmdLen))
+		o += sszSize
+
+		copy(b[o:], txmd)
+		o += txmdLen
+
+		var kvmd []byte
+
+		if e.md != nil {
+			kvmd = e.md.Bytes()
+		}
+
+		kvmdLen := len(kvmd)
+
+		binary.BigEndian.PutUint16(b[o:], uint16(kvmdLen))
+		o += sszSize
+
+		copy(b[o:], kvmd)
+		o += kvmdLen
+
+		idx.store._kvs[indexableEntries].K = e.key()
+		idx.store._kvs[indexableEntries].V = b[:o]
+
+		indexableEntries++
+	}
+
+	if indexableEntries == 0 {
+		err = idx.index.IncreaseTs(txID)
+	} else {
+		err = idx.index.BulkInsert(idx.store._kvs[:indexableEntries])
+	}
+	if err != nil {
+		return err
+	}
+
+	idx.metricsLastIndexedTrx.Set(float64(txID))
 
 	return nil
 }

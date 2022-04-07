@@ -40,14 +40,22 @@ func TestValidOptions(t *testing.T) {
 	require.Equal(t, DefaultFileMode, opts.WithFileMode(DefaultFileMode).fileMode)
 	require.Equal(t, DefaultFileSize, opts.WithFileSize(DefaultFileSize).fileSize)
 	require.Equal(t, DefaultFlushThld, opts.WithFlushThld(DefaultFlushThld).flushThld)
+	require.Equal(t, DefaultSyncThld, opts.WithSyncThld(DefaultSyncThld).syncThld)
+	require.Equal(t, DefaultFlushBufferSize, opts.WithFlushBufferSize(DefaultFlushBufferSize).flushBufferSize)
+	require.Equal(t, DefaultCleanUpPercentage+1, opts.WithCleanupPercentage(DefaultCleanUpPercentage+1).cleanupPercentage)
+
 	require.Equal(t, DefaultMaxActiveSnapshots, opts.WithMaxActiveSnapshots(DefaultMaxActiveSnapshots).maxActiveSnapshots)
 	require.Equal(t, DefaultMaxNodeSize, opts.WithMaxNodeSize(DefaultMaxNodeSize).maxNodeSize)
 	require.Equal(t, DefaultRenewSnapRootAfter, opts.WithRenewSnapRootAfter(DefaultRenewSnapRootAfter).renewSnapRootAfter)
-	require.True(t, opts.WithSynced(true).synced)
 	require.Equal(t, 256, opts.WithMaxKeyLen(256).maxKeyLen)
+	require.Equal(t, 1, opts.WithCompactionThld(1).compactionThld)
 	require.Equal(t, time.Duration(1)*time.Millisecond, opts.WithDelayDuringCompaction(time.Duration(1)*time.Millisecond).delayDuringCompaction)
 	require.False(t, opts.WithReadOnly(false).readOnly)
 	require.NotNil(t, opts.WithLog(DefaultOptions().log))
+
+	require.Equal(t, 2, opts.WithNodesLogMaxOpenedFiles(2).nodesLogMaxOpenedFiles)
+	require.Equal(t, 3, opts.WithHistoryLogMaxOpenedFiles(3).historyLogMaxOpenedFiles)
+	require.Equal(t, 1, opts.WithCommitLogMaxOpenedFiles(1).commitLogMaxOpenedFiles)
 
 	require.True(t, validOptions(opts))
 

@@ -114,6 +114,8 @@ func TestTxHeaderBytes(t *testing.T) {
 
 	t.Run("encoding of hdr version 0", func(t *testing.T) {
 		h.Version = 0
+		bytes, err := h.Bytes()
+		require.NoError(t, err)
 		assert.Equal(t, []byte{
 			0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, // ID
 			0x5, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, // PrevAlh
@@ -126,11 +128,13 @@ func TestTxHeaderBytes(t *testing.T) {
 			0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x3, // BlTxID
 			0x4, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, // BlRoot
 			0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-		}, h.Bytes())
+		}, bytes)
 	})
 
 	t.Run("encoding of hdr version 1", func(t *testing.T) {
 		h.Version = 1
+		bytes, err := h.Bytes()
+		require.NoError(t, err)
 		assert.Equal(t, []byte{
 			0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, // ID
 			0x5, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, // PrevAlh
@@ -144,13 +148,71 @@ func TestTxHeaderBytes(t *testing.T) {
 			0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x3, // BlTxID
 			0x4, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, // BlRoot
 			0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-		}, h.Bytes())
+		}, bytes)
 	})
 
-	t.Run("encoding of invalid hrd version must panic", func(t *testing.T) {
-		assert.Panics(t, func() {
-			h.Version = -1
-			h.Bytes()
-		})
+	t.Run("encoding of invalid hrd version must end up with an error", func(t *testing.T) {
+		h2 := h
+		h2.Version = -1
+		_, err := h2.Bytes()
+		require.ErrorIs(t, err, ErrUnsupportedTxHeaderVersion)
 	})
+
+	t.Run("encoding of hrd version 0 must end up with an error if used with non-empty metadata", func(t *testing.T) {
+		h2 := h
+		h2.Version = 0
+		h2.Metadata = NewTxMetadata()
+		_, err := h2.Bytes()
+		require.NoError(t, err)
+		// Currently the tx metadata can only be empty, it will not fail
+	})
+}
+
+func TestEntryMetadataWithVersions(t *testing.T) {
+	tx := NewTxWithEntries([]*TxEntry{
+		NewTxEntry(
+			[]byte("key"),
+			nil,
+			0,
+			[sha256.Size]byte{},
+			0,
+		),
+	})
+
+	t.Run("calculating TX hash tree for entries without metadata must succeed", func(t *testing.T) {
+		tx.header.Version = 0
+
+		err := tx.BuildHashTree()
+		require.NoError(t, err)
+
+		tx.header.Version = 1
+		err = tx.BuildHashTree()
+		require.NoError(t, err)
+	})
+	t.Run("calculating TX hash tree for entries with empty metadata must succeed", func(t *testing.T) {
+		tx.entries[0].md = NewKVMetadata()
+
+		tx.header.Version = 0
+
+		err := tx.BuildHashTree()
+		require.NoError(t, err)
+
+		tx.header.Version = 1
+		err = tx.BuildHashTree()
+		require.NoError(t, err)
+	})
+
+	t.Run("calculating TX hash tree for entries with non-empty metadata must fail in version 0", func(t *testing.T) {
+		tx.entries[0].md.AsDeleted(true)
+
+		tx.header.Version = 0
+
+		err := tx.BuildHashTree()
+		require.ErrorIs(t, err, ErrMetadataUnsupported)
+
+		tx.header.Version = 1
+		err = tx.BuildHashTree()
+		require.NoError(t, err)
+	})
+
 }

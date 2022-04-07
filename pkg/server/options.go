@@ -22,20 +22,16 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/codenotary/immudb/pkg/server/sessions"
 
 	"github.com/codenotary/immudb/pkg/stream"
 
-	"github.com/codenotary/immudb/embedded/store"
 	"github.com/codenotary/immudb/pkg/auth"
 )
 
 const SystemDBName = "systemdb"
 const DefaultDBName = "defaultdb"
-const DefaultMaxValueLen = 1 << 25   //32Mb
-const DefaultStoreFileSize = 1 << 29 //512Mb
 
 // Options server options list
 type Options struct {
@@ -86,7 +82,6 @@ type RemoteStorageOptions struct {
 type ReplicationOptions struct {
 	MasterAddress    string
 	MasterPort       int
-	MasterDatabase   string
 	FollowerUsername string
 	FollowerPassword string
 }
@@ -124,24 +119,6 @@ func DefaultOptions() *Options {
 		PgsqlServerPort:      5432,
 		SessionsOptions:      sessions.DefaultOptions(),
 	}
-}
-
-func (opts *Options) DefaultStoreOptions() *store.Options {
-	indexOptions := store.DefaultIndexOptions().
-		WithRenewSnapRootAfter(0).
-		WithCompactionThld(0).
-		WithDelayDuringCompaction(10 * time.Millisecond)
-
-	return store.DefaultOptions().
-		WithIndexOptions(indexOptions).
-		WithMaxLinearProofLen(0).
-		WithMaxConcurrency(30).
-		WithMaxIOConcurrency(1).
-		WithFileSize(DefaultStoreFileSize).
-		WithMaxKeyLen(store.DefaultMaxKeyLen).
-		WithMaxValueLen(DefaultMaxValueLen).
-		WithMaxTxEntries(store.DefaultMaxTxEntries).
-		WithSynced(opts.synced)
 }
 
 func DefaultRemoteStorageOptions() *RemoteStorageOptions {
@@ -459,11 +436,6 @@ func (opts *ReplicationOptions) WithMasterAddress(masterAddress string) *Replica
 
 func (opts *ReplicationOptions) WithMasterPort(masterPort int) *ReplicationOptions {
 	opts.MasterPort = masterPort
-	return opts
-}
-
-func (opts *ReplicationOptions) WithMasterDatabase(masterDatabase string) *ReplicationOptions {
-	opts.MasterDatabase = masterDatabase
 	return opts
 }
 

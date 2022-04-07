@@ -249,7 +249,7 @@ func (cl *commandlineHotBck) runHotBackup(output io.Writer, startTx uint64, prog
 }
 
 func (cl *commandlineHotBck) backupTx(tx uint64, output io.Writer) error {
-	stream, err := cl.immuClient.ExportTx(cl.context, &schema.TxRequest{Tx: tx})
+	stream, err := cl.immuClient.ExportTx(cl.context, &schema.ExportTxRequest{Tx: tx})
 	if err != nil {
 		return fmt.Errorf("failed to export transaction: %w", err)
 	}
@@ -544,7 +544,7 @@ func (cl *commandlineHotBck) createDb(name string) error {
 	return nil
 }
 
-// run actual restore. First transaction mayb e already restored, so use firstTx as start value, when set
+// run actual restore. First transaction maybe already restored, so use firstTx as start value, when set
 func (cl *commandlineHotBck) runHotRestore(input io.Reader, progress bool, firstTx uint64) error {
 	var bar *progressbar.ProgressBar
 	if progress {

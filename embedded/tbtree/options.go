@@ -26,6 +26,9 @@ import (
 
 const DefaultMaxNodeSize = 4096
 const DefaultFlushThld = 100_000
+const DefaultSyncThld = 1_000_000
+const DefaultFlushBufferSize = 4096
+const DefaultCleanUpPercentage float32 = 0
 const DefaultMaxActiveSnapshots = 100
 const DefaultRenewSnapRootAfter = time.Duration(1000) * time.Millisecond
 const DefaultCacheSize = 100_000
@@ -33,6 +36,11 @@ const DefaultFileMode = os.FileMode(0755)
 const DefaultFileSize = 1 << 26 // 64Mb
 const DefaultMaxKeyLen = 1024
 const DefaultCompactionThld = 2
+const DefaultDelayDuringCompaction = time.Duration(10) * time.Millisecond
+
+const DefaultNodesLogMaxOpenedFiles = 10
+const DefaultHistoryLogMaxOpenedFiles = 1
+const DefaultCommitLogMaxOpenedFiles = 1
 
 const MinNodeSize = 128
 const MinCacheSize = 1
@@ -47,12 +55,18 @@ type Options struct {
 	log logger.Logger
 
 	flushThld          int
+	syncThld           int
+	flushBufferSize    int
+	cleanupPercentage  float32
 	maxActiveSnapshots int
 	renewSnapRootAfter time.Duration
 	cacheSize          int
 	readOnly           bool
-	synced             bool
 	fileMode           os.FileMode
+
+	nodesLogMaxOpenedFiles   int
+	historyLogMaxOpenedFiles int
+	commitLogMaxOpenedFiles  int
 
 	maxKeyLen int
 
@@ -70,15 +84,21 @@ func DefaultOptions() *Options {
 	return &Options{
 		log:                   logger.NewSimpleLogger("immudb ", os.Stderr),
 		flushThld:             DefaultFlushThld,
+		syncThld:              DefaultSyncThld,
+		flushBufferSize:       DefaultFlushBufferSize,
+		cleanupPercentage:     DefaultCleanUpPercentage,
 		maxActiveSnapshots:    DefaultMaxActiveSnapshots,
 		renewSnapRootAfter:    DefaultRenewSnapRootAfter,
 		cacheSize:             DefaultCacheSize,
 		readOnly:              false,
-		synced:                false,
 		fileMode:              DefaultFileMode,
 		maxKeyLen:             DefaultMaxKeyLen,
 		compactionThld:        DefaultCompactionThld,
-		delayDuringCompaction: 0,
+		delayDuringCompaction: DefaultDelayDuringCompaction,
+
+		nodesLogMaxOpenedFiles:   DefaultNodesLogMaxOpenedFiles,
+		historyLogMaxOpenedFiles: DefaultHistoryLogMaxOpenedFiles,
+		commitLogMaxOpenedFiles:  DefaultCommitLogMaxOpenedFiles,
 
 		// options below are only set during initialization and stored as metadata
 		maxNodeSize: DefaultMaxNodeSize,
@@ -90,11 +110,18 @@ func validOptions(opts *Options) bool {
 	return opts != nil &&
 		opts.maxNodeSize >= MinNodeSize &&
 		opts.flushThld > 0 &&
+		opts.flushThld <= opts.syncThld &&
+		opts.flushBufferSize > 0 &&
+		opts.cleanupPercentage >= 0 && opts.cleanupPercentage <= 100 &&
+		opts.nodesLogMaxOpenedFiles > 0 &&
+		opts.historyLogMaxOpenedFiles > 0 &&
+		opts.commitLogMaxOpenedFiles > 0 &&
+
 		opts.maxActiveSnapshots > 0 &&
 		opts.renewSnapRootAfter >= 0 &&
 		opts.cacheSize >= MinCacheSize &&
 		opts.maxKeyLen > 0 &&
-		opts.compactionThld >= 0 &&
+		opts.compactionThld > 0 &&
 		opts.log != nil
 }
 
@@ -110,6 +137,21 @@ func (opts *Options) WithAppFactory(appFactory AppFactoryFunc) *Options {
 
 func (opts *Options) WithFlushThld(flushThld int) *Options {
 	opts.flushThld = flushThld
+	return opts
+}
+
+func (opts *Options) WithSyncThld(syncThld int) *Options {
+	opts.syncThld = syncThld
+	return opts
+}
+
+func (opts *Options) WithFlushBufferSize(size int) *Options {
+	opts.flushBufferSize = size
+	return opts
+}
+
+func (opts *Options) WithCleanupPercentage(cleanupPercentage float32) *Options {
+	opts.cleanupPercentage = cleanupPercentage
 	return opts
 }
 
@@ -133,13 +175,23 @@ func (opts *Options) WithReadOnly(readOnly bool) *Options {
 	return opts
 }
 
-func (opts *Options) WithSynced(synced bool) *Options {
-	opts.synced = synced
+func (opts *Options) WithFileMode(fileMode os.FileMode) *Options {
+	opts.fileMode = fileMode
 	return opts
 }
 
-func (opts *Options) WithFileMode(fileMode os.FileMode) *Options {
-	opts.fileMode = fileMode
+func (opts *Options) WithNodesLogMaxOpenedFiles(nodesLogMaxOpenedFiles int) *Options {
+	opts.nodesLogMaxOpenedFiles = nodesLogMaxOpenedFiles
+	return opts
+}
+
+func (opts *Options) WithHistoryLogMaxOpenedFiles(historyLogMaxOpenedFiles int) *Options {
+	opts.historyLogMaxOpenedFiles = historyLogMaxOpenedFiles
+	return opts
+}
+
+func (opts *Options) WithCommitLogMaxOpenedFiles(commitLogMaxOpenedFiles int) *Options {
+	opts.commitLogMaxOpenedFiles = commitLogMaxOpenedFiles
 	return opts
 }
 

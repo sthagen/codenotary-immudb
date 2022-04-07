@@ -20,33 +20,21 @@ import "github.com/codenotary/immudb/embedded/store"
 
 //Options database instance options
 type Options struct {
-	dbName     string
 	dbRootPath string
-	storeOpts  *store.Options
 
-	corruptionChecker bool
+	storeOpts *store.Options
 
 	replica bool
+
+	corruptionChecker bool
 }
 
 // DefaultOption Initialise Db Optionts to default values
 func DefaultOption() *Options {
 	return &Options{
 		dbRootPath: "./data",
-		dbName:     "db_name",
 		storeOpts:  store.DefaultOptions(),
 	}
-}
-
-// WithDbName sets dbName, which is also db instance directory
-func (o *Options) WithDBName(dbName string) *Options {
-	o.dbName = dbName
-	return o
-}
-
-// GetDbName Returns Database name which is also db instance directory
-func (o *Options) GetDBName() string {
-	return o.dbName
 }
 
 // WithDbRootPath sets the directory in which this database will reside
