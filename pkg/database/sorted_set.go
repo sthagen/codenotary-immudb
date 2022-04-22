@@ -1,5 +1,5 @@
 /*
-Copyright 2021 CodeNotary, Inc. All rights reserved.
+Copyright 2022 CodeNotary, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -176,7 +176,7 @@ func (d *db) ZScan(req *schema.ZScanRequest) (*schema.ZEntries, error) {
 			Prefix:        prefix,
 			InclusiveSeek: req.InclusiveSeek,
 			DescOrder:     req.Desc,
-			Filter:        store.IgnoreDeleted,
+			Filters:       []store.FilterFn{store.IgnoreExpired, store.IgnoreDeleted},
 		})
 	if err != nil {
 		return nil, err

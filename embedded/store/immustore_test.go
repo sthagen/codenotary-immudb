@@ -1,5 +1,5 @@
 /*
-Copyright 2021 CodeNotary, Inc. All rights reserved.
+Copyright 2022 CodeNotary, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -634,23 +634,90 @@ func TestImmudbStoreEdgeCases(t *testing.T) {
 	_, err = sourceTx.EntryOf([]byte{1, 2, 3})
 	require.Equal(t, ErrKeyNotFound, err)
 
-	err = immuStore.validateEntries(nil)
-	require.Equal(t, ErrorNoEntriesProvided, err)
+	t.Run("validateEntries", func(t *testing.T) {
+		err = immuStore.validateEntries(nil)
+		require.ErrorIs(t, err, ErrorNoEntriesProvided)
 
-	err = immuStore.validateEntries(make([]*EntrySpec, immuStore.maxTxEntries+1))
-	require.Equal(t, ErrorMaxTxEntriesLimitExceeded, err)
+		err = immuStore.validateEntries(make([]*EntrySpec, immuStore.maxTxEntries+1))
+		require.ErrorIs(t, err, ErrorMaxTxEntriesLimitExceeded)
 
-	entry := &EntrySpec{Key: nil, Value: nil}
-	err = immuStore.validateEntries([]*EntrySpec{entry})
-	require.Equal(t, ErrNullKey, err)
+		entry := &EntrySpec{Key: nil, Value: nil}
+		err = immuStore.validateEntries([]*EntrySpec{entry})
+		require.ErrorIs(t, err, ErrNullKey)
 
-	entry = &EntrySpec{Key: make([]byte, immuStore.maxKeyLen+1), Value: make([]byte, 1)}
-	err = immuStore.validateEntries([]*EntrySpec{entry})
-	require.Equal(t, ErrorMaxKeyLenExceeded, err)
+		entry = &EntrySpec{Key: make([]byte, immuStore.maxKeyLen+1), Value: make([]byte, 1)}
+		err = immuStore.validateEntries([]*EntrySpec{entry})
+		require.ErrorIs(t, err, ErrorMaxKeyLenExceeded)
 
-	entry = &EntrySpec{Key: make([]byte, 1), Value: make([]byte, immuStore.maxValueLen+1)}
-	err = immuStore.validateEntries([]*EntrySpec{entry})
-	require.Equal(t, ErrorMaxValueLenExceeded, err)
+		entry = &EntrySpec{Key: make([]byte, 1), Value: make([]byte, immuStore.maxValueLen+1)}
+		err = immuStore.validateEntries([]*EntrySpec{entry})
+		require.ErrorIs(t, err, ErrorMaxValueLenExceeded)
+	})
+
+	t.Run("validatePreconditions", func(t *testing.T) {
+		err = immuStore.validatePreconditions(nil)
+		require.NoError(t, err)
+
+		err = immuStore.validatePreconditions([]Precondition{
+			nil,
+		})
+		require.ErrorIs(t, err, ErrInvalidPrecondition)
+		require.ErrorIs(t, err, ErrInvalidPreconditionNull)
+
+		err = immuStore.validatePreconditions([]Precondition{
+			&PreconditionKeyMustExist{},
+		})
+		require.ErrorIs(t, err, ErrInvalidPrecondition)
+		require.ErrorIs(t, err, ErrInvalidPreconditionNullKey)
+
+		err = immuStore.validatePreconditions([]Precondition{
+			&PreconditionKeyMustExist{
+				Key: make([]byte, immuStore.maxKeyLen+1),
+			},
+		})
+		require.ErrorIs(t, err, ErrInvalidPrecondition)
+		require.ErrorIs(t, err, ErrInvalidPreconditionMaxKeyLenExceeded)
+
+		err = immuStore.validatePreconditions([]Precondition{
+			&PreconditionKeyMustNotExist{},
+		})
+		require.ErrorIs(t, err, ErrInvalidPrecondition)
+		require.ErrorIs(t, err, ErrInvalidPreconditionNullKey)
+
+		err = immuStore.validatePreconditions([]Precondition{
+			&PreconditionKeyMustNotExist{
+				Key: make([]byte, immuStore.maxKeyLen+1),
+			},
+		})
+		require.ErrorIs(t, err, ErrInvalidPrecondition)
+		require.ErrorIs(t, err, ErrInvalidPreconditionMaxKeyLenExceeded)
+
+		err = immuStore.validatePreconditions([]Precondition{
+			&PreconditionKeyNotModifiedAfterTx{
+				TxID: 1,
+			},
+		})
+		require.ErrorIs(t, err, ErrInvalidPrecondition)
+		require.ErrorIs(t, err, ErrInvalidPreconditionNullKey)
+
+		err = immuStore.validatePreconditions([]Precondition{
+			&PreconditionKeyNotModifiedAfterTx{
+				Key:  make([]byte, immuStore.maxKeyLen+1),
+				TxID: 1,
+			},
+		})
+		require.ErrorIs(t, err, ErrInvalidPrecondition)
+		require.ErrorIs(t, err, ErrInvalidPreconditionMaxKeyLenExceeded)
+
+		err = immuStore.validatePreconditions([]Precondition{
+			&PreconditionKeyNotModifiedAfterTx{
+				Key:  []byte("key"),
+				TxID: 0,
+			},
+		})
+		require.ErrorIs(t, err, ErrInvalidPrecondition)
+		require.ErrorIs(t, err, ErrInvalidPreconditionInvalidTxID)
+	})
 }
 
 func TestImmudbSetBlErr(t *testing.T) {
@@ -1127,10 +1194,19 @@ func TestImmudbStoreRWTransactions(t *testing.T) {
 		// already expired
 		_, err = immuStore.Get([]byte("expirableKey"))
 		require.ErrorIs(t, err, ErrKeyNotFound)
+		require.ErrorIs(t, err, ErrExpiredEntry)
 
-		// expired entries are never returned
-		_, err = immuStore.GetWith([]byte("expirableKey"))
+		// expired entries can not be resolved
+		valRef, err = immuStore.GetWith([]byte("expirableKey"))
+		require.NoError(t, err)
+		_, err = valRef.Resolve()
 		require.ErrorIs(t, err, ErrKeyNotFound)
+		require.ErrorIs(t, err, ErrExpiredEntry)
+
+		// expired entries are not returned
+		_, err = immuStore.GetWith([]byte("expirableKey"), IgnoreExpired)
+		require.ErrorIs(t, err, ErrKeyNotFound)
+		require.ErrorIs(t, err, ErrExpiredEntry)
 	})
 
 	t.Run("expired keys should not be reachable", func(t *testing.T) {
@@ -1153,9 +1229,12 @@ func TestImmudbStoreRWTransactions(t *testing.T) {
 		_, err = immuStore.Get([]byte("expirableKey"))
 		require.ErrorIs(t, err, ErrKeyNotFound)
 
-		// expired entries are never returned
-		_, err = immuStore.GetWith([]byte("expirableKey"))
+		// expired entries can not be resolved
+		valRef, err := immuStore.GetWith([]byte("expirableKey"))
+		require.NoError(t, err)
+		_, err = valRef.Resolve()
 		require.ErrorIs(t, err, ErrKeyNotFound)
+		require.ErrorIs(t, err, ErrExpiredEntry)
 	})
 }
 
@@ -1307,22 +1386,22 @@ func TestImmudbStoreCommitWith(t *testing.T) {
 	_, err = immuStore.CommitWith(nil, false)
 	require.ErrorIs(t, err, ErrIllegalArguments)
 
-	callback := func(txID uint64, index KeyIndex) ([]*EntrySpec, error) {
-		return nil, nil
+	callback := func(txID uint64, index KeyIndex) ([]*EntrySpec, []Precondition, error) {
+		return nil, nil, nil
 	}
 	_, err = immuStore.CommitWith(callback, false)
 	require.Equal(t, ErrorNoEntriesProvided, err)
 
-	callback = func(txID uint64, index KeyIndex) ([]*EntrySpec, error) {
-		return nil, errors.New("error")
+	callback = func(txID uint64, index KeyIndex) ([]*EntrySpec, []Precondition, error) {
+		return nil, nil, errors.New("error")
 	}
 	_, err = immuStore.CommitWith(callback, false)
 	require.Error(t, err)
 
-	callback = func(txID uint64, index KeyIndex) ([]*EntrySpec, error) {
+	callback = func(txID uint64, index KeyIndex) ([]*EntrySpec, []Precondition, error) {
 		return []*EntrySpec{
 			{Key: []byte(fmt.Sprintf("keyInsertedAtTx%d", txID)), Value: []byte("value")},
-		}, nil
+		}, nil, nil
 	}
 
 	hdr, err := immuStore.CommitWith(callback, true)
@@ -1501,10 +1580,10 @@ func TestImmudbStoreInclusionProof(t *testing.T) {
 	err = immuStore.Close()
 	require.NoError(t, err)
 
-	_, err = immuStore.CommitWith(func(txID uint64, index KeyIndex) ([]*EntrySpec, error) {
+	_, err = immuStore.CommitWith(func(txID uint64, index KeyIndex) ([]*EntrySpec, []Precondition, error) {
 		return []*EntrySpec{
 			{Key: []byte(fmt.Sprintf("keyInsertedAtTx%d", txID)), Value: nil},
-		}, nil
+		}, nil, nil
 	}, false)
 	require.ErrorIs(t, err, ErrAlreadyClosed)
 
@@ -2172,6 +2251,160 @@ func (la *FailingAppendable) Append(bs []byte) (off int64, n int, err error) {
 	return la.Appendable.Append(bs)
 }
 
+func TestImmudbStoreCommitWithPreconditions(t *testing.T) {
+	immuStore, err := Open("preconditions_store", DefaultOptions().WithMaxConcurrency(1))
+	require.NoError(t, err)
+
+	defer immuStore.Close()
+	defer os.RemoveAll("preconditions_store")
+
+	// set initial value
+	otx, err := immuStore.NewTx()
+	require.NoError(t, err)
+
+	err = otx.Set([]byte("key1"), nil, []byte("value1"))
+	require.NoError(t, err)
+
+	hdr1, err := otx.Commit()
+	require.NoError(t, err)
+
+	// delete entry
+	otx, err = immuStore.NewTx()
+	require.NoError(t, err)
+
+	err = otx.Delete([]byte("key1"))
+	require.NoError(t, err)
+
+	_, err = otx.Commit()
+	require.NoError(t, err)
+
+	t.Run("must not exist constraint should pass when evaluated over a deleted key", func(t *testing.T) {
+		otx, err := immuStore.NewTx()
+		require.NoError(t, err)
+
+		err = otx.Set([]byte("key2"), nil, []byte("value2"))
+		require.NoError(t, err)
+
+		err = otx.AddPrecondition(&PreconditionKeyMustNotExist{[]byte("key1")})
+		require.NoError(t, err)
+
+		_, err = otx.Commit()
+		require.NoError(t, err)
+	})
+
+	t.Run("must exist constraint should pass when evaluated over an existent key", func(t *testing.T) {
+		otx, err := immuStore.NewTx()
+		require.NoError(t, err)
+
+		err = otx.Set([]byte("key3"), nil, []byte("value3"))
+		require.NoError(t, err)
+
+		err = otx.AddPrecondition(&PreconditionKeyMustExist{[]byte("key2")})
+		require.NoError(t, err)
+
+		_, err = otx.Commit()
+		require.NoError(t, err)
+	})
+
+	t.Run("must not be modified after constraint should not pass when key is deleted after specified tx", func(t *testing.T) {
+		otx, err := immuStore.NewTx()
+		require.NoError(t, err)
+
+		err = otx.Set([]byte("key4"), nil, []byte("value4"))
+		require.NoError(t, err)
+
+		err = otx.AddPrecondition(&PreconditionKeyNotModifiedAfterTx{Key: []byte("key1"), TxID: hdr1.ID})
+		require.NoError(t, err)
+
+		_, err = otx.Commit()
+		require.ErrorIs(t, err, ErrPreconditionFailed)
+	})
+
+	t.Run("must not be modified after constraint should pass when if key does not exist", func(t *testing.T) {
+		otx, err = immuStore.NewTx()
+		require.NoError(t, err)
+
+		err = otx.Set([]byte("key4"), nil, []byte("value4"))
+		require.NoError(t, err)
+
+		err = otx.AddPrecondition(&PreconditionKeyNotModifiedAfterTx{Key: []byte("nonExistentKey"), TxID: 1})
+		require.NoError(t, err)
+
+		_, err = otx.Commit()
+		require.NoError(t, err)
+	})
+
+	// insert an expirable entry
+	otx, err = immuStore.NewTx()
+	require.NoError(t, err)
+
+	md := NewKVMetadata()
+	err = md.ExpiresAt(time.Now().Add(1 * time.Second))
+	require.NoError(t, err)
+
+	err = otx.Set([]byte("expirableKey"), md, []byte("expirableValue"))
+	require.NoError(t, err)
+
+	hdr, err := otx.Commit()
+	require.NoError(t, err)
+
+	// wait for entry to be expired
+	for i := 0; ; i++ {
+		require.Less(t, i, 20, "entry expiration failed")
+
+		time.Sleep(100 * time.Millisecond)
+
+		_, err = immuStore.Get([]byte("expirableKey"))
+		if err != nil && errors.Is(err, ErrKeyNotFound) {
+			break
+		}
+
+		require.NoError(t, err)
+	}
+
+	t.Run("must not be modified after constraint should not pass when if expired and expiration was set after specified tx", func(t *testing.T) {
+		otx, err = immuStore.NewTx()
+		require.NoError(t, err)
+
+		err = otx.Set([]byte("key5"), nil, []byte("value5"))
+		require.NoError(t, err)
+
+		err = otx.AddPrecondition(&PreconditionKeyNotModifiedAfterTx{Key: []byte("expirableKey"), TxID: hdr.ID - 1})
+		require.NoError(t, err)
+
+		_, err = otx.Commit()
+		require.ErrorIs(t, err, ErrPreconditionFailed)
+	})
+
+	t.Run("must not exist constraint should pass when if expired", func(t *testing.T) {
+		otx, err = immuStore.NewTx()
+		require.NoError(t, err)
+
+		err = otx.Set([]byte("key5"), nil, []byte("value5"))
+		require.NoError(t, err)
+
+		err = otx.AddPrecondition(&PreconditionKeyMustNotExist{Key: []byte("expirableKey")})
+		require.NoError(t, err)
+
+		_, err = otx.Commit()
+		require.NoError(t, err)
+	})
+
+	t.Run("must exist constraint should not pass when if expired", func(t *testing.T) {
+		otx, err = immuStore.NewTx()
+		require.NoError(t, err)
+
+		err = otx.Set([]byte("key5"), nil, []byte("value5"))
+		require.NoError(t, err)
+
+		err = otx.AddPrecondition(&PreconditionKeyMustExist{Key: []byte("expirableKey")})
+		require.NoError(t, err)
+
+		_, err = otx.Commit()
+		require.ErrorIs(t, err, ErrPreconditionFailed)
+	})
+}
+
 func BenchmarkSyncedAppend(b *testing.B) {
 	opts := DefaultOptions().WithMaxConcurrency(1)
 	immuStore, _ := Open("data_synced_bench", opts)
@@ -2401,4 +2634,94 @@ func TestImmudbStoreTruncatedCommitLog(t *testing.T) {
 
 	err = immuStore.Close()
 	require.NoError(t, err)
+}
+
+func TestImmudbPrecodnitionIndexing(t *testing.T) {
+	dir, err := ioutil.TempDir("", "test_precondition_indexing")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	immuStore, err := Open(dir, DefaultOptions())
+	require.NoError(t, err)
+
+	t.Run("commit", func(t *testing.T) {
+
+		// First add some entries that are not indexed
+		immuStore.indexer.Pause()
+
+		for i := 1; i < 100; i++ {
+			tx, err := immuStore.NewWriteOnlyTx()
+			require.NoError(t, err)
+
+			err = tx.Set([]byte(fmt.Sprintf("key_%d", i)), nil, []byte(fmt.Sprintf("value_%d", i)))
+			require.NoError(t, err)
+
+			_, err = tx.AsyncCommit()
+			require.NoError(t, err)
+		}
+
+		// Next prepare transaction with preconditions - this must wait for the indexer
+		tx, err := immuStore.NewWriteOnlyTx()
+		require.NoError(t, err)
+
+		err = tx.Set([]byte("key"), nil, []byte("value"))
+		require.NoError(t, err)
+
+		err = tx.AddPrecondition(&PreconditionKeyMustExist{
+			Key: []byte("key_99"),
+		})
+		require.NoError(t, err)
+
+		err = tx.AddPrecondition(&PreconditionKeyMustNotExist{
+			Key: []byte("key_100"),
+		})
+		require.NoError(t, err)
+
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			immuStore.indexer.Resume()
+		}()
+
+		_, err = tx.Commit()
+		require.NoError(t, err)
+	})
+
+	t.Run("commitWith", func(t *testing.T) {
+
+		// First add some entries that are not indexed
+		immuStore.indexer.Pause()
+
+		for i := 1; i < 100; i++ {
+			tx, err := immuStore.NewWriteOnlyTx()
+			require.NoError(t, err)
+
+			err = tx.Set([]byte(fmt.Sprintf("key2_%d", i)), nil, []byte(fmt.Sprintf("value2_%d", i)))
+			require.NoError(t, err)
+
+			_, err = tx.AsyncCommit()
+			require.NoError(t, err)
+		}
+
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			immuStore.indexer.Resume()
+		}()
+
+		// Next prepare transaction with preconditions - this must wait for the indexer
+		_, err = immuStore.CommitWith(func(txID uint64, index KeyIndex) ([]*EntrySpec, []Precondition, error) {
+			return []*EntrySpec{{
+					Key:   []byte("key2"),
+					Value: []byte("value2"),
+				}}, []Precondition{
+					&PreconditionKeyMustExist{
+						Key: []byte("key2_99"),
+					},
+					&PreconditionKeyMustNotExist{
+						Key: []byte("key2_100"),
+					},
+				},
+				nil
+		}, false)
+		require.NoError(t, err)
+	})
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2021 CodeNotary, Inc. All rights reserved.
+Copyright 2022 CodeNotary, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,6 +24,8 @@ import (
 	"github.com/codenotary/immudb/pkg/server/sessions"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	goerrors "errors"
 )
 
 var (
@@ -50,6 +52,7 @@ var (
 	ErrTxNotProperlyClosed         = errors.New("tx not properly closed")
 	ErrReadWriteTxNotOngoing       = errors.New("read write transaction not ongoing")
 	ErrTxReadConflict              = errors.New(store.ErrTxReadConflict.Error()).WithCode(errors.CodInFailedSqlTransaction)
+	ErrDatabaseAlreadyLoaded       = errors.New("database already loaded")
 )
 
 func mapServerError(err error) error {
@@ -60,6 +63,9 @@ func mapServerError(err error) error {
 		return ErrIllegalArguments
 	case store.ErrTxReadConflict:
 		return ErrTxReadConflict
+	}
+	if goerrors.Is(err, store.ErrPreconditionFailed) {
+		return errors.New(err.Error()).WithCode(errors.CodIntegrityConstraintViolation)
 	}
 	return err
 }

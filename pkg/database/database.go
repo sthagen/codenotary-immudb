@@ -1,5 +1,5 @@
 /*
-Copyright 2021 CodeNotary, Inc. All rights reserved.
+Copyright 2022 CodeNotary, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -51,6 +51,8 @@ type DB interface {
 
 	// Setttings
 	GetOptions() *Options
+
+	Path() string
 
 	AsReplica(asReplica bool)
 	IsReplica() bool
@@ -118,6 +120,7 @@ type DB interface {
 	FlushIndex(req *schema.FlushIndexRequest) error
 	CompactIndex() error
 
+	IsClosed() bool
 	Close() error
 }
 
@@ -145,8 +148,6 @@ func OpenDB(dbName string, op *Options, log logger.Logger) (DB, error) {
 
 	log.Infof("Opening database '%s' {replica = %v}...", dbName, op.replica)
 
-	var err error
-
 	dbi := &db{
 		Logger:  log,
 		options: op,
@@ -154,10 +155,9 @@ func OpenDB(dbName string, op *Options, log logger.Logger) (DB, error) {
 		mutex:   &instrumentedRWMutex{},
 	}
 
-	dbDir := dbi.path()
-
-	_, dbErr := os.Stat(dbDir)
-	if os.IsNotExist(dbErr) {
+	dbDir := dbi.Path()
+	_, err := os.Stat(dbDir)
+	if os.IsNotExist(err) {
 		return nil, fmt.Errorf("missing database directories: %s", dbDir)
 	}
 
@@ -198,7 +198,7 @@ func OpenDB(dbName string, op *Options, log logger.Logger) (DB, error) {
 	return dbi, nil
 }
 
-func (d *db) path() string {
+func (d *db) Path() string {
 	return filepath.Join(d.options.GetDBRootPath(), d.GetName())
 }
 
@@ -249,8 +249,6 @@ func NewDB(dbName string, op *Options, log logger.Logger) (DB, error) {
 
 	log.Infof("Creating database '%s' {replica = %v}...", dbName, op.replica)
 
-	var err error
-
 	dbi := &db{
 		Logger:  log,
 		options: op,
@@ -260,7 +258,8 @@ func NewDB(dbName string, op *Options, log logger.Logger) (DB, error) {
 
 	dbDir := filepath.Join(op.GetDBRootPath(), dbName)
 
-	if _, dbErr := os.Stat(dbDir); dbErr == nil {
+	_, err := os.Stat(dbDir)
+	if err == nil {
 		return nil, fmt.Errorf("Database directories already exist: %s", dbDir)
 	}
 
@@ -354,11 +353,28 @@ func (d *db) set(req *schema.SetRequest) (*schema.TxHeader, error) {
 		}
 		keys[kid] = struct{}{}
 
-		e := EncodeEntrySpec(kv.Key, schema.KVMetadataFromProto(kv.Metadata), kv.Value)
+		e := EncodeEntrySpec(
+			kv.Key,
+			schema.KVMetadataFromProto(kv.Metadata),
+			kv.Value,
+		)
 
 		err = tx.Set(e.Key, e.Metadata, e.Value)
 		if err != nil {
 			return nil, err
+		}
+	}
+
+	for i := range req.Preconditions {
+
+		c, err := PreconditionFromProto(req.Preconditions[i])
+		if err != nil {
+			return nil, err
+		}
+
+		err = tx.AddPrecondition(c)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", store.ErrInvalidPrecondition, err)
 		}
 	}
 
@@ -440,6 +456,10 @@ func (d *db) getAt(key []byte, atTx uint64, resolved int, index store.KeyIndex, 
 
 func (d *db) resolveValue(key []byte, val []byte, resolved int, txID uint64, md *store.KVMetadata,
 	index store.KeyIndex, txHolder *store.Tx) (*schema.Entry, error) {
+	if md != nil && md.Deleted() {
+		return nil, store.ErrKeyNotFound
+	}
+
 	if len(val) < 1 {
 		return nil, fmt.Errorf(
 			"%w: internal value consistency error - missing value prefix",
@@ -1191,13 +1211,31 @@ func (d *db) History(req *schema.HistoryRequest) (*schema.Entries, error) {
 	return list, nil
 }
 
-//Close ...
-func (d *db) Close() error {
+func (d *db) IsClosed() bool {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
+	return d.st.IsClosed()
+}
+
+//Close ...
+func (d *db) Close() (err error) {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+
+	d.Logger.Infof("Closing database '%s'...", d.name)
+
+	defer func() {
+		if err == nil {
+			d.Logger.Infof("Database '%s' succesfully closed", d.name)
+		} else {
+			d.Logger.Infof("%v: while closing database '%s'", err, d.name)
+		}
+	}()
+
 	if d.sqlInitCancel != nil {
 		close(d.sqlInitCancel)
+		d.sqlInitCancel = nil
 	}
 
 	d.sqlInit.Wait() // Wait for SQL Engine initialization to conclude

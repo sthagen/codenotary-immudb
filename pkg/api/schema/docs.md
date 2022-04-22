@@ -17,12 +17,17 @@
     - [CreateUserRequest](#immudb.schema.CreateUserRequest)
     - [Database](#immudb.schema.Database)
     - [DatabaseHealthResponse](#immudb.schema.DatabaseHealthResponse)
+    - [DatabaseListRequestV2](#immudb.schema.DatabaseListRequestV2)
     - [DatabaseListResponse](#immudb.schema.DatabaseListResponse)
+    - [DatabaseListResponseV2](#immudb.schema.DatabaseListResponseV2)
     - [DatabaseNullableSettings](#immudb.schema.DatabaseNullableSettings)
     - [DatabaseSettings](#immudb.schema.DatabaseSettings)
     - [DatabaseSettingsRequest](#immudb.schema.DatabaseSettingsRequest)
     - [DatabaseSettingsResponse](#immudb.schema.DatabaseSettingsResponse)
+    - [DatabaseWithSettings](#immudb.schema.DatabaseWithSettings)
     - [DebugInfo](#immudb.schema.DebugInfo)
+    - [DeleteDatabaseRequest](#immudb.schema.DeleteDatabaseRequest)
+    - [DeleteDatabaseResponse](#immudb.schema.DeleteDatabaseResponse)
     - [DeleteKeysRequest](#immudb.schema.DeleteKeysRequest)
     - [DualProof](#immudb.schema.DualProof)
     - [Entries](#immudb.schema.Entries)
@@ -48,6 +53,8 @@
     - [KeyRequest](#immudb.schema.KeyRequest)
     - [KeyValue](#immudb.schema.KeyValue)
     - [LinearProof](#immudb.schema.LinearProof)
+    - [LoadDatabaseRequest](#immudb.schema.LoadDatabaseRequest)
+    - [LoadDatabaseResponse](#immudb.schema.LoadDatabaseResponse)
     - [LoginRequest](#immudb.schema.LoginRequest)
     - [LoginResponse](#immudb.schema.LoginResponse)
     - [MTLSConfig](#immudb.schema.MTLSConfig)
@@ -63,6 +70,10 @@
     - [OpenSessionRequest](#immudb.schema.OpenSessionRequest)
     - [OpenSessionResponse](#immudb.schema.OpenSessionResponse)
     - [Permission](#immudb.schema.Permission)
+    - [Precondition](#immudb.schema.Precondition)
+    - [Precondition.KeyMustExistPrecondition](#immudb.schema.Precondition.KeyMustExistPrecondition)
+    - [Precondition.KeyMustNotExistPrecondition](#immudb.schema.Precondition.KeyMustNotExistPrecondition)
+    - [Precondition.KeyNotModifiedAfterTXPrecondition](#immudb.schema.Precondition.KeyNotModifiedAfterTXPrecondition)
     - [Reference](#immudb.schema.Reference)
     - [ReferenceRequest](#immudb.schema.ReferenceRequest)
     - [ReplicationNullableSettings](#immudb.schema.ReplicationNullableSettings)
@@ -88,6 +99,8 @@
     - [TxMetadata](#immudb.schema.TxMetadata)
     - [TxRequest](#immudb.schema.TxRequest)
     - [TxScanRequest](#immudb.schema.TxScanRequest)
+    - [UnloadDatabaseRequest](#immudb.schema.UnloadDatabaseRequest)
+    - [UnloadDatabaseResponse](#immudb.schema.UnloadDatabaseResponse)
     - [UpdateDatabaseRequest](#immudb.schema.UpdateDatabaseRequest)
     - [UpdateDatabaseResponse](#immudb.schema.UpdateDatabaseResponse)
     - [UseDatabaseReply](#immudb.schema.UseDatabaseReply)
@@ -342,6 +355,16 @@
 
 
 
+<a name="immudb.schema.DatabaseListRequestV2"></a>
+
+### DatabaseListRequestV2
+
+
+
+
+
+
+
 <a name="immudb.schema.DatabaseListResponse"></a>
 
 ### DatabaseListResponse
@@ -351,6 +374,21 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | databases | [Database](#immudb.schema.Database) | repeated |  |
+
+
+
+
+
+
+<a name="immudb.schema.DatabaseListResponseV2"></a>
+
+### DatabaseListResponseV2
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| databases | [DatabaseWithSettings](#immudb.schema.DatabaseWithSettings) | repeated |  |
 
 
 
@@ -379,6 +417,7 @@
 | commitLogMaxOpenedFiles | [NullableUint32](#immudb.schema.NullableUint32) |  |  |
 | indexSettings | [IndexNullableSettings](#immudb.schema.IndexNullableSettings) |  |  |
 | writeTxHeaderVersion | [NullableUint32](#immudb.schema.NullableUint32) |  |  |
+| autoload | [NullableBool](#immudb.schema.NullableBool) |  |  |
 
 
 
@@ -437,6 +476,23 @@
 
 
 
+<a name="immudb.schema.DatabaseWithSettings"></a>
+
+### DatabaseWithSettings
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| name | [string](#string) |  |  |
+| settings | [DatabaseNullableSettings](#immudb.schema.DatabaseNullableSettings) |  |  |
+| loaded | [bool](#bool) |  |  |
+
+
+
+
+
+
 <a name="immudb.schema.DebugInfo"></a>
 
 ### DebugInfo
@@ -446,6 +502,36 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | stack | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.DeleteDatabaseRequest"></a>
+
+### DeleteDatabaseRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| database | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.DeleteDatabaseResponse"></a>
+
+### DeleteDatabaseResponse
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| database | [string](#string) |  |  |
 
 
 
@@ -598,6 +684,7 @@
 | ----- | ---- | ----- | ----------- |
 | Operations | [Op](#immudb.schema.Op) | repeated |  |
 | noWait | [bool](#bool) |  |  |
+| preconditions | [Precondition](#immudb.schema.Precondition) | repeated |  |
 
 
 
@@ -877,6 +964,36 @@
 
 
 
+<a name="immudb.schema.LoadDatabaseRequest"></a>
+
+### LoadDatabaseRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| database | [string](#string) |  | may add createIfNotExist |
+
+
+
+
+
+
+<a name="immudb.schema.LoadDatabaseResponse"></a>
+
+### LoadDatabaseResponse
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| database | [string](#string) |  | may add setttings |
+
+
+
+
+
+
 <a name="immudb.schema.LoginRequest"></a>
 
 ### LoginRequest
@@ -1111,6 +1228,69 @@
 
 
 
+<a name="immudb.schema.Precondition"></a>
+
+### Precondition
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| keyMustExist | [Precondition.KeyMustExistPrecondition](#immudb.schema.Precondition.KeyMustExistPrecondition) |  |  |
+| keyMustNotExist | [Precondition.KeyMustNotExistPrecondition](#immudb.schema.Precondition.KeyMustNotExistPrecondition) |  |  |
+| keyNotModifiedAfterTX | [Precondition.KeyNotModifiedAfterTXPrecondition](#immudb.schema.Precondition.KeyNotModifiedAfterTXPrecondition) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.Precondition.KeyMustExistPrecondition"></a>
+
+### Precondition.KeyMustExistPrecondition
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [bytes](#bytes) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.Precondition.KeyMustNotExistPrecondition"></a>
+
+### Precondition.KeyMustNotExistPrecondition
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [bytes](#bytes) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.Precondition.KeyNotModifiedAfterTXPrecondition"></a>
+
+### Precondition.KeyNotModifiedAfterTXPrecondition
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [bytes](#bytes) |  |  |
+| txID | [uint64](#uint64) |  |  |
+
+
+
+
+
+
 <a name="immudb.schema.Reference"></a>
 
 ### Reference
@@ -1142,6 +1322,7 @@
 | atTx | [uint64](#uint64) |  |  |
 | boundRef | [bool](#bool) |  |  |
 | noWait | [bool](#bool) |  |  |
+| preconditions | [Precondition](#immudb.schema.Precondition) | repeated |  |
 
 
 
@@ -1382,6 +1563,7 @@
 | ----- | ---- | ----- | ----------- |
 | KVs | [KeyValue](#immudb.schema.KeyValue) | repeated |  |
 | noWait | [bool](#bool) |  |  |
+| preconditions | [Precondition](#immudb.schema.Precondition) | repeated |  |
 
 
 
@@ -1536,6 +1718,36 @@
 | entriesSpec | [EntriesSpec](#immudb.schema.EntriesSpec) |  |  |
 | sinceTx | [uint64](#uint64) |  |  |
 | noWait | [bool](#bool) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.UnloadDatabaseRequest"></a>
+
+### UnloadDatabaseRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| database | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.UnloadDatabaseResponse"></a>
+
+### UnloadDatabaseResponse
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| database | [string](#string) |  |  |
 
 
 
@@ -2045,10 +2257,14 @@ immudb gRPC &amp; REST service
 | ZAdd | [ZAddRequest](#immudb.schema.ZAddRequest) | [TxHeader](#immudb.schema.TxHeader) |  |
 | VerifiableZAdd | [VerifiableZAddRequest](#immudb.schema.VerifiableZAddRequest) | [VerifiableTx](#immudb.schema.VerifiableTx) |  |
 | ZScan | [ZScanRequest](#immudb.schema.ZScanRequest) | [ZEntries](#immudb.schema.ZEntries) |  |
-| CreateDatabase | [Database](#immudb.schema.Database) | [.google.protobuf.Empty](#google.protobuf.Empty) | DEPRECATED: kept for backward compatibility |
+| CreateDatabase | [Database](#immudb.schema.Database) | [.google.protobuf.Empty](#google.protobuf.Empty) | DEPRECATED: Use CreateDatabaseV2 |
 | CreateDatabaseWith | [DatabaseSettings](#immudb.schema.DatabaseSettings) | [.google.protobuf.Empty](#google.protobuf.Empty) | DEPRECATED: Use CreateDatabaseV2 |
 | CreateDatabaseV2 | [CreateDatabaseRequest](#immudb.schema.CreateDatabaseRequest) | [CreateDatabaseResponse](#immudb.schema.CreateDatabaseResponse) |  |
-| DatabaseList | [.google.protobuf.Empty](#google.protobuf.Empty) | [DatabaseListResponse](#immudb.schema.DatabaseListResponse) |  |
+| LoadDatabase | [LoadDatabaseRequest](#immudb.schema.LoadDatabaseRequest) | [LoadDatabaseResponse](#immudb.schema.LoadDatabaseResponse) |  |
+| UnloadDatabase | [UnloadDatabaseRequest](#immudb.schema.UnloadDatabaseRequest) | [UnloadDatabaseResponse](#immudb.schema.UnloadDatabaseResponse) |  |
+| DeleteDatabase | [DeleteDatabaseRequest](#immudb.schema.DeleteDatabaseRequest) | [DeleteDatabaseResponse](#immudb.schema.DeleteDatabaseResponse) |  |
+| DatabaseList | [.google.protobuf.Empty](#google.protobuf.Empty) | [DatabaseListResponse](#immudb.schema.DatabaseListResponse) | DEPRECATED: Use DatabaseListV2 |
+| DatabaseListV2 | [DatabaseListRequestV2](#immudb.schema.DatabaseListRequestV2) | [DatabaseListResponseV2](#immudb.schema.DatabaseListResponseV2) |  |
 | UseDatabase | [Database](#immudb.schema.Database) | [UseDatabaseReply](#immudb.schema.UseDatabaseReply) |  |
 | UpdateDatabase | [DatabaseSettings](#immudb.schema.DatabaseSettings) | [.google.protobuf.Empty](#google.protobuf.Empty) | DEPRECATED: Use UpdateDatabaseV2 |
 | UpdateDatabaseV2 | [UpdateDatabaseRequest](#immudb.schema.UpdateDatabaseRequest) | [UpdateDatabaseResponse](#immudb.schema.UpdateDatabaseResponse) |  |

@@ -1,5 +1,5 @@
 /*
-Copyright 2021 CodeNotary, Inc. All rights reserved.
+Copyright 2022 CodeNotary, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -234,7 +234,7 @@ func keyReaderSpecFrom(sqlPrefix []byte, table *Table, scanSpecs *ScanSpecs) (sp
 		InclusiveEnd:  true,
 		Prefix:        prefix,
 		DescOrder:     scanSpecs.descOrder,
-		Filter:        store.IgnoreDeleted,
+		Filters:       []store.FilterFn{store.IgnoreExpired, store.IgnoreDeleted},
 	}, nil
 }
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2021 CodeNotary, Inc. All rights reserved.
+Copyright 2022 CodeNotary, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -169,7 +169,7 @@ func TestTxHeaderBytes(t *testing.T) {
 }
 
 func TestEntryMetadataWithVersions(t *testing.T) {
-	tx := NewTxWithEntries([]*TxEntry{
+	entries := []*TxEntry{
 		NewTxEntry(
 			[]byte("key"),
 			nil,
@@ -177,7 +177,9 @@ func TestEntryMetadataWithVersions(t *testing.T) {
 			[sha256.Size]byte{},
 			0,
 		),
-	})
+	}
+
+	tx := NewTxWithEntries(&TxHeader{NEntries: len(entries)}, entries)
 
 	t.Run("calculating TX hash tree for entries without metadata must succeed", func(t *testing.T) {
 		tx.header.Version = 0

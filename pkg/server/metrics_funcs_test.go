@@ -1,5 +1,5 @@
 /*
-Copyright 2021 CodeNotary, Inc. All rights reserved.
+Copyright 2022 CodeNotary, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -74,7 +74,7 @@ func TestMetricFuncComputeDBEntries(t *testing.T) {
 
 	currentStateCounter := 0
 	dbList := database.NewDatabaseList()
-	dbList.Append(dbMock{
+	dbList.Put(dbMock{
 		currentStateF: func() (*schema.ImmutableState, error) {
 			return currentStateSuccessfulOnce(&currentStateCounter)
 		},
@@ -138,7 +138,7 @@ func TestMetricFuncComputeDBSizes(t *testing.T) {
 	//<--
 
 	dbList := database.NewDatabaseList()
-	dbList.Append(dbMock{
+	dbList.Put(dbMock{
 		getNameF: func() string {
 			return "defaultdb"
 		},

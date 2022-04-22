@@ -1,5 +1,5 @@
 /*
-Copyright 2021 CodeNotary, Inc. All rights reserved.
+Copyright 2022 CodeNotary, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -56,21 +56,42 @@ func newTx(nentries int, maxKeyLen int) *Tx {
 		}
 	}
 
-	return NewTxWithEntries(entries)
+	header := &TxHeader{NEntries: len(entries)}
+
+	return NewTxWithEntries(header, entries)
 }
 
-func NewTxWithEntries(entries []*TxEntry) *Tx {
+func NewTxWithEntries(header *TxHeader, entries []*TxEntry) *Tx {
 	htree, _ := htree.New(len(entries))
 
 	return &Tx{
-		header:  &TxHeader{NEntries: len(entries)},
+		header:  header,
 		entries: entries,
 		htree:   htree,
 	}
 }
 
 func (tx *Tx) Header() *TxHeader {
-	return tx.header
+	var txmd *TxMetadata
+
+	if tx.header.Metadata != nil {
+		txmd = &TxMetadata{}
+	}
+
+	return &TxHeader{
+		ID:      tx.header.ID,
+		Ts:      tx.header.Ts,
+		BlTxID:  tx.header.BlTxID,
+		BlRoot:  tx.header.BlRoot,
+		PrevAlh: tx.header.PrevAlh,
+
+		Version: tx.header.Version,
+
+		Metadata: txmd,
+
+		NEntries: tx.header.NEntries,
+		Eh:       tx.header.Eh,
+	}
 }
 
 func (hdr *TxHeader) Bytes() ([]byte, error) {

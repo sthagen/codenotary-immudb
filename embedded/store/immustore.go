@@ -1,5 +1,5 @@
 /*
-Copyright 2021 CodeNotary, Inc. All rights reserved.
+Copyright 2022 CodeNotary, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -51,6 +51,7 @@ var ErrorMaxTxEntriesLimitExceeded = errors.New("max number of entries per tx ex
 var ErrNullKey = errors.New("null key")
 var ErrorMaxKeyLenExceeded = errors.New("max key length exceeded")
 var ErrorMaxValueLenExceeded = errors.New("max value length exceeded")
+var ErrPreconditionFailed = errors.New("precondition failed")
 var ErrDuplicatedKey = errors.New("duplicated key")
 var ErrMaxConcurrencyLimitExceeded = errors.New("max concurrency limit exceeded")
 var ErrorPathIsNotADirectory = errors.New("path is not a directory")
@@ -71,6 +72,13 @@ var ErrUnexpectedError = errors.New("unexpected error")
 var ErrUnsupportedTxVersion = errors.New("unsupported tx version")
 var ErrNewerVersionOrCorruptedData = errors.New("tx created with a newer version or data is corrupted")
 var ErrInvalidOptions = errors.New("invalid options")
+
+var ErrInvalidPrecondition = errors.New("invalid precondition")
+var ErrInvalidPreconditionTooMany = fmt.Errorf("%w: too many preconditions", ErrInvalidPrecondition)
+var ErrInvalidPreconditionNull = fmt.Errorf("%w: null", ErrInvalidPrecondition)
+var ErrInvalidPreconditionNullKey = fmt.Errorf("%w: %v", ErrInvalidPrecondition, ErrNullKey)
+var ErrInvalidPreconditionMaxKeyLenExceeded = fmt.Errorf("%w: %v", ErrInvalidPrecondition, ErrorMaxKeyLenExceeded)
+var ErrInvalidPreconditionInvalidTxID = fmt.Errorf("%w: invalid transaction ID", ErrInvalidPrecondition)
 
 var ErrSourceTxNewerThanTargetTx = errors.New("source tx is newer than target tx")
 var ErrLinearProofMaxLenExceeded = errors.New("max linear proof length limit exceeded")
@@ -537,7 +545,7 @@ func (s *ImmuStore) ExistKeyWith(prefix []byte, neq []byte) (bool, error) {
 }
 
 func (s *ImmuStore) Get(key []byte) (valRef ValueRef, err error) {
-	return s.GetWith(key, IgnoreDeleted)
+	return s.GetWith(key, IgnoreExpired, IgnoreDeleted)
 }
 
 func (s *ImmuStore) GetWith(key []byte, filters ...FilterFn) (valRef ValueRef, err error) {
@@ -553,16 +561,14 @@ func (s *ImmuStore) GetWith(key []byte, filters ...FilterFn) (valRef ValueRef, e
 
 	now := time.Now()
 
-	if IgnoreExpired(valRef, now) {
-		return nil, ErrExpiredEntry
-	}
-
 	for _, filter := range filters {
 		if filter == nil {
-			return nil, ErrIllegalArguments
+			return nil, fmt.Errorf("%w: invalid filter function", ErrIllegalArguments)
 		}
-		if filter(valRef, now) {
-			return nil, ErrKeyNotFound
+
+		err = filter(valRef, now)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -893,6 +899,35 @@ func (s *ImmuStore) commit(otx *OngoingTx, expectedHeader *TxHeader, waitForInde
 		return nil, err
 	}
 
+	err = s.validatePreconditions(otx.preconditions)
+	if err != nil {
+		return nil, err
+	}
+
+	if otx.hasPreconditions() {
+		// First check is performed on the currently committed transaction.
+		// It may happen that between now and the commit of this change there are
+		// more transactions happening. This check though will prevent acquiring
+		// the write lock and putting garbage into appendables if we can already
+		// determine that preconditions are not met.
+
+		// A corner case is if the DB fails to meet preconditions now but would fulfill
+		// those during final commit phase - but in such case, we are allowed to reason
+		// about the DB state in any point in time between both checks thus it is still
+		// valid to fail precondition check.
+
+		committedTxID, _, _ := s.commitState()
+		err = s.WaitForIndexingUpto(committedTxID, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		err = otx.checkPreconditions(s)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// early check to reduce amount of garbage when tx is not finally committed
 	s.mutex.Lock()
 	if s.closed {
@@ -904,6 +939,7 @@ func (s *ImmuStore) commit(otx *OngoingTx, expectedHeader *TxHeader, waitForInde
 		s.mutex.Unlock()
 		return nil, ErrTxReadConflict
 	}
+
 	s.mutex.Unlock()
 
 	var ts int64
@@ -1002,6 +1038,21 @@ func (s *ImmuStore) commit(otx *OngoingTx, expectedHeader *TxHeader, waitForInde
 	if !otx.IsWriteOnly() && otx.snap.Ts() <= s.committedTxID {
 		s.mutex.Unlock()
 		return nil, ErrTxReadConflict
+	}
+
+	if otx.hasPreconditions() {
+		// Preconditions must be executed with up-to-date tree
+		err = s.WaitForIndexingUpto(s.committedTxID, nil)
+		if err != nil {
+			s.mutex.Unlock()
+			return nil, err
+		}
+
+		err = otx.checkPreconditions(s)
+		if err != nil {
+			s.mutex.Unlock()
+			return nil, err
+		}
 	}
 
 	for i := 0; i < tx.header.NEntries; i++ {
@@ -1211,7 +1262,7 @@ func (s *ImmuStore) commitState() (txID uint64, txAlh [sha256.Size]byte, clogSiz
 	return s.committedTxID, s.committedAlh, s.committedTxLogSize
 }
 
-func (s *ImmuStore) CommitWith(callback func(txID uint64, index KeyIndex) ([]*EntrySpec, error), waitForIndexing bool) (*TxHeader, error) {
+func (s *ImmuStore) CommitWith(callback func(txID uint64, index KeyIndex) ([]*EntrySpec, []Precondition, error), waitForIndexing bool) (*TxHeader, error) {
 	hdr, err := s.commitWith(callback)
 	if err != nil {
 		return nil, err
@@ -1244,7 +1295,7 @@ func (index *unsafeIndex) GetWith(key []byte, filters ...FilterFn) (ValueRef, er
 	return index.st.GetWith(key, filters...)
 }
 
-func (s *ImmuStore) commitWith(callback func(txID uint64, index KeyIndex) ([]*EntrySpec, error)) (*TxHeader, error) {
+func (s *ImmuStore) commitWith(callback func(txID uint64, index KeyIndex) ([]*EntrySpec, []Precondition, error)) (*TxHeader, error) {
 	if callback == nil {
 		return nil, ErrIllegalArguments
 	}
@@ -1256,36 +1307,64 @@ func (s *ImmuStore) commitWith(callback func(txID uint64, index KeyIndex) ([]*En
 		return nil, ErrAlreadyClosed
 	}
 
+	otx, err := s.NewWriteOnlyTx()
+	if err != nil {
+		return nil, err
+	}
+	defer otx.Cancel()
+
 	s.indexer.Pause()
 	defer s.indexer.Resume()
 
 	committedTxID, _, _ := s.commitState()
 	txID := committedTxID + 1
 
-	entries, err := callback(txID, &unsafeIndex{st: s})
+	otx.entries, otx.preconditions, err = callback(txID, &unsafeIndex{st: s})
 	if err != nil {
 		return nil, err
 	}
 
-	err = s.validateEntries(entries)
+	err = s.validateEntries(otx.entries)
 	if err != nil {
 		return nil, err
+	}
+
+	err = s.validatePreconditions(otx.preconditions)
+	if err != nil {
+		return nil, err
+	}
+
+	if otx.hasPreconditions() {
+		s.indexer.Resume()
+
+		// Preconditions must be executed with up-to-date tree
+		err = s.WaitForIndexingUpto(committedTxID, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		err = otx.checkPreconditions(s)
+		if err != nil {
+			return nil, err
+		}
+
+		s.indexer.Pause()
 	}
 
 	appendableCh := make(chan appendableResult)
-	go s.appendData(entries, appendableCh)
+	go s.appendData(otx.entries, appendableCh)
 
 	tx, err := s.fetchAllocTx()
 	if err != nil {
-		<-appendableCh // wait for data to be writen
+		<-appendableCh // wait for data to be written
 		return nil, err
 	}
 	defer s.releaseAllocTx(tx)
 
 	tx.header.Version = s.writeTxHeaderVersion
-	tx.header.NEntries = len(entries)
+	tx.header.NEntries = len(otx.entries)
 
-	for i, e := range entries {
+	for i, e := range otx.entries {
 		txe := tx.entries[i]
 		txe.setKey(e.Key)
 		txe.md = e.Metadata
@@ -1295,11 +1374,11 @@ func (s *ImmuStore) commitWith(callback func(txID uint64, index KeyIndex) ([]*En
 
 	err = tx.BuildHashTree()
 	if err != nil {
-		<-appendableCh // wait for data to be writen
+		<-appendableCh // wait for data to be written
 		return nil, err
 	}
 
-	r := <-appendableCh // wait for data to be writen
+	r := <-appendableCh // wait for data to be written
 	err = r.err
 	if err != nil {
 		return nil, err
@@ -1788,6 +1867,25 @@ func (s *ImmuStore) validateEntries(entries []*EntrySpec) error {
 	return nil
 }
 
+func (s *ImmuStore) validatePreconditions(preconditions []Precondition) error {
+
+	if len(preconditions) > s.maxTxEntries {
+		return ErrInvalidPreconditionTooMany
+	}
+
+	for _, c := range preconditions {
+		if c == nil {
+			return ErrInvalidPreconditionNull
+		}
+
+		err := c.Validate(s)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *ImmuStore) Sync() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -1822,6 +1920,13 @@ func (s *ImmuStore) Sync() error {
 	}
 
 	return s.indexer.Sync()
+}
+
+func (s *ImmuStore) IsClosed() bool {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	return s.closed
 }
 
 func (s *ImmuStore) Close() error {

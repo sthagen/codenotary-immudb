@@ -1,5 +1,5 @@
 /*
-Copyright 2021 CodeNotary, Inc. All rights reserved.
+Copyright 2022 CodeNotary, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -94,6 +94,28 @@ message OpenSessionResponse {
 
 ////////////////////////////////////////////////////////
 
+message Precondition {
+
+	message KeyMustExistPrecondition {
+		bytes key = 1;
+	}
+	
+	message KeyMustNotExistPrecondition {
+		bytes key = 1;
+	}
+	
+	message KeyNotModifiedAfterTXPrecondition {
+		bytes key = 1;
+		uint64 txID = 2;
+	}
+
+	oneof precondition {
+		KeyMustExistPrecondition keyMustExist = 1;
+		KeyMustNotExistPrecondition keyMustNotExist = 2;
+		KeyNotModifiedAfterTXPrecondition keyNotModifiedAfterTX = 3;
+	}
+}
+
 message KeyValue {
 	bytes key = 1;
 	bytes value = 2;
@@ -127,6 +149,7 @@ message Op {
 message ExecAllRequest {
 	repeated Op Operations = 1;
 	bool  noWait = 2;
+	repeated Precondition preconditions = 3;
 }
 
 message Entries {
@@ -251,6 +274,7 @@ message InclusionProof {
 message SetRequest {
 	repeated KeyValue KVs = 1;
 	bool  noWait = 2;
+	repeated Precondition preconditions = 3;
 }
 
 message KeyRequest {
@@ -304,6 +328,7 @@ message ReferenceRequest {
 	uint64 atTx = 3;
 	bool boundRef = 4;
 	bool  noWait = 5;
+	repeated Precondition preconditions = 6;
 }
 
 message VerifiableReferenceRequest {
@@ -492,6 +517,8 @@ message DatabaseNullableSettings {
 	IndexNullableSettings indexSettings = 19;
 
 	NullableUint32 writeTxHeaderVersion = 20;
+	
+	NullableBool autoload = 21;
 }
 
 message ReplicationNullableSettings {
@@ -517,6 +544,32 @@ message IndexNullableSettings {
 	NullableUint32  commitLogMaxOpenedFiles = 11;
 	NullableUint32  flushBufferSize = 12;
 	NullableFloat   cleanupPercentage = 13;
+}
+
+message LoadDatabaseRequest {
+	string database = 1;
+	// may add createIfNotExist
+}
+
+message LoadDatabaseResponse {
+	string database = 1;
+	// may add setttings
+}
+
+message UnloadDatabaseRequest {
+	string database = 1;
+}
+
+message UnloadDatabaseResponse {
+	string database = 1;
+}
+
+message DeleteDatabaseRequest {
+	string database = 1;
+}
+
+message DeleteDatabaseResponse {
+	string database = 1;
 }
 
 message FlushIndexRequest {
@@ -586,8 +639,21 @@ message SetActiveUserRequest {
 	string username = 2;
 }
 
-message DatabaseListResponse{
+message DatabaseListResponse {
 	repeated Database databases = 1;
+}
+
+message DatabaseListRequestV2 {
+}
+
+message DatabaseListResponseV2 {
+	repeated DatabaseWithSettings databases = 1;
+}
+
+message DatabaseWithSettings {
+	string name = 1;
+	DatabaseNullableSettings settings = 2;
+	bool loaded = 3;
 }
 
 message Chunk {
@@ -935,8 +1001,9 @@ service ImmuService {
 		};
 	};
 
-	// DEPRECATED: kept for backward compatibility
+	// DEPRECATED: Use CreateDatabaseV2
 	rpc CreateDatabase(Database) returns (google.protobuf.Empty) {
+		option deprecated = true;
 		option (google.api.http) = {
 			post: "/db/create"
 			body: "*"
@@ -945,6 +1012,7 @@ service ImmuService {
 
 	// DEPRECATED: Use CreateDatabaseV2
 	rpc CreateDatabaseWith(DatabaseSettings) returns (google.protobuf.Empty) {
+		option deprecated = true;
 		option (google.api.http) = {
 			post: "/db/createwith"
 			body: "*"
@@ -958,9 +1026,39 @@ service ImmuService {
 		};
 	}
 
-	rpc DatabaseList(google.protobuf.Empty) returns (DatabaseListResponse){
+	rpc LoadDatabase(LoadDatabaseRequest) returns (LoadDatabaseResponse) {
+		option (google.api.http) = {
+			post: "/db/load"
+			body: "*"
+		};
+	}
+
+	rpc UnloadDatabase(UnloadDatabaseRequest) returns (UnloadDatabaseResponse) {
+		option (google.api.http) = {
+			post: "/db/unload"
+			body: "*"
+		};
+	}
+
+	rpc DeleteDatabase(DeleteDatabaseRequest) returns (DeleteDatabaseResponse) {
+		option (google.api.http) = {
+			post: "/db/delete"
+			body: "*"
+		};
+	}
+
+	// DEPRECATED: Use DatabaseListV2
+	rpc DatabaseList (google.protobuf.Empty) returns (DatabaseListResponse){
+		option deprecated = true;
 		option (google.api.http) = {
 			post: "/db/list"
+			body: "*"
+		};
+	};
+
+	rpc DatabaseListV2 (DatabaseListRequestV2) returns (DatabaseListResponseV2){
+		option (google.api.http) = {
+			post: "/db/list/v2"
 			body: "*"
 		};
 	};
@@ -973,6 +1071,7 @@ service ImmuService {
 
 	// DEPRECATED: Use UpdateDatabaseV2
 	rpc UpdateDatabase(DatabaseSettings) returns (google.protobuf.Empty) {
+		option deprecated = true;
 		option (google.api.http) = {
 			post: "/db/update"
 			body: "*"
@@ -988,6 +1087,7 @@ service ImmuService {
 
 	// DEPRECATED: Use GetDatabaseSettingsV2
 	rpc GetDatabaseSettings(google.protobuf.Empty) returns (DatabaseSettings) {
+		option deprecated = true;
 		option (google.api.http) = {
 			post: "/db/settings"
 			body: "*"

@@ -1,5 +1,5 @@
 /*
-Copyright 2021 CodeNotary, Inc. All rights reserved.
+Copyright 2022 CodeNotary, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -278,10 +278,6 @@ func TestTransaction_MultiNoErr(t *testing.T) {
 
 	_, err = client.NewTx(ctx)
 	require.Error(t, err)
-	require.Equal(t, err.(errors.ImmuError).Code(), errors.CodNoSessionAuthDataProvided)
-
-	err = client.OpenSession(ctx, []byte(`immudb`), []byte(`immudb`), "defaultdb")
-	require.NoError(t, err)
 }
 
 func TestTransaction_HandlingReadConflict(t *testing.T) {

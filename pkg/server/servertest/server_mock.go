@@ -1,5 +1,5 @@
 /*
-Copyright 2021 CodeNotary, Inc. All rights reserved.
+Copyright 2022 CodeNotary, Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -272,8 +272,24 @@ func (s *ServerMock) CreateDatabaseV2(ctx context.Context, req *schema.CreateDat
 	return s.Srv.CreateDatabaseV2(ctx, req)
 }
 
+func (s *ServerMock) LoadDatabase(ctx context.Context, req *schema.LoadDatabaseRequest) (*schema.LoadDatabaseResponse, error) {
+	return s.Srv.LoadDatabase(ctx, req)
+}
+
+func (s *ServerMock) UnloadDatabase(ctx context.Context, req *schema.UnloadDatabaseRequest) (*schema.UnloadDatabaseResponse, error) {
+	return s.Srv.UnloadDatabase(ctx, req)
+}
+
+func (s *ServerMock) DeleteDatabase(ctx context.Context, req *schema.DeleteDatabaseRequest) (*schema.DeleteDatabaseResponse, error) {
+	return s.Srv.DeleteDatabase(ctx, req)
+}
+
 func (s *ServerMock) DatabaseList(ctx context.Context, req *empty.Empty) (*schema.DatabaseListResponse, error) {
 	return s.Srv.DatabaseList(ctx, req)
+}
+
+func (s *ServerMock) DatabaseListV2(ctx context.Context, req *schema.DatabaseListRequestV2) (*schema.DatabaseListResponseV2, error) {
+	return s.Srv.DatabaseListV2(ctx, req)
 }
 
 func (s *ServerMock) UseDatabase(ctx context.Context, req *schema.Database) (*schema.UseDatabaseReply, error) {
