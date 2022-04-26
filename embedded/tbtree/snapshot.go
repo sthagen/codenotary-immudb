@@ -56,24 +56,28 @@ func (s *Snapshot) Set(key, value []byte) error {
 	v := make([]byte, len(value))
 	copy(v, value)
 
-	n1, n2, depth, err := s.root.insertAt(k, v, s.ts)
+	nodes, depth, err := s.root.insertAt(k, v, s.ts)
 	if err != nil {
 		return err
 	}
 
-	if n2 == nil {
-		s.root = n1
-	} else {
+	for len(nodes) > 1 {
 		newRoot := &innerNode{
 			t:     s.t,
-			nodes: []node{n1, n2},
+			nodes: nodes,
 			_ts:   s.ts,
 			mut:   true,
 		}
 
-		s.root = newRoot
 		depth++
+
+		nodes, err = newRoot.split()
+		if err != nil {
+			return err
+		}
 	}
+
+	s.root = nodes[0]
 
 	metricsBtreeDepth.WithLabelValues(s.t.path).Set(float64(depth))
 
@@ -174,11 +178,11 @@ func (s *Snapshot) NewReader(spec *ReaderSpec) (r *Reader, err error) {
 		return nil, ErrAlreadyClosed
 	}
 
-	if spec == nil || len(spec.SeekKey) > s.t.maxKeyLen || len(spec.Prefix) > s.t.maxKeyLen {
+	if spec == nil || len(spec.SeekKey) > s.t.maxKeySize || len(spec.Prefix) > s.t.maxKeySize {
 		return nil, ErrIllegalArguments
 	}
 
-	greatestPrefixedKey := greatestKeyOfSize(s.t.maxKeyLen)
+	greatestPrefixedKey := greatestKeyOfSize(s.t.maxKeySize)
 	copy(greatestPrefixedKey, spec.Prefix)
 
 	// Adjust seekKey based on key prefix
