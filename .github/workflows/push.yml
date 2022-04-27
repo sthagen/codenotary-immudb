@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - master
+      - release/v*
     tags:
       - 'v*'
 
@@ -52,7 +53,7 @@ jobs:
             go-version: ${{ env.GO_VERSION }}
         - uses: actions/checkout@v3
         - name: Build binaries
-          run: make dist
+          run: WEBCONSOLE=default make dist
         - name: Notarize git repository
           uses: docker://codenotary/cas
           with:
@@ -66,10 +67,113 @@ jobs:
             name: immudb-binaries
             path: dist
             retention-days: 5
+        - name: Calculate checksums
+          run: make dist/binary.md
+
+  binaries-quick-test:
+    name: Quick test of compiled binaries
+    needs: [ binaries ]
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            selector: '*-windows-amd64.exe'
+          - os: ubuntu-latest
+            selector: '*-linux-amd64'
+          - os: ubuntu-latest
+            selector: '*-linux-amd64-static'
+          - os: macos-latest
+            selector: '*-darwin-amd64'
+          - os: ubuntu-latest
+            selector: '*-linux-arm64'
+            qemu-launcher: qemu-aarch64
+          - os: ubuntu-latest
+            selector: '*-linux-s390x'
+            qemu-launcher: qemu-s390x
+            extra-immudb-args: "--web-server=false"
+            continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/download-artifact@v3
+      with:
+        name: immudb-binaries
+        path: dist
+
+    - name: List matching binaries
+      shell: bash
+      run: ls -all dist/${{ matrix.selector }}
+
+    - name: Make binaries executable
+      run: chmod +x dist/${{ matrix.selector }}
+      shell: bash
+      if: runner.os != 'Windows'
+
+    - name: Install qemu-user
+      run: sudo apt update && sudo apt install -qq qemu-user
+      if: matrix.qemu-launcher
+
+    - name: Run immudb in the background
+      shell: bash
+      continue-on-error: ${{ matrix.continue-on-error || false }}
+      run: |
+        IMMUADMIN="${{ matrix.qemu-launcher }} "dist/immudb-${{ matrix.selector }}
+        $IMMUADMIN -d ${{ matrix.extra-immudb-args }}
+
+    - name: immuadmin test
+      shell: bash
+      continue-on-error: ${{ matrix.continue-on-error || false }}
+      run: |
+        IMMUADMIN="${{ matrix.qemu-launcher }} "dist/immuadmin-${{ matrix.selector }}
+
+        echo -n "immudb" | $IMMUADMIN login immudb || true
+        $IMMUADMIN database create test
+        $IMMUADMIN database list
+        $IMMUADMIN database unload test
+        $IMMUADMIN database load test
+
+    - name: immuclient test
+      shell: bash
+      continue-on-error: ${{ matrix.continue-on-error || false }}
+      run: |
+        IMMUCLIENT="${{ matrix.qemu-launcher }} "dist/immuclient-${{ matrix.selector }}
+
+        $IMMUCLIENT login --username immudb --password immudb
+        $IMMUCLIENT use test
+        $IMMUCLIENT safeset test3 githubaction
+        sg=$($IMMUCLIENT safeget test3)
+        grep -q "githubaction" <<< $sg
+        grep -q  "verified" <<< $sg
+        grep -q "true" <<< $sg
+
+  stress-tests:
+    name: Run KV stress tests
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download binary artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: immudb-binaries
+        path: dist
+    - name: Make binaries executable
+      run: chmod +x dist/*linux-amd64
+    - name: Run immudb in the background
+      run: dist/immudb-*-linux-amd64 -d
+    - uses: actions/setup-go@v3
+      with:
+        go-version: ${{ env.GO_VERSION }}
+    - uses: actions/checkout@v3
+    - name: Run KV stress test
+      run: |
+        go run ./tools/testing/stress_tool_test_kv/ \
+          -mix-read-writes \
+          -randomize-key-length \
+          -total-entries-written 300000 \
+          -total-entries-read 10000
 
   notarize-binaries:
       name: Notarize binaries
-      needs: binaries
+      needs: [ binaries-quick-test, stress-tests ]
       runs-on: ubuntu-latest
       strategy:
         matrix: ${{fromJson(needs.binaries.outputs.matrix)}}
