@@ -371,7 +371,7 @@ func (d *db) SQLQuery(req *schema.SQLQueryRequest, tx *sql.SQLTx) (*schema.SQLQu
 		return nil, err
 	}
 
-	stmt, ok := stmts[0].(*sql.SelectStmt)
+	stmt, ok := stmts[0].(sql.DataSource)
 	if !ok {
 		return nil, sql.ErrExpectingDQLStmt
 	}
@@ -379,20 +379,18 @@ func (d *db) SQLQuery(req *schema.SQLQueryRequest, tx *sql.SQLTx) (*schema.SQLQu
 	return d.SQLQueryPrepared(stmt, req.Params, tx)
 }
 
-func (d *db) SQLQueryPrepared(stmt *sql.SelectStmt, namedParams []*schema.NamedParam, tx *sql.SQLTx) (*schema.SQLQueryResult, error) {
-	r, err := d.SQLQueryRowReader(stmt, tx)
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-
+func (d *db) SQLQueryPrepared(stmt sql.DataSource, namedParams []*schema.NamedParam, tx *sql.SQLTx) (*schema.SQLQueryResult, error) {
 	params := make(map[string]interface{})
 
 	for _, p := range namedParams {
 		params[p.Name] = schema.RawValue(p.Value)
 	}
 
-	r.SetParameters(params)
+	r, err := d.SQLQueryRowReader(stmt, params, tx)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
 
 	colDescriptors, err := r.Columns()
 	if err != nil {
@@ -432,10 +430,10 @@ func (d *db) SQLQueryPrepared(stmt *sql.SelectStmt, namedParams []*schema.NamedP
 			Values:  make([]*schema.SQLValue, len(res.Columns)),
 		}
 
-		for i, c := range colDescriptors {
+		for i := range colDescriptors {
 			rrow.Columns[i] = cols[i].Name
 
-			v := row.Values[c.Selector()]
+			v := row.ValuesByPosition[i]
 
 			_, isNull := v.(*sql.NullValue)
 			if isNull {
@@ -451,13 +449,9 @@ func (d *db) SQLQueryPrepared(stmt *sql.SelectStmt, namedParams []*schema.NamedP
 	return res, nil
 }
 
-func (d *db) SQLQueryRowReader(stmt *sql.SelectStmt, tx *sql.SQLTx) (sql.RowReader, error) {
+func (d *db) SQLQueryRowReader(stmt sql.DataSource, params map[string]interface{}, tx *sql.SQLTx) (sql.RowReader, error) {
 	if stmt == nil {
 		return nil, ErrIllegalArguments
-	}
-
-	if stmt.Limit() > MaxKeyScanLimit {
-		return nil, ErrMaxKeyScanLimitExceeded
 	}
 
 	d.mutex.RLock()
@@ -470,7 +464,7 @@ func (d *db) SQLQueryRowReader(stmt *sql.SelectStmt, tx *sql.SQLTx) (sql.RowRead
 		}
 	}
 
-	return d.sqlEngine.QueryPreparedStmt(stmt, nil, tx)
+	return d.sqlEngine.QueryPreparedStmt(stmt, params, tx)
 }
 
 func (d *db) InferParameters(sql string, tx *sql.SQLTx) (map[string]sql.SQLValueType, error) {

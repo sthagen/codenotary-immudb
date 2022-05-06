@@ -94,14 +94,81 @@ func TestUseSnapshotStmt(t *testing.T) {
 		{
 			input: "USE SNAPSHOT SINCE TX 100",
 			expectedOutput: []SQLStmt{
-				&UseSnapshotStmt{sinceTx: uint64(100)},
+				&UseSnapshotStmt{
+					period: period{
+						start: &openPeriod{instant: periodInstant{instantType: txInstant, exp: &Number{val: 100}}, inclusive: true},
+					},
+				},
 			},
 			expectedError: nil,
 		},
 		{
-			input:          "USE SNAPSHOT SINCE 10",
+			input: "USE SNAPSHOT BEFORE now()",
+			expectedOutput: []SQLStmt{
+				&UseSnapshotStmt{
+					period: period{
+						end: &openPeriod{instant: periodInstant{instantType: timeInstant, exp: &SysFn{fn: "now"}}},
+					},
+				},
+			},
+			expectedError: nil,
+		},
+		{
+			input: "USE SNAPSHOT UNTIL now()",
+			expectedOutput: []SQLStmt{
+				&UseSnapshotStmt{
+					period: period{
+						end: &openPeriod{instant: periodInstant{instantType: timeInstant, exp: &SysFn{fn: "now"}}, inclusive: true},
+					},
+				},
+			},
+			expectedError: nil,
+		},
+		{
+			input: "USE SNAPSHOT SINCE TX 1 UNTIL TX 10",
+			expectedOutput: []SQLStmt{
+				&UseSnapshotStmt{
+					period: period{
+						start: &openPeriod{instant: periodInstant{instantType: txInstant, exp: &Number{val: 1}}, inclusive: true},
+						end:   &openPeriod{instant: periodInstant{instantType: txInstant, exp: &Number{val: 10}}, inclusive: true},
+					},
+				},
+			},
+			expectedError: nil,
+		},
+		{
+			input: "USE SNAPSHOT SINCE TX @fromTx BEFORE TX 10",
+			expectedOutput: []SQLStmt{
+				&UseSnapshotStmt{
+					period: period{
+						start: &openPeriod{instant: periodInstant{instantType: txInstant, exp: &Param{id: "fromtx"}}, inclusive: true},
+						end:   &openPeriod{instant: periodInstant{instantType: txInstant, exp: &Number{val: 10}}},
+					},
+				},
+			},
+			expectedError: nil,
+		},
+		{
+			input: "USE SNAPSHOT AFTER TX @fromTx-1 BEFORE now()",
+			expectedOutput: []SQLStmt{
+				&UseSnapshotStmt{
+					period: period{
+						start: &openPeriod{
+							instant: periodInstant{
+								instantType: txInstant,
+								exp:         &NumExp{op: SUBSOP, left: &Param{id: "fromtx"}, right: &Number{val: 1}},
+							},
+						},
+						end: &openPeriod{instant: periodInstant{instantType: timeInstant, exp: &SysFn{fn: "now"}}},
+					},
+				},
+			},
+			expectedError: nil,
+		},
+		{
+			input:          "USE SNAPSHOT BEFORE TX 10 SINCE TX 1",
 			expectedOutput: nil,
-			expectedError:  errors.New("syntax error: unexpected NUMBER, expecting TX at position 21"),
+			expectedError:  errors.New("syntax error: unexpected SINCE at position 31"),
 		},
 	}
 
@@ -1010,6 +1077,48 @@ func TestSelectStmt(t *testing.T) {
 						},
 					},
 				}},
+			expectedError: nil,
+		},
+	}
+
+	for i, tc := range testCases {
+		res, err := ParseString(tc.input)
+		require.Equal(t, tc.expectedError, err, fmt.Sprintf("failed on iteration %d", i))
+
+		if tc.expectedError == nil {
+			require.Equal(t, tc.expectedOutput, res, fmt.Sprintf("failed on iteration %d", i))
+		}
+	}
+}
+
+func TestSelectUnionStmt(t *testing.T) {
+	testCases := []struct {
+		input          string
+		expectedOutput []SQLStmt
+		expectedError  error
+	}{
+		{
+			input: "SELECT id, title FROM table1 UNION SELECT id, title FROM table1",
+			expectedOutput: []SQLStmt{
+				&UnionStmt{
+					distinct: true,
+					left: &SelectStmt{
+						distinct: false,
+						selectors: []Selector{
+							&ColSelector{col: "id"},
+							&ColSelector{col: "title"},
+						},
+						ds: &tableRef{table: "table1"},
+					},
+					right: &SelectStmt{
+						distinct: false,
+						selectors: []Selector{
+							&ColSelector{col: "id"},
+							&ColSelector{col: "title"},
+						},
+						ds: &tableRef{table: "table1"},
+					}},
+			},
 			expectedError: nil,
 		},
 	}
