@@ -17,10 +17,13 @@ limitations under the License.
 package transactions
 
 import (
+	"context"
+	"sync"
+
 	"github.com/codenotary/immudb/embedded/sql"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/database"
-	"sync"
+	"github.com/rs/xid"
 )
 
 type transaction struct {
@@ -35,6 +38,7 @@ type transaction struct {
 type Transaction interface {
 	GetID() string
 	GetMode() schema.TxMode
+	IsClosed() bool
 	Rollback() error
 	Commit() ([]*sql.SQLTx, error)
 	GetSessionID() string
@@ -42,64 +46,103 @@ type Transaction interface {
 	SQLQuery(request *schema.SQLQueryRequest) (*schema.SQLQueryResult, error)
 }
 
-func NewTransaction(sqlTx *sql.SQLTx, transactionID string, mode schema.TxMode, db database.DB, sessionID string) *transaction {
+func NewTransaction(ctx context.Context, mode schema.TxMode, db database.DB, sessionID string) (*transaction, error) {
+	transactionID := xid.New().String()
+
+	tx, err := db.NewSQLTx(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	sqlTx, _, err := db.SQLExec(&schema.SQLExecRequest{Sql: "BEGIN TRANSACTION;"}, tx)
+	if err != nil {
+		return nil, err
+	}
+
 	return &transaction{
 		sqlTx:         sqlTx,
 		transactionID: transactionID,
 		txMode:        mode,
 		db:            db,
 		sessionID:     sessionID,
-	}
+	}, nil
 }
 
 func (tx *transaction) GetID() string {
-	tx.mutex.Lock()
-	defer tx.mutex.Unlock()
+	tx.mutex.RLock()
+	defer tx.mutex.RUnlock()
+
 	return tx.transactionID
 }
 
 func (tx *transaction) GetMode() schema.TxMode {
-	tx.mutex.Lock()
-	defer tx.mutex.Unlock()
+	tx.mutex.RLock()
+	defer tx.mutex.RUnlock()
+
 	return tx.txMode
+}
+
+func (tx *transaction) IsClosed() bool {
+	tx.mutex.RLock()
+	defer tx.mutex.RUnlock()
+
+	return tx.sqlTx == nil || tx.sqlTx.Closed()
 }
 
 func (tx *transaction) Rollback() error {
 	tx.mutex.Lock()
 	defer tx.mutex.Unlock()
-	// here could happen that a committed transaction is rolled back by the sessions guard. This check prevent a panic
-	if tx.sqlTx == nil {
-		return nil
+
+	if tx.sqlTx == nil || tx.sqlTx.Closed() {
+		return sql.ErrNoOngoingTx
 	}
-	defer func() { tx.sqlTx = nil }()
+
 	return tx.sqlTx.Cancel()
 }
+
 func (tx *transaction) Commit() ([]*sql.SQLTx, error) {
 	tx.mutex.Lock()
 	defer tx.mutex.Unlock()
-	defer func() { tx.sqlTx = nil }()
+
+	if tx.sqlTx == nil || tx.sqlTx.Closed() {
+		return nil, sql.ErrNoOngoingTx
+	}
+
 	_, cTxs, err := tx.db.SQLExec(&schema.SQLExecRequest{Sql: "COMMIT;"}, tx.sqlTx)
 	if err != nil {
 		return nil, err
 	}
+
 	return cTxs, nil
 }
 
 func (tx *transaction) GetSessionID() string {
 	tx.mutex.RLock()
 	defer tx.mutex.RUnlock()
+
 	return tx.sessionID
 }
 
 func (tx *transaction) SQLExec(request *schema.SQLExecRequest) (err error) {
 	tx.mutex.Lock()
 	defer tx.mutex.Unlock()
+
+	if tx.sqlTx == nil || tx.sqlTx.Closed() {
+		return sql.ErrNoOngoingTx
+	}
+
 	tx.sqlTx, _, err = tx.db.SQLExec(request, tx.sqlTx)
+
 	return err
 }
 
-func (tx *transaction) SQLQuery(request *schema.SQLQueryRequest) (*schema.SQLQueryResult, error) {
+func (tx *transaction) SQLQuery(request *schema.SQLQueryRequest) (res *schema.SQLQueryResult, err error) {
 	tx.mutex.Lock()
 	defer tx.mutex.Unlock()
+
+	if tx.sqlTx == nil || tx.sqlTx.Closed() {
+		return nil, sql.ErrNoOngoingTx
+	}
+
 	return tx.db.SQLQuery(request, tx.sqlTx)
 }

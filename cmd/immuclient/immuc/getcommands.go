@@ -83,11 +83,38 @@ func (i *immuc) VerifiedGetTxByID(args []string) (string, error) {
 	return PrintTx(tx.(*schema.Tx), true), nil
 }
 
+func (i *immuc) parseKeyArg(arg string) (key []byte, revision int64, hasRevision bool, err error) {
+	if i.options.revisionSeparator == "" {
+		// No revision separator - argument is the key
+		return []byte(arg), 0, false, nil
+	}
+
+	idx := strings.LastIndex(arg, i.options.revisionSeparator)
+	if idx < 0 {
+		// No revision separator in the argument - that's a key without revision
+		return []byte(arg), 0, false, nil
+	}
+
+	key = []byte(arg[:idx])
+	revisionStr := arg[idx+len(i.options.revisionSeparator):]
+
+	revision, err = strconv.ParseInt(revisionStr, 10, 64)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("Invalid key revision number - not an integer: %w", err)
+	}
+
+	return key, revision, true, nil
+}
+
 func (i *immuc) Get(args []string) (string, error) {
-	key := []byte(args[0])
+	key, atRevision, _, err := i.parseKeyArg(args[0])
+	if err != nil {
+		return "", err
+	}
+
 	ctx := context.Background()
 	response, err := i.Execute(func(immuClient client.ImmuClient) (interface{}, error) {
-		return immuClient.Get(ctx, key)
+		return immuClient.Get(ctx, key, client.AtRevision(atRevision))
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "NotFound") {
@@ -101,14 +128,18 @@ func (i *immuc) Get(args []string) (string, error) {
 	}
 
 	entry := response.(*schema.Entry)
-	return PrintKV(entry.Key, entry.Metadata, entry.Value, entry.Tx, false, i.valueOnly), nil
+	return PrintKV(entry, false, i.options.valueOnly), nil
 }
 
 func (i *immuc) VerifiedGet(args []string) (string, error) {
-	key := []byte(args[0])
+	key, atRevision, _, err := i.parseKeyArg(args[0])
+	if err != nil {
+		return "", err
+	}
+
 	ctx := context.Background()
 	response, err := i.Execute(func(immuClient client.ImmuClient) (interface{}, error) {
-		return immuClient.VerifiedGet(ctx, key)
+		return immuClient.VerifiedGet(ctx, key, client.AtRevision(atRevision))
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "NotFound") {
@@ -122,5 +153,5 @@ func (i *immuc) VerifiedGet(args []string) (string, error) {
 	}
 
 	entry := response.(*schema.Entry)
-	return PrintKV(entry.Key, entry.Metadata, entry.Value, entry.Tx, true, i.valueOnly), nil
+	return PrintKV(entry, true, i.options.valueOnly), nil
 }

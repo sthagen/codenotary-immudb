@@ -18,12 +18,13 @@ package immuclienttest
 
 import (
 	"bytes"
-	"github.com/codenotary/immudb/pkg/client/homedir"
-	"github.com/codenotary/immudb/pkg/client/tokenservice"
 	"io"
 	"log"
 	"os"
 	"sync"
+
+	"github.com/codenotary/immudb/pkg/client/homedir"
+	"github.com/codenotary/immudb/pkg/client/tokenservice"
 
 	"github.com/codenotary/immudb/cmd/helper"
 	"github.com/codenotary/immudb/cmd/immuclient/immuc"
@@ -35,7 +36,7 @@ import (
 type clientTest struct {
 	Imc     immuc.Client
 	Ts      tokenservice.TokenService
-	Options client.Options
+	Options immuc.Options
 	Pr      helper.PasswordReader
 }
 
@@ -68,7 +69,7 @@ func NewClientTest(pr helper.PasswordReader, tkns tokenservice.TokenService) *cl
 	return &clientTest{
 		Ts:      tkns,
 		Pr:      pr,
-		Options: *client.DefaultOptions(),
+		Options: *(&immuc.Options{}).WithImmudbClientOptions(client.DefaultOptions()),
 	}
 }
 
@@ -77,17 +78,23 @@ func (ct *clientTest) WithTokenFileService(tkns tokenservice.TokenService) *clie
 	return ct
 }
 
-func (ct *clientTest) WithOptions(opts *client.Options) *clientTest {
+func (ct *clientTest) WithOptions(opts *immuc.Options) *clientTest {
 	ct.Options = *opts
 	return ct
 }
 
 func (c *clientTest) Connect(dialer servertest.BuffDialer) {
-	dialOptions := []grpc.DialOption{
-		grpc.WithContextDialer(dialer), grpc.WithInsecure(),
-	}
 
-	ic, err := immuc.Init(c.Options.WithDialOptions(dialOptions).WithPasswordReader(c.Pr))
+	c.Options.
+		WithRevisionSeparator("@").
+		WithPasswordReader(c.Pr)
+
+	c.Options.GetImmudbClientOptions().
+		WithDialOptions([]grpc.DialOption{
+			grpc.WithContextDialer(dialer), grpc.WithInsecure(),
+		})
+
+	ic, err := immuc.Init(&c.Options)
 	if err != nil {
 		log.Fatal(err)
 	}

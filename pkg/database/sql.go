@@ -17,6 +17,7 @@ package database
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -314,6 +315,10 @@ func (d *db) DescribeTable(tableName string, tx *sql.SQLTx) (*schema.SQLQueryRes
 	return res, nil
 }
 
+func (d *db) NewSQLTx(ctx context.Context) (*sql.SQLTx, error) {
+	return d.sqlEngine.NewTx(ctx)
+}
+
 func (d *db) SQLExec(req *schema.SQLExecRequest, tx *sql.SQLTx) (ntx *sql.SQLTx, ctxs []*sql.SQLTx, err error) {
 	if req == nil {
 		return nil, nil, ErrIllegalArguments
@@ -322,19 +327,6 @@ func (d *db) SQLExec(req *schema.SQLExecRequest, tx *sql.SQLTx) (ntx *sql.SQLTx,
 	stmts, err := sql.Parse(strings.NewReader(req.Sql))
 	if err != nil {
 		return nil, nil, err
-	}
-
-	for _, stmt := range stmts {
-		switch stmt.(type) {
-		case *sql.UseDatabaseStmt:
-			{
-				return nil, nil, errors.New("SQL statement not supported. Please use `UseDatabase` operation instead")
-			}
-		case *sql.CreateDatabaseStmt:
-			{
-				return nil, nil, errors.New("SQL statement not supported. Please use `CreateDatabase` operation instead")
-			}
-		}
 	}
 
 	return d.SQLExecPrepared(stmts, req.Params, tx)
@@ -400,9 +392,14 @@ func (d *db) SQLQueryPrepared(stmt sql.DataSource, namedParams []*schema.NamedPa
 	cols := make([]*schema.Column, len(colDescriptors))
 
 	for i, c := range colDescriptors {
+		dbname := c.Database
+		if c.Database == dbInstanceName {
+			dbname = d.name
+		}
+
 		des := &sql.ColDescriptor{
 			AggFn:    c.AggFn,
-			Database: d.GetName(),
+			Database: dbname,
 			Table:    c.Table,
 			Column:   c.Column,
 			Type:     c.Type,

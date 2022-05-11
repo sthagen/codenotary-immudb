@@ -16,10 +16,12 @@ limitations under the License.
 package database
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -30,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codenotary/immudb/embedded/sql"
 	"github.com/codenotary/immudb/embedded/store"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/fs"
@@ -62,7 +65,7 @@ func makeDb() (DB, func()) {
 }
 
 func makeDbWith(dbName string, opts *Options) (DB, func()) {
-	db, err := NewDB(dbName, opts, logger.NewSimpleLogger("immudb ", os.Stderr))
+	db, err := NewDB(dbName, &dummyMultidbHandler{}, opts, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		log.Fatalf("Error creating Db instance %s", err)
 	}
@@ -78,9 +81,24 @@ func makeDbWith(dbName string, opts *Options) (DB, func()) {
 	}
 }
 
+type dummyMultidbHandler struct {
+}
+
+func (h *dummyMultidbHandler) ListDatabases(ctx context.Context) ([]string, error) {
+	return nil, sql.ErrNoSupported
+}
+
+func (h *dummyMultidbHandler) CreateDatabase(ctx context.Context, db string) error {
+	return sql.ErrNoSupported
+}
+
+func (h *dummyMultidbHandler) UseDatabase(ctx context.Context, db string) error {
+	return sql.ErrNoSupported
+}
+
 func TestDefaultDbCreation(t *testing.T) {
 	options := DefaultOption()
-	db, err := NewDB("mydb", options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	db, err := NewDB("mydb", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		t.Fatalf("Error creating Db instance %s", err)
 	}
@@ -124,7 +142,7 @@ func TestDbCreationInAlreadyExistentDirectories(t *testing.T) {
 	err = os.MkdirAll(filepath.Join(options.GetDBRootPath(), "EdithPiaf"), os.ModePerm)
 	require.NoError(t, err)
 
-	_, err = NewDB("EdithPiaf", options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	_, err = NewDB("EdithPiaf", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.Error(t, err)
 }
 
@@ -132,13 +150,13 @@ func TestDbCreationInInvalidDirectory(t *testing.T) {
 	options := DefaultOption().WithDBRootPath("/?")
 	defer os.RemoveAll(options.GetDBRootPath())
 
-	_, err := NewDB("EdithPiaf", options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	_, err := NewDB("EdithPiaf", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.Error(t, err)
 }
 
 func TestDbCreation(t *testing.T) {
 	options := DefaultOption().WithDBRootPath("Paris")
-	db, err := NewDB("EdithPiaf", options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	db, err := NewDB("EdithPiaf", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		t.Fatalf("Error creating Db instance %s", err)
 	}
@@ -162,19 +180,19 @@ func TestDbCreation(t *testing.T) {
 
 func TestOpenWithMissingDBDirectories(t *testing.T) {
 	options := DefaultOption().WithDBRootPath("Paris")
-	_, err := OpenDB("EdithPiaf", options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	_, err := OpenDB("EdithPiaf", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.Error(t, err)
 }
 
 func TestOpenWithIllegalDBName(t *testing.T) {
 	options := DefaultOption().WithDBRootPath("Paris")
-	_, err := OpenDB("", options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	_, err := OpenDB("", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.ErrorIs(t, err, ErrIllegalArguments)
 }
 
 func TestOpenDB(t *testing.T) {
 	options := DefaultOption().WithDBRootPath("Paris")
-	db, err := NewDB("EdithPiaf", options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	db, err := NewDB("EdithPiaf", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		t.Fatalf("Error creating Db instance %s", err)
 	}
@@ -184,7 +202,7 @@ func TestOpenDB(t *testing.T) {
 		t.Fatalf("Error closing store %s", err)
 	}
 
-	db, err = OpenDB("EdithPiaf", options, logger.NewSimpleLogger("immudb ", os.Stderr))
+	db, err = OpenDB("EdithPiaf", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	if err != nil {
 		t.Fatalf("Error opening database %s", err)
 	}
@@ -201,11 +219,11 @@ func TestOpenV1_0_1_DB(t *testing.T) {
 	defer os.RemoveAll("data_v1.1.0")
 
 	sysOpts := DefaultOption().WithDBRootPath("./data_v1.1.0")
-	sysDB, err := OpenDB("systemdb", sysOpts, logger.NewSimpleLogger("immudb ", os.Stderr))
+	sysDB, err := OpenDB("systemdb", nil, sysOpts, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.NoError(t, err)
 
 	dbOpts := DefaultOption().WithDBRootPath("./data_v1.1.0")
-	db, err := OpenDB("defaultdb", dbOpts, logger.NewSimpleLogger("immudb ", os.Stderr))
+	db, err := OpenDB("defaultdb", nil, dbOpts, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.NoError(t, err)
 
 	err = db.Close()
@@ -262,7 +280,10 @@ func TestDbSetGet(t *testing.T) {
 		require.Equal(t, kv.Value, item.Value)
 
 		_, err = db.Get(&schema.KeyRequest{Key: kv.Key, SinceTx: txhdr.Id, AtTx: txhdr.Id})
-		require.Equal(t, ErrIllegalArguments, err)
+		require.ErrorIs(t, err, ErrIllegalArguments)
+
+		_, err = db.Get(&schema.KeyRequest{Key: kv.Key, SinceTx: txhdr.Id + 1})
+		require.ErrorIs(t, err, ErrIllegalArguments)
 
 		vitem, err := db.VerifiableGet(&schema.VerifiableGetRequest{
 			KeyRequest:   keyReq,
@@ -959,7 +980,15 @@ func TestHistory(t *testing.T) {
 	err = db.FlushIndex(&schema.FlushIndexRequest{CleanupPercentage: 100, Synced: true})
 	require.NoError(t, err)
 
-	meta, err := db.Delete(&schema.DeleteKeysRequest{Keys: [][]byte{kvs[0].Key}})
+	_, err = db.Delete(&schema.DeleteKeysRequest{Keys: [][]byte{kvs[0].Key}})
+	require.NoError(t, err)
+
+	meta, err := db.Set(&schema.SetRequest{
+		KVs: []*schema.KeyValue{{
+			Key:   kvs[0].Key,
+			Value: kvs[0].Value,
+		}},
+	})
 	require.NoError(t, err)
 	lastTx = meta.Id
 
@@ -981,13 +1010,31 @@ func TestHistory(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	for _, val := range inc.Entries {
+	for i, val := range inc.Entries {
 		require.Equal(t, kvs[0].Key, val.Key)
 		if val.GetMetadata().GetDeleted() {
 			require.Empty(t, val.Value)
 		} else {
 			require.Equal(t, kvs[0].Value, val.Value)
 		}
+		require.EqualValues(t, i+1, val.Revision)
+	}
+
+	dec, err := db.History(&schema.HistoryRequest{
+		Key:     kvs[0].Key,
+		SinceTx: lastTx,
+		Desc:    true,
+	})
+	require.NoError(t, err)
+
+	for i, val := range dec.Entries {
+		require.Equal(t, kvs[0].Key, val.Key)
+		if val.GetMetadata().GetDeleted() {
+			require.Empty(t, val.Value)
+		} else {
+			require.Equal(t, kvs[0].Value, val.Value)
+		}
+		require.EqualValues(t, 3-i, val.Revision)
 	}
 
 	inc, err = db.History(&schema.HistoryRequest{
@@ -1544,6 +1591,165 @@ func TestPreconditionedSetParallel(t *testing.T) {
 		})
 	})
 
+}
+
+func TestCheckInvalidKeyRequest(t *testing.T) {
+	for _, d := range []struct {
+		req         *schema.KeyRequest
+		errTextPart string
+	}{
+		{
+			nil, "empty request",
+		},
+		{
+			&schema.KeyRequest{}, "empty key",
+		},
+		{
+			&schema.KeyRequest{
+				Key:     []byte("test"),
+				AtTx:    1,
+				SinceTx: 2,
+			},
+			"SinceTx should not be specified when AtTx is used",
+		},
+		{
+			&schema.KeyRequest{
+				Key:        []byte("test"),
+				AtTx:       1,
+				AtRevision: 2,
+			},
+			"AtRevision should not be specified when AtTx is used",
+		},
+	} {
+		t.Run(fmt.Sprintf("%+v", d), func(t *testing.T) {
+			err := checkKeyRequest(d.req)
+			require.ErrorIs(t, err, ErrIllegalArguments)
+			require.Contains(t, err.Error(), d.errTextPart)
+		})
+	}
+}
+
+func TestGetAtRevision(t *testing.T) {
+	db, closer := makeDb()
+	defer closer()
+
+	const histCount = 10
+
+	for i := 0; i < histCount; i++ {
+		_, err := db.Set(&schema.SetRequest{
+			KVs: []*schema.KeyValue{{
+				Key:   []byte("key"),
+				Value: []byte(fmt.Sprintf("value%d", i)),
+			}},
+		})
+		require.NoError(t, err)
+	}
+
+	t.Run("get the most recent value if no revision is specified", func(t *testing.T) {
+		k, err := db.Get(&schema.KeyRequest{
+			Key: []byte("key"),
+		})
+		require.NoError(t, err)
+		require.Equal(t, []byte("value9"), k.Value)
+	})
+
+	t.Run("get correct values for positive revision numbers", func(t *testing.T) {
+		for i := 0; i < histCount; i++ {
+			k, err := db.Get(&schema.KeyRequest{
+				Key:        []byte("key"),
+				AtRevision: int64(i) + 1,
+			})
+			require.NoError(t, err)
+			require.Equal(t, []byte(fmt.Sprintf("value%d", i)), k.Value)
+		}
+	})
+
+	t.Run("get correct error if positive revision number is to high", func(t *testing.T) {
+		_, err := db.Get(&schema.KeyRequest{
+			Key:        []byte("key"),
+			AtRevision: 11,
+		})
+		require.ErrorIs(t, err, ErrInvalidRevision)
+	})
+
+	t.Run("get correct error if maximum integer value is used for the revision number", func(t *testing.T) {
+		_, err := db.Get(&schema.KeyRequest{
+			Key:        []byte("key"),
+			AtRevision: math.MaxInt64,
+		})
+		require.ErrorIs(t, err, ErrInvalidRevision)
+	})
+
+	t.Run("get correct values for negative revision numbers", func(t *testing.T) {
+		for i := 1; i < histCount; i++ {
+			k, err := db.Get(&schema.KeyRequest{
+				Key:        []byte("key"),
+				AtRevision: -int64(i),
+			})
+			require.NoError(t, err)
+			require.Equal(t, []byte(fmt.Sprintf("value%d", 9-i)), k.Value)
+		}
+	})
+
+	t.Run("get correct error if negative revision number is to low", func(t *testing.T) {
+		_, err := db.Get(&schema.KeyRequest{
+			Key:        []byte("key"),
+			AtRevision: -10,
+		})
+		require.ErrorIs(t, err, ErrInvalidRevision)
+	})
+
+	t.Run("get correct error if minimum negative revision number is used", func(t *testing.T) {
+		_, err := db.Get(&schema.KeyRequest{
+			Key:        []byte("key"),
+			AtRevision: math.MinInt64,
+		})
+		require.ErrorIs(t, err, ErrInvalidRevision)
+	})
+
+	t.Run("get correct error if non-existing key is specified", func(t *testing.T) {
+		_, err := db.Get(&schema.KeyRequest{
+			Key:        []byte("non-existing-key"),
+			AtRevision: 1,
+		})
+		require.ErrorIs(t, err, store.ErrKeyNotFound)
+	})
+
+	t.Run("get correct error if expired entry is fetched through revision", func(t *testing.T) {
+		_, err := db.Set(&schema.SetRequest{
+			KVs: []*schema.KeyValue{{
+				Key:   []byte("exp-key"),
+				Value: []byte("expired-value"),
+				Metadata: &schema.KVMetadata{
+					Expiration: &schema.Expiration{
+						ExpiresAt: time.Now().Unix() - 1,
+					},
+				},
+			}},
+		})
+		require.NoError(t, err)
+
+		_, err = db.Set(&schema.SetRequest{
+			KVs: []*schema.KeyValue{{
+				Key:   []byte("exp-key"),
+				Value: []byte("not-expired-value"),
+			}},
+		})
+		require.NoError(t, err)
+
+		entry, err := db.Get(&schema.KeyRequest{
+			Key: []byte("exp-key"),
+		})
+		require.NoError(t, err)
+		require.Equal(t, []byte("not-expired-value"), entry.Value)
+		require.EqualValues(t, 2, entry.Revision)
+
+		_, err = db.Get(&schema.KeyRequest{
+			Key:        []byte("exp-key"),
+			AtRevision: 1,
+		})
+		require.ErrorIs(t, err, store.ErrExpiredEntry)
+	})
 }
 
 /*

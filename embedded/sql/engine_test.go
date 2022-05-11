@@ -16,6 +16,7 @@ limitations under the License.
 package sql
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -65,6 +66,17 @@ func TestUseDatabase(t *testing.T) {
 
 	_, _, err = engine.Exec("USE DATABASE db2", nil, nil)
 	require.Equal(t, ErrDatabaseDoesNotExist, err)
+
+	_, _, err = engine.Exec("CREATE DATABASE db2", nil, nil)
+	require.NoError(t, err)
+
+	_, _, err = engine.Exec(`
+		USE db1;
+		CREATE TABLE table1(id INTEGER, PRIMARY KEY id);
+		USE db2;
+		CREATE TABLE table1(id INTEGER, PRIMARY KEY id);
+		`, nil, nil)
+	require.NoError(t, err)
 }
 
 func TestCreateTable(t *testing.T) {
@@ -311,18 +323,21 @@ func TestTimestampCasts(t *testing.T) {
 	})
 
 	t.Run("test casting from null values", func(t *testing.T) {
-		_, _, err = engine.Exec(`
+		_, _, err = engine.Exec(
+			`
 			CREATE TABLE IF NOT EXISTS values_table (id INTEGER AUTO_INCREMENT, ts TIMESTAMP, str VARCHAR, i INTEGER, PRIMARY KEY id);
 			INSERT INTO values_table(ts, str,i) VALUES(NOW(), NULL, NULL);
 		`, nil, nil)
 		require.NoError(t, err)
 
-		_, _, err = engine.Exec(`
+		_, _, err = engine.Exec(
+			`
 			UPDATE values_table SET ts = CAST(str AS TIMESTAMP);
 		`, nil, nil)
 		require.NoError(t, err)
 
-		_, _, err = engine.Exec(`
+		_, _, err = engine.Exec(
+			`
 			UPDATE values_table SET ts = CAST(i AS TIMESTAMP);
 		`, nil, nil)
 		require.NoError(t, err)
@@ -463,7 +478,7 @@ func TestUpsertInto(t *testing.T) {
 	require.ErrorIs(t, err, ErrColumnDoesNotExist)
 
 	_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active) VALUES (@id, 'title1', true)", nil, nil)
-	require.Equal(t, ErrMissingParameter, err)
+	require.ErrorIs(t, err, ErrMissingParameter)
 
 	params := make(map[string]interface{}, 1)
 	params["id"] = [4]byte{1, 2, 3, 4}
@@ -477,7 +492,7 @@ func TestUpsertInto(t *testing.T) {
 	require.Contains(t, err.Error(), "is not an integer")
 
 	_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active) VALUES (1, @title, false)", nil, nil)
-	require.Equal(t, ErrMissingParameter, err)
+	require.ErrorIs(t, err, ErrMissingParameter)
 
 	params = make(map[string]interface{}, 1)
 	params["title"] = uint64(1)
@@ -716,7 +731,8 @@ func TestAutoIncrementPK(t *testing.T) {
 	require.Equal(t, int64(6), ctxs[0].LastInsertedPKs()["table1"])
 	require.Equal(t, 1, ctxs[0].UpdatedRows())
 
-	_, ctxs, err = engine.Exec(`
+	_, ctxs, err = engine.Exec(
+		`
 		BEGIN TRANSACTION;
 			INSERT INTO table1(title) VALUES ('name7');
 			INSERT INTO table1(title) VALUES ('name8');
@@ -969,6 +985,11 @@ func TestTransactions(t *testing.T) {
 	require.NoError(t, err)
 
 	_, _, err = engine.Exec(`
+		COMMIT;
+		`, nil, nil)
+	require.ErrorIs(t, err, ErrNoOngoingTx)
+
+	_, _, err = engine.Exec(`
 		BEGIN TRANSACTION;
 			CREATE INDEX ON table2(title);
 		COMMIT;
@@ -998,6 +1019,76 @@ func TestTransactions(t *testing.T) {
 		COMMIT;
 		`, nil, nil)
 	require.NoError(t, err)
+}
+
+func TestTransactionsEdgeCases(t *testing.T) {
+	st, err := store.Open("sqldata_tx_edge_cases", store.DefaultOptions())
+	require.NoError(t, err)
+	defer os.RemoveAll("sqldata_tx_edge_cases")
+
+	engine, err := NewEngine(st, DefaultOptions().WithPrefix(sqlPrefix).WithAutocommit(true))
+	require.NoError(t, err)
+
+	t.Run("nested tx are not supported", func(t *testing.T) {
+		_, _, err = engine.Exec(`
+		BEGIN TRANSACTION;
+			BEGIN TRANSACTION;
+				CREATE TABLE table1 (
+					id INTEGER,
+					title VARCHAR,
+					PRIMARY KEY id
+				);
+			COMMIT;
+		COMMIT;
+		`, nil, nil)
+		require.ErrorIs(t, err, ErrNestedTxNotSupported)
+	})
+
+	_, _, err = engine.Exec("CREATE DATABASE db1", nil, nil)
+	require.NoError(t, err)
+
+	err = engine.SetDefaultDatabase("db1")
+	require.NoError(t, err)
+
+	_, _, err = engine.Exec(`
+		CREATE TABLE table1 (
+			id INTEGER,
+			title VARCHAR,
+			PRIMARY KEY id
+		)`, nil, nil)
+	require.NoError(t, err)
+
+	t.Run("rollback without explicit transaction should return error", func(t *testing.T) {
+		_, _, err = engine.Exec(`
+			UPSERT INTO table1 (id, title) VALUES (1, 'title1');
+			ROLLBACK;
+		`, nil, nil)
+		require.ErrorIs(t, err, ErrNoOngoingTx)
+	})
+
+	t.Run("auto-commit should automatically commit ongoing tx", func(t *testing.T) {
+		ntx, ctxs, err := engine.Exec(`
+			UPSERT INTO table1 (id, title) VALUES (1, 'title1');
+			UPSERT INTO table1 (id, title) VALUES (2, 'title2');
+		`, nil, nil)
+		require.NoError(t, err)
+		require.Len(t, ctxs, 2)
+		require.Nil(t, ntx)
+	})
+
+	t.Run("explicit tx initialization should automatically commit ongoing tx", func(t *testing.T) {
+		engine.autocommit = false
+
+		ntx, ctxs, err := engine.Exec(`
+			UPSERT INTO table1 (id, title) VALUES (3, 'title3');
+			BEGIN TRANSACTION;
+				UPSERT INTO table1 (id, title) VALUES (4, 'title4');
+			COMMIT;
+		`, nil, nil)
+		require.NoError(t, err)
+		require.Len(t, ctxs, 2)
+		require.Nil(t, ntx)
+	})
 }
 
 func TestUseSnapshot(t *testing.T) {
@@ -1207,9 +1298,6 @@ func TestQuery(t *testing.T) {
 	err = engine.SetDefaultDatabase("db1")
 	require.NoError(t, err)
 
-	_, err = engine.Query("SELECT id FROM db2.table1", nil, nil)
-	require.Equal(t, ErrDatabaseDoesNotExist, err)
-
 	_, err = engine.Query("SELECT id FROM table1", nil, nil)
 	require.ErrorIs(t, err, ErrTableDoesNotExist)
 
@@ -1225,7 +1313,7 @@ func TestQuery(t *testing.T) {
 	params := make(map[string]interface{})
 	params["id"] = 0
 
-	r, err := engine.Query("SELECT id FROM db1.table1 WHERE id >= @id", nil, nil)
+	r, err := engine.Query("SELECT id FROM table1 WHERE id >= @id", nil, nil)
 	require.NoError(t, err)
 
 	orderBy := r.OrderBy()
@@ -1241,7 +1329,7 @@ func TestQuery(t *testing.T) {
 	err = r.Close()
 	require.NoError(t, err)
 
-	r, err = engine.Query("SELECT * FROM db1.table1", nil, nil)
+	r, err = engine.Query("SELECT * FROM table1", nil, nil)
 	require.NoError(t, err)
 
 	_, err = r.Read()
@@ -1271,7 +1359,7 @@ func TestQuery(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, colsBySel, 5)
 
-		require.Equal(t, "db1", r.Database().Name())
+		require.Equal(t, "db1", r.Database())
 		require.Equal(t, "table1", r.TableAlias())
 
 		cols, err := r.Columns()
@@ -1304,7 +1392,7 @@ func TestQuery(t *testing.T) {
 		require.NoError(t, err)
 
 		row, err := r.Read()
-		require.Equal(t, ErrColumnDoesNotExist, err)
+		require.ErrorIs(t, err, ErrColumnDoesNotExist)
 		require.Nil(t, row)
 
 		err = r.Close()
@@ -1321,7 +1409,7 @@ func TestQuery(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, colsBySel, 5)
 
-		require.Equal(t, "db1", r.Database().Name())
+		require.Equal(t, "db1", r.Database())
 		require.Equal(t, "mytable1", r.TableAlias())
 
 		cols, err := r.Columns()
@@ -1359,7 +1447,7 @@ func TestQuery(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, colsBySel, 5)
 
-		require.Equal(t, "db1", r.Database().Name())
+		require.Equal(t, "db1", r.Database())
 		require.Equal(t, "mytable1", r.TableAlias())
 
 		cols, err := r.Columns()
@@ -1415,7 +1503,7 @@ func TestQuery(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = r.Read()
-	require.Equal(t, ErrInvalidCondition, err)
+	require.ErrorIs(t, err, ErrInvalidCondition)
 
 	err = r.Close()
 	require.NoError(t, err)
@@ -1427,7 +1515,7 @@ func TestQuery(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = r.Read()
-	require.Equal(t, ErrMissingParameter, err)
+	require.ErrorIs(t, err, ErrMissingParameter)
 
 	r.SetParameters(params)
 
@@ -1481,7 +1569,7 @@ func TestQuery(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = r.Read()
-	require.Equal(t, ErrDivisionByZero, err)
+	require.ErrorIs(t, err, ErrDivisionByZero)
 
 	err = r.Close()
 	require.NoError(t, err)
@@ -2578,7 +2666,7 @@ func TestQueryWithRowFiltering(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = r.Read()
-	require.Equal(t, ErrNotComparableValues, err)
+	require.ErrorIs(t, err, ErrNotComparableValues)
 
 	err = r.Close()
 	require.NoError(t, err)
@@ -2627,7 +2715,7 @@ func TestQueryWithRowFiltering(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = r.Read()
-	require.Equal(t, ErrNotComparableValues, err)
+	require.ErrorIs(t, err, ErrNotComparableValues)
 
 	err = r.Close()
 	require.NoError(t, err)
@@ -3458,7 +3546,7 @@ func TestSubQuery(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = r.Read()
-	require.Equal(t, ErrInvalidCondition, err)
+	require.ErrorIs(t, err, ErrInvalidCondition)
 
 	err = r.Close()
 	require.NoError(t, err)
@@ -3639,6 +3727,10 @@ func TestInferParameters(t *testing.T) {
 	require.Equal(t, IntegerType, params["id"])
 	require.Equal(t, VarcharType, params["title"])
 
+	params, err = engine.InferParameters("BEGIN TRANSACTION; INSERT INTO mytable(id, title) VALUES (@id, @title); ROLLBACK;", nil)
+	require.NoError(t, err)
+	require.Len(t, params, 2)
+
 	params, err = engine.InferParameters("INSERT INTO mytable(id, title) VALUES (1, 'title1')", nil)
 	require.NoError(t, err)
 	require.Len(t, params, 0)
@@ -3691,6 +3783,21 @@ func TestInferParameters(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, params, 1)
 	require.Equal(t, BooleanType, params["active"])
+
+	params, err = engine.InferParameters("SELECT * FROM TABLES() WHERE name = @tablename", nil)
+	require.NoError(t, err)
+	require.Len(t, params, 1)
+	require.Equal(t, VarcharType, params["tablename"])
+
+	params, err = engine.InferParameters("SELECT * FROM INDEXES('mytable') idxs WHERE idxs.\"unique\" = @unique", nil)
+	require.NoError(t, err)
+	require.Len(t, params, 1)
+	require.Equal(t, BooleanType, params["unique"])
+
+	params, err = engine.InferParameters("SELECT * FROM COLUMNS('mytable') WHERE name = @column", nil)
+	require.NoError(t, err)
+	require.Len(t, params, 1)
+	require.Equal(t, VarcharType, params["column"])
 }
 
 func TestInferParametersPrepared(t *testing.T) {
@@ -4839,4 +4946,329 @@ func TestTemporalQueriesEdgeCases(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+func TestMultiDBCatalogQueries(t *testing.T) {
+	st, err := store.Open("multidb_catalog_queries", store.DefaultOptions())
+	require.NoError(t, err)
+	defer os.RemoveAll("multidb_catalog_queries")
+	defer st.Close()
+
+	engine, err := NewEngine(st, DefaultOptions().WithPrefix(sqlPrefix))
+	require.NoError(t, err)
+
+	t.Run("without a handler, multi database stmts are locally resolved", func(t *testing.T) {
+		_, _, err = engine.Exec("CREATE DATABASE db1", nil, nil)
+		require.NoError(t, err)
+
+		err = engine.SetDefaultDatabase("db1")
+		require.NoError(t, err)
+
+		r, err := engine.Query("SELECT * FROM DATABASES()", nil, nil)
+		require.NoError(t, err)
+
+		row, err := r.Read()
+		require.NoError(t, err)
+		require.NotNil(t, row)
+		require.Equal(t, "db1", row.ValuesBySelector["(*.databases.name)"].Value())
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+	})
+
+	t.Run("with a handler, multi database stmts are delegated to the handler", func(t *testing.T) {
+		dbs := []string{"db1", "db2"}
+
+		handler := &multidbHandlerMock{
+			dbs: dbs,
+		}
+		engine.SetMultiDBHandler(handler)
+
+		_, _, err = engine.Exec(`
+			BEGIN TRANSACTION;
+				CREATE DATABASE db1;
+			COMMIT;
+		`, nil, nil)
+		require.ErrorIs(t, err, ErrNonTransactionalStmt)
+
+		_, _, err = engine.Exec("CREATE DATABASE db1", nil, nil)
+		require.ErrorIs(t, err, ErrNoSupported)
+
+		_, _, err = engine.Exec("USE DATABASE db1", nil, nil)
+		require.NoError(t, err)
+
+		ntx, ctxs, err := engine.Exec("USE DATABASE db1; USE DATABASE db2", nil, nil)
+		require.NoError(t, err)
+		require.Nil(t, ntx)
+		require.Empty(t, ctxs)
+
+		_, _, err = engine.Exec("BEGIN TRANSACTION; USE DATABASE db1; COMMIT;", nil, nil)
+		require.ErrorIs(t, err, ErrNonTransactionalStmt)
+
+		r, err := engine.Query("SELECT * FROM DATABASES()", nil, nil)
+		require.NoError(t, err)
+
+		for _, db := range dbs {
+			row, err := r.Read()
+			require.NoError(t, err)
+			require.NotNil(t, row)
+			require.NotNil(t, row)
+			require.Equal(t, db, row.ValuesBySelector["(*.databases.name)"].Value())
+		}
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("with a handler, statements must only involve current selected database", func(t *testing.T) {
+		dbs := []string{"db1", "db2"}
+
+		handler := &multidbHandlerMock{
+			dbs: dbs,
+		}
+		engine.SetMultiDBHandler(handler)
+
+		_, _, err = engine.Exec("USE DATABASE db1", nil, nil)
+		require.NoError(t, err)
+
+		tx, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+		require.NotNil(t, tx)
+
+		// doing stmt initialization because cross database references are disabled by grammar
+		tableRef := &tableRef{
+			db:    "db2",
+			table: "table1",
+		}
+
+		_, err = tableRef.referencedTable(tx)
+		require.ErrorIs(t, err, ErrNoSupported)
+
+		tx.currentDB = nil
+		_, err = tableRef.referencedTable(tx)
+		require.ErrorIs(t, err, ErrNoDatabaseSelected)
+	})
+}
+
+type multidbHandlerMock struct {
+	dbs []string
+}
+
+func (h *multidbHandlerMock) ListDatabases(ctx context.Context) ([]string, error) {
+	return h.dbs, nil
+}
+
+func (h *multidbHandlerMock) CreateDatabase(ctx context.Context, db string) error {
+	return ErrNoSupported
+}
+
+func (h *multidbHandlerMock) UseDatabase(ctx context.Context, db string) error {
+	return nil
+}
+
+func TestSingleDBCatalogQueries(t *testing.T) {
+	st, err := store.Open("singledb_catalog_queries", store.DefaultOptions())
+	require.NoError(t, err)
+	defer os.RemoveAll("singledb_catalog_queries")
+	defer st.Close()
+
+	engine, err := NewEngine(st, DefaultOptions().WithPrefix(sqlPrefix))
+	require.NoError(t, err)
+
+	_, _, err = engine.Exec("CREATE DATABASE db1;", nil, nil)
+	require.NoError(t, err)
+
+	tx, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+	require.NoError(t, err)
+
+	_, _, err = engine.Exec(`
+		USE DATABASE db1;
+		
+		CREATE TABLE mytable1(id INTEGER NOT NULL AUTO_INCREMENT, title VARCHAR[256], PRIMARY KEY id);
+		CREATE INDEX ON mytable1(title);
+	
+		CREATE TABLE mytable2(id INTEGER NOT NULL, name VARCHAR[100], active BOOLEAN, PRIMARY KEY id);
+		CREATE INDEX ON mytable2(name);
+		CREATE UNIQUE INDEX ON mytable2(name, active);
+	`, nil, tx)
+	require.NoError(t, err)
+
+	defer tx.Cancel()
+
+	t.Run("querying tables without any condition should return all tables", func(t *testing.T) {
+		r, err := engine.Query("SELECT * FROM TABLES()", nil, tx)
+		require.NoError(t, err)
+
+		defer r.Close()
+
+		row, err := r.Read()
+		require.NoError(t, err)
+		require.Equal(t, "mytable1", row.ValuesBySelector["(db1.tables.name)"].Value())
+
+		row, err = r.Read()
+		require.NoError(t, err)
+		require.Equal(t, "mytable2", row.ValuesBySelector["(db1.tables.name)"].Value())
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+	})
+
+	t.Run("querying tables with name equality comparison should return only one table", func(t *testing.T) {
+		r, err := engine.Query("SELECT * FROM TABLES() WHERE name = 'mytable2'", nil, tx)
+		require.NoError(t, err)
+
+		defer r.Close()
+
+		row, err := r.Read()
+		require.NoError(t, err)
+		require.Equal(t, "mytable2", row.ValuesBySelector["(db1.tables.name)"].Value())
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+	})
+
+	t.Run("unconditional index query should return all the indexes of mytable1", func(t *testing.T) {
+		params := map[string]interface{}{
+			"tableName": "mytable1",
+		}
+		r, err := engine.Query("SELECT * FROM INDEXES(@tableName)", params, tx)
+		require.NoError(t, err)
+
+		defer r.Close()
+
+		row, err := r.Read()
+		require.NoError(t, err)
+		require.Equal(t, "mytable1", row.ValuesBySelector["(db1.indexes.table)"].Value())
+		require.Equal(t, "mytable1[id]", row.ValuesBySelector["(db1.indexes.name)"].Value())
+		require.True(t, row.ValuesBySelector["(db1.indexes.unique)"].Value().(bool))
+		require.True(t, row.ValuesBySelector["(db1.indexes.primary)"].Value().(bool))
+
+		row, err = r.Read()
+		require.NoError(t, err)
+		require.Equal(t, "mytable1", row.ValuesBySelector["(db1.indexes.table)"].Value())
+		require.Equal(t, "mytable1[title]", row.ValuesBySelector["(db1.indexes.name)"].Value())
+		require.False(t, row.ValuesBySelector["(db1.indexes.unique)"].Value().(bool))
+		require.False(t, row.ValuesBySelector["(db1.indexes.primary)"].Value().(bool))
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+	})
+
+	t.Run("unconditional index query should return all the indexes of mytable2", func(t *testing.T) {
+		r, err := engine.Query("SELECT * FROM INDEXES('mytable2')", nil, tx)
+		require.NoError(t, err)
+
+		defer r.Close()
+
+		row, err := r.Read()
+		require.NoError(t, err)
+		require.Equal(t, "mytable2", row.ValuesBySelector["(db1.indexes.table)"].Value())
+		require.Equal(t, "mytable2[id]", row.ValuesBySelector["(db1.indexes.name)"].Value())
+		require.True(t, row.ValuesBySelector["(db1.indexes.unique)"].Value().(bool))
+		require.True(t, row.ValuesBySelector["(db1.indexes.primary)"].Value().(bool))
+
+		row, err = r.Read()
+		require.NoError(t, err)
+		require.Equal(t, "mytable2", row.ValuesBySelector["(db1.indexes.table)"].Value())
+		require.Equal(t, "mytable2[name]", row.ValuesBySelector["(db1.indexes.name)"].Value())
+		require.False(t, row.ValuesBySelector["(db1.indexes.unique)"].Value().(bool))
+		require.False(t, row.ValuesBySelector["(db1.indexes.primary)"].Value().(bool))
+
+		row, err = r.Read()
+		require.NoError(t, err)
+		require.Equal(t, "mytable2", row.ValuesBySelector["(db1.indexes.table)"].Value())
+		require.Equal(t, "mytable2[name,active]", row.ValuesBySelector["(db1.indexes.name)"].Value())
+		require.True(t, row.ValuesBySelector["(db1.indexes.unique)"].Value().(bool))
+		require.False(t, row.ValuesBySelector["(db1.indexes.primary)"].Value().(bool))
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+	})
+
+	t.Run("unconditional column query should return all the columns of mytable1", func(t *testing.T) {
+		params := map[string]interface{}{
+			"tableName": "mytable1",
+		}
+
+		r, err := engine.Query("SELECT * FROM COLUMNS(@tableName)", params, tx)
+		require.NoError(t, err)
+
+		defer r.Close()
+
+		row, err := r.Read()
+		require.NoError(t, err)
+		require.Equal(t, "mytable1", row.ValuesBySelector["(db1.columns.table)"].Value())
+		require.Equal(t, "id", row.ValuesBySelector["(db1.columns.name)"].Value())
+		require.Equal(t, IntegerType, row.ValuesBySelector["(db1.columns.type)"].Value())
+		require.Equal(t, int64(8), row.ValuesBySelector["(db1.columns.max_length)"].Value())
+		require.False(t, row.ValuesBySelector["(db1.columns.nullable)"].Value().(bool))
+		require.True(t, row.ValuesBySelector["(db1.columns.auto_increment)"].Value().(bool))
+		require.True(t, row.ValuesBySelector["(db1.columns.indexed)"].Value().(bool))
+		require.True(t, row.ValuesBySelector["(db1.columns.primary)"].Value().(bool))
+		require.True(t, row.ValuesBySelector["(db1.columns.unique)"].Value().(bool))
+
+		row, err = r.Read()
+		require.NoError(t, err)
+		require.Equal(t, "mytable1", row.ValuesBySelector["(db1.columns.table)"].Value())
+		require.Equal(t, "title", row.ValuesBySelector["(db1.columns.name)"].Value())
+		require.Equal(t, VarcharType, row.ValuesBySelector["(db1.columns.type)"].Value())
+		require.Equal(t, int64(256), row.ValuesBySelector["(db1.columns.max_length)"].Value())
+		require.True(t, row.ValuesBySelector["(db1.columns.nullable)"].Value().(bool))
+		require.False(t, row.ValuesBySelector["(db1.columns.auto_increment)"].Value().(bool))
+		require.True(t, row.ValuesBySelector["(db1.columns.indexed)"].Value().(bool))
+		require.False(t, row.ValuesBySelector["(db1.columns.primary)"].Value().(bool))
+		require.False(t, row.ValuesBySelector["(db1.columns.unique)"].Value().(bool))
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+	})
+
+	t.Run("unconditional column query should return all the columns of mytable2", func(t *testing.T) {
+		r, err := engine.Query("SELECT * FROM COLUMNS('mytable2')", nil, tx)
+		require.NoError(t, err)
+
+		defer r.Close()
+
+		row, err := r.Read()
+		require.NoError(t, err)
+		require.Equal(t, "mytable2", row.ValuesBySelector["(db1.columns.table)"].Value())
+		require.Equal(t, "id", row.ValuesBySelector["(db1.columns.name)"].Value())
+		require.Equal(t, IntegerType, row.ValuesBySelector["(db1.columns.type)"].Value())
+		require.Equal(t, int64(8), row.ValuesBySelector["(db1.columns.max_length)"].Value())
+		require.False(t, row.ValuesBySelector["(db1.columns.nullable)"].Value().(bool))
+		require.False(t, row.ValuesBySelector["(db1.columns.auto_increment)"].Value().(bool))
+		require.True(t, row.ValuesBySelector["(db1.columns.indexed)"].Value().(bool))
+		require.True(t, row.ValuesBySelector["(db1.columns.primary)"].Value().(bool))
+		require.True(t, row.ValuesBySelector["(db1.columns.unique)"].Value().(bool))
+
+		row, err = r.Read()
+		require.NoError(t, err)
+		require.Equal(t, "mytable2", row.ValuesBySelector["(db1.columns.table)"].Value())
+		require.Equal(t, "name", row.ValuesBySelector["(db1.columns.name)"].Value())
+		require.Equal(t, VarcharType, row.ValuesBySelector["(db1.columns.type)"].Value())
+		require.Equal(t, int64(100), row.ValuesBySelector["(db1.columns.max_length)"].Value())
+		require.True(t, row.ValuesBySelector["(db1.columns.nullable)"].Value().(bool))
+		require.False(t, row.ValuesBySelector["(db1.columns.auto_increment)"].Value().(bool))
+		require.True(t, row.ValuesBySelector["(db1.columns.indexed)"].Value().(bool))
+		require.False(t, row.ValuesBySelector["(db1.columns.primary)"].Value().(bool))
+		require.False(t, row.ValuesBySelector["(db1.columns.unique)"].Value().(bool))
+
+		row, err = r.Read()
+		require.NoError(t, err)
+		require.Equal(t, "mytable2", row.ValuesBySelector["(db1.columns.table)"].Value())
+		require.Equal(t, "active", row.ValuesBySelector["(db1.columns.name)"].Value())
+		require.Equal(t, BooleanType, row.ValuesBySelector["(db1.columns.type)"].Value())
+		require.Equal(t, int64(1), row.ValuesBySelector["(db1.columns.max_length)"].Value())
+		require.True(t, row.ValuesBySelector["(db1.columns.nullable)"].Value().(bool))
+		require.False(t, row.ValuesBySelector["(db1.columns.auto_increment)"].Value().(bool))
+		require.True(t, row.ValuesBySelector["(db1.columns.indexed)"].Value().(bool))
+		require.False(t, row.ValuesBySelector["(db1.columns.primary)"].Value().(bool))
+		require.False(t, row.ValuesBySelector["(db1.columns.unique)"].Value().(bool))
+
+		_, err = r.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+	})
 }

@@ -14,24 +14,38 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package immuc
+package client
 
 import (
-	"testing"
-
-	"github.com/spf13/viper"
-	"github.com/stretchr/testify/require"
+	"github.com/codenotary/immudb/pkg/api/schema"
 )
 
-func TestInitErrors(t *testing.T) {
-	ic := immuc{
-		options: &Options{},
+type GetOption func(req *schema.KeyRequest) error
+
+func NoWait(nowait bool) GetOption {
+	return func(req *schema.KeyRequest) error {
+		req.NoWait = nowait
+		return nil
 	}
+}
 
-	viper.Set("mtls", true)
-	OptionsFromEnv()
-	viper.Set("mtls", false)
+func SinceTx(tx uint64) GetOption {
+	return func(req *schema.KeyRequest) error {
+		req.SinceTx = tx
+		return nil
+	}
+}
 
-	ic.SetValueOnly(true)
-	require.True(t, ic.ValueOnly())
+func AtTx(tx uint64) GetOption {
+	return func(req *schema.KeyRequest) error {
+		req.AtTx = tx
+		return nil
+	}
+}
+
+func AtRevision(rev int64) GetOption {
+	return func(req *schema.KeyRequest) error {
+		req.AtRevision = rev
+		return nil
+	}
 }

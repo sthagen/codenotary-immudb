@@ -26,7 +26,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/client"
@@ -41,15 +40,12 @@ func (i *immuc) Set(args []string) (string, error) {
 		reader = bufio.NewReader(os.Stdin)
 	}
 
-	var buf bytes.Buffer
-	tee := io.TeeReader(reader, &buf)
-
 	key, err := ioutil.ReadAll(bytes.NewReader([]byte(args[0])))
 	if err != nil {
 		return "", err
 	}
 
-	value, err := ioutil.ReadAll(tee)
+	value, err := ioutil.ReadAll(reader)
 	if err != nil {
 		return "", err
 	}
@@ -62,13 +58,6 @@ func (i *immuc) Set(args []string) (string, error) {
 		return "", err
 	}
 
-	time.Sleep(1 * time.Millisecond)
-
-	value2, err := ioutil.ReadAll(&buf)
-	if err != nil {
-		return "", err
-	}
-
 	txhdr := response.(*schema.TxHeader)
 	scstr, err := i.Execute(func(immuClient client.ImmuClient) (interface{}, error) {
 		return immuClient.GetSince(ctx, key, txhdr.Id)
@@ -77,7 +66,7 @@ func (i *immuc) Set(args []string) (string, error) {
 		return "", err
 	}
 
-	return PrintKV([]byte(args[0]), nil, value2, scstr.(*schema.Entry).Tx, false, false), nil
+	return PrintKV(scstr.(*schema.Entry), false, false), nil
 }
 
 func (i *immuc) VerifiedSet(args []string) (string, error) {
@@ -94,10 +83,7 @@ func (i *immuc) VerifiedSet(args []string) (string, error) {
 		return "", err
 	}
 
-	var buf bytes.Buffer
-	tee := io.TeeReader(reader, &buf)
-
-	value, err := ioutil.ReadAll(tee)
+	value, err := ioutil.ReadAll(reader)
 	if err != nil {
 		return "", err
 	}
@@ -109,13 +95,6 @@ func (i *immuc) VerifiedSet(args []string) (string, error) {
 		return "", err
 	}
 
-	time.Sleep(1 * time.Millisecond)
-
-	value2, err := ioutil.ReadAll(&buf)
-	if err != nil {
-		return "", err
-	}
-
 	vi, err := i.Execute(func(immuClient client.ImmuClient) (interface{}, error) {
 		return immuClient.VerifiedGet(ctx, key)
 	})
@@ -123,7 +102,61 @@ func (i *immuc) VerifiedSet(args []string) (string, error) {
 		return "", err
 	}
 
-	return PrintKV([]byte(args[0]), nil, value2, vi.(*schema.Entry).Tx, true, false), nil
+	return PrintKV(vi.(*schema.Entry), true, false), nil
+}
+
+func (i *immuc) Restore(args []string) (string, error) {
+	key, atRevision, hasRevision, err := i.parseKeyArg(args[0])
+	if err != nil {
+		return "", err
+	}
+
+	if !hasRevision {
+		return "please specify the key with revision to restore", nil
+	}
+
+	if atRevision == 0 {
+		return "can not restore current revision", nil
+	}
+
+	ctx := context.Background()
+	oldValue, err := i.Execute(func(immuClient client.ImmuClient) (interface{}, error) {
+		return immuClient.Get(ctx, key, client.AtRevision(atRevision))
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "NotFound") {
+			return fmt.Sprintf("key not found: %v ", string(key)), nil
+		}
+		rpcerrors := strings.SplitAfter(err.Error(), "=")
+		if len(rpcerrors) > 1 {
+			return rpcerrors[len(rpcerrors)-1], nil
+		}
+		return "", err
+	}
+
+	oldEntry := oldValue.(*schema.Entry)
+
+	newValue, err := i.Execute(func(immuClient client.ImmuClient) (interface{}, error) {
+		return immuClient.SetAll(ctx, &schema.SetRequest{
+			KVs: []*schema.KeyValue{{
+				Key:   oldEntry.Key,
+				Value: oldEntry.Value,
+			}},
+		})
+	})
+	if err != nil {
+		return "", err
+	}
+
+	txhdr := newValue.(*schema.TxHeader)
+	scstr, err := i.Execute(func(immuClient client.ImmuClient) (interface{}, error) {
+		return immuClient.GetSince(ctx, key, txhdr.Id)
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return PrintKV(scstr.(*schema.Entry), false, false), nil
 }
 
 func (i *immuc) DeleteKey(args []string) (string, error) {
@@ -261,7 +294,7 @@ func (i *immuc) DatabaseList(args []string) (string, error) {
 	var dbList string
 
 	for _, val := range resp.(*schema.DatabaseListResponse).Databases {
-		if i.options.CurrentDatabase == val.DatabaseName {
+		if i.options.immudbClientOptions.CurrentDatabase == val.DatabaseName {
 			dbList += "*"
 		}
 		dbList += fmt.Sprintf("%s", val.DatabaseName)
@@ -274,8 +307,8 @@ func (i *immuc) UseDatabase(args []string) (string, error) {
 	var dbname string
 	if len(args) > 0 {
 		dbname = args[0]
-	} else if len(i.options.Database) > 0 {
-		dbname = i.options.Database
+	} else if len(i.options.immudbClientOptions.Database) > 0 {
+		dbname = i.options.immudbClientOptions.Database
 	} else {
 		return "", fmt.Errorf("database name not specified")
 	}

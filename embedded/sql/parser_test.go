@@ -24,6 +24,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func init() {
+	yyErrorVerbose = true
+}
+
 func TestEmptyInput(t *testing.T) {
 	_, err := ParseString("")
 	require.Error(t, err)
@@ -64,14 +68,14 @@ func TestUseDatabaseStmt(t *testing.T) {
 		expectedError  error
 	}{
 		{
-			input:          "USE DATABASE db1",
+			input:          "USE db1",
 			expectedOutput: []SQLStmt{&UseDatabaseStmt{DB: "db1"}},
 			expectedError:  nil,
 		},
 		{
-			input:          "USE db1",
-			expectedOutput: nil,
-			expectedError:  errors.New("syntax error: unexpected IDENTIFIER, expecting DATABASE or SNAPSHOT at position 7"),
+			input:          "USE DATABASE db1",
+			expectedOutput: []SQLStmt{&UseDatabaseStmt{DB: "db1"}},
+			expectedError:  nil,
 		},
 	}
 
@@ -107,7 +111,7 @@ func TestUseSnapshotStmt(t *testing.T) {
 			expectedOutput: []SQLStmt{
 				&UseSnapshotStmt{
 					period: period{
-						end: &openPeriod{instant: periodInstant{instantType: timeInstant, exp: &SysFn{fn: "now"}}},
+						end: &openPeriod{instant: periodInstant{instantType: timeInstant, exp: &FnCall{fn: "now"}}},
 					},
 				},
 			},
@@ -118,7 +122,7 @@ func TestUseSnapshotStmt(t *testing.T) {
 			expectedOutput: []SQLStmt{
 				&UseSnapshotStmt{
 					period: period{
-						end: &openPeriod{instant: periodInstant{instantType: timeInstant, exp: &SysFn{fn: "now"}}, inclusive: true},
+						end: &openPeriod{instant: periodInstant{instantType: timeInstant, exp: &FnCall{fn: "now"}}, inclusive: true},
 					},
 				},
 			},
@@ -159,7 +163,7 @@ func TestUseSnapshotStmt(t *testing.T) {
 								exp:         &NumExp{op: SUBSOP, left: &Param{id: "fromtx"}, right: &Number{val: 1}},
 							},
 						},
-						end: &openPeriod{instant: periodInstant{instantType: timeInstant, exp: &SysFn{fn: "now"}}},
+						end: &openPeriod{instant: periodInstant{instantType: timeInstant, exp: &FnCall{fn: "now"}}},
 					},
 				},
 			},
@@ -207,6 +211,17 @@ func TestCreateTableStmt(t *testing.T) {
 					ifNotExists: false,
 					colsSpec:    []*ColSpec{{colName: "id", colType: IntegerType, autoIncrement: true}},
 					pkColNames:  []string{"id"},
+				}},
+			expectedError: nil,
+		},
+		{
+			input: "CREATE TABLE \"table\" (\"primary\" INTEGER AUTO_INCREMENT, PRIMARY KEY \"primary\")",
+			expectedOutput: []SQLStmt{
+				&CreateTableStmt{
+					table:       "table",
+					ifNotExists: false,
+					colsSpec:    []*ColSpec{{colName: "primary", colType: IntegerType, autoIncrement: true}},
+					pkColNames:  []string{"primary"},
 				}},
 			expectedError: nil,
 		},
@@ -286,6 +301,16 @@ func TestCreateIndexStmt(t *testing.T) {
 			input:          "CREATE INDEX ON table1(id)",
 			expectedOutput: []SQLStmt{&CreateIndexStmt{table: "table1", cols: []string{"id"}}},
 			expectedError:  nil,
+		},
+		{
+			input:          "CREATE INDEX ON \"table\"(\"primary\")",
+			expectedOutput: []SQLStmt{&CreateIndexStmt{table: "table", cols: []string{"primary"}}},
+			expectedError:  nil,
+		},
+		{
+			input:          "CREATE INDEX ON \"table(\"primary\")",
+			expectedOutput: []SQLStmt{&CreateIndexStmt{table: "table", cols: []string{"primary"}}},
+			expectedError:  errors.New("syntax error: unexpected ERROR, expecting IDENTIFIER at position 22"),
 		},
 		{
 			input:          "CREATE INDEX IF NOT EXISTS ON table1(id)",
@@ -373,7 +398,7 @@ func TestInsertIntoStmt(t *testing.T) {
 					rows: []*RowSpec{
 						{Values: []ValueExp{
 							&Number{val: 2},
-							&SysFn{fn: "now"},
+							&FnCall{fn: "now"},
 							&Varchar{val: "un'titled row"},
 							&Bool{val: true},
 							&Bool{val: false},
@@ -395,7 +420,7 @@ func TestInsertIntoStmt(t *testing.T) {
 					rows: []*RowSpec{
 						{Values: []ValueExp{
 							&Number{val: 2},
-							&SysFn{fn: "now"},
+							&FnCall{fn: "now"},
 							&Varchar{val: ""},
 							&Bool{val: true},
 							&Bool{val: false},
@@ -417,7 +442,7 @@ func TestInsertIntoStmt(t *testing.T) {
 					rows: []*RowSpec{
 						{Values: []ValueExp{
 							&Number{val: 2},
-							&SysFn{fn: "now"},
+							&FnCall{fn: "now"},
 							&Varchar{val: "'"},
 							&Bool{val: true},
 							&Bool{val: false},
@@ -439,7 +464,7 @@ func TestInsertIntoStmt(t *testing.T) {
 					rows: []*RowSpec{
 						{Values: []ValueExp{
 							&Number{val: 2},
-							&SysFn{fn: "now"},
+							&FnCall{fn: "now"},
 							&Varchar{val: "untitled row"},
 							&Bool{val: true},
 							&Param{id: "param1", pos: 1},
@@ -461,7 +486,7 @@ func TestInsertIntoStmt(t *testing.T) {
 					rows: []*RowSpec{
 						{Values: []ValueExp{
 							&Number{val: 2},
-							&SysFn{fn: "now"},
+							&FnCall{fn: "now"},
 							&Param{id: "param1", pos: 1},
 							&Bool{val: true},
 							&Param{id: "param2", pos: 2},
@@ -765,7 +790,7 @@ func TestSelectStmt(t *testing.T) {
 			expectedError: nil,
 		},
 		{
-			input: "SELECT id, title FROM db1.table1 AS t1",
+			input: "SELECT id, title FROM table1 AS t1",
 			expectedOutput: []SQLStmt{
 				&SelectStmt{
 					distinct: false,
@@ -773,12 +798,12 @@ func TestSelectStmt(t *testing.T) {
 						&ColSelector{col: "id"},
 						&ColSelector{col: "title"},
 					},
-					ds: &tableRef{db: "db1", table: "table1", as: "t1"},
+					ds: &tableRef{table: "table1", as: "t1"},
 				}},
 			expectedError: nil,
 		},
 		{
-			input: "SELECT t1.id, title FROM db1.table1 t1",
+			input: "SELECT t1.id, title FROM table1 t1",
 			expectedOutput: []SQLStmt{
 				&SelectStmt{
 					distinct: false,
@@ -786,20 +811,20 @@ func TestSelectStmt(t *testing.T) {
 						&ColSelector{table: "t1", col: "id"},
 						&ColSelector{col: "title"},
 					},
-					ds: &tableRef{db: "db1", table: "table1", as: "t1"},
+					ds: &tableRef{table: "table1", as: "t1"},
 				}},
 			expectedError: nil,
 		},
 		{
-			input: "SELECT db1.table1.id, title FROM db1.table1 AS t1 WHERE payload >= x'AED0393F'",
+			input: "SELECT table1.id, title FROM table1 AS t1 WHERE payload >= x'AED0393F'",
 			expectedOutput: []SQLStmt{
 				&SelectStmt{
 					distinct: false,
 					selectors: []Selector{
-						&ColSelector{db: "db1", table: "table1", col: "id"},
+						&ColSelector{table: "table1", col: "id"},
 						&ColSelector{col: "title"},
 					},
-					ds: &tableRef{db: "db1", table: "table1", as: "t1"},
+					ds: &tableRef{table: "table1", as: "t1"},
 					where: &CmpBoolExp{
 						op: GE,
 						left: &ColSelector{
@@ -811,15 +836,15 @@ func TestSelectStmt(t *testing.T) {
 			expectedError: nil,
 		},
 		{
-			input: "SELECT db1.table1.id, title FROM db1.table1 AS t1 WHERE id <> 1",
+			input: "SELECT table1.id, title FROM table1 AS t1 WHERE id <> 1",
 			expectedOutput: []SQLStmt{
 				&SelectStmt{
 					distinct: false,
 					selectors: []Selector{
-						&ColSelector{db: "db1", table: "table1", col: "id"},
+						&ColSelector{table: "table1", col: "id"},
 						&ColSelector{col: "title"},
 					},
-					ds: &tableRef{db: "db1", table: "table1", as: "t1"},
+					ds: &tableRef{table: "table1", as: "t1"},
 					where: &CmpBoolExp{
 						op: NE,
 						left: &ColSelector{
@@ -831,15 +856,15 @@ func TestSelectStmt(t *testing.T) {
 			expectedError: nil,
 		},
 		{
-			input: "SELECT db1.table1.id, title FROM db1.table1 AS t1 WHERE id != 1",
+			input: "SELECT table1.id, title FROM table1 AS t1 WHERE id != 1",
 			expectedOutput: []SQLStmt{
 				&SelectStmt{
 					distinct: false,
 					selectors: []Selector{
-						&ColSelector{db: "db1", table: "table1", col: "id"},
+						&ColSelector{table: "table1", col: "id"},
 						&ColSelector{col: "title"},
 					},
-					ds: &tableRef{db: "db1", table: "table1", as: "t1"},
+					ds: &tableRef{table: "table1", as: "t1"},
 					where: &CmpBoolExp{
 						op: NE,
 						left: &ColSelector{
@@ -877,7 +902,7 @@ func TestSelectStmt(t *testing.T) {
 								left: &ColSelector{
 									col: "time",
 								},
-								right: &SysFn{fn: "now"},
+								right: &FnCall{fn: "now"},
 							},
 						},
 						right: &CmpBoolExp{

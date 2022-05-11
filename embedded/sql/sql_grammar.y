@@ -109,7 +109,7 @@ func setResult(l yyLexer, stmts []SQLStmt) {
 %type <rows> rows
 %type <row> row
 %type <values> values opt_values
-%type <value> val
+%type <value> val fnCall
 %type <sel> selector
 %type <sels> opt_selectors selectors
 %type <col> col
@@ -180,6 +180,11 @@ ddlstmt:
     CREATE DATABASE IDENTIFIER
     {
         $$ = &CreateDatabaseStmt{DB: $3}
+    }
+|
+    USE IDENTIFIER
+    {
+        $$ = &UseDatabaseStmt{DB: $2}
     }
 |
     USE DATABASE IDENTIFIER
@@ -377,9 +382,9 @@ val:
         $$ = &Cast{val: $3, t: $5}
     }
 |
-    IDENTIFIER '(' ')'
+    fnCall
     {
-        $$ = &SysFn{fn: $1}
+        $$ = $1
     }
 |
     NPARAM
@@ -395,6 +400,12 @@ val:
     NULL
     {
         $$ = &NullValue{t: AnyType}
+    }
+
+fnCall:
+    IDENTIFIER '(' opt_values ')'
+    {
+        $$ = &FnCall{fn: $1, params: $3}
     }
 
 colsSpec:
@@ -550,11 +561,6 @@ col:
     {
         $$ = &ColSelector{table: $1, col: $3}
     }
-|
-    IDENTIFIER '.' IDENTIFIER '.' IDENTIFIER
-    {
-        $$ = &ColSelector{db: $1, table: $3, col: $5}
-    }
 
 ds:
     tableRef opt_period opt_as
@@ -569,16 +575,16 @@ ds:
         $2.(*SelectStmt).as = $4
         $$ = $2.(DataSource)
     }
+|
+    fnCall opt_as
+    {
+        $$ = &FnDataSourceStmt{fnCall: $1.(*FnCall), as: $2}
+    }
 
 tableRef:
     IDENTIFIER
     {
         $$ = &tableRef{table: $1}
-    }
-|
-    IDENTIFIER '.' IDENTIFIER
-    {
-        $$ = &tableRef{db: $1, table: $3}
     }
 
 opt_period:

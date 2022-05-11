@@ -15,7 +15,10 @@ limitations under the License.
 */
 package sql
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type Catalog struct {
 	dbsByID   map[uint32]*Database
@@ -26,6 +29,7 @@ type Database struct {
 	id           uint32
 	catalog      *Catalog
 	name         string
+	tables       []*Table
 	tablesByID   map[uint32]*Table
 	tablesByName map[string]*Table
 }
@@ -37,7 +41,8 @@ type Table struct {
 	cols            []*Column
 	colsByID        map[uint32]*Column
 	colsByName      map[string]*Column
-	indexes         map[string]*Index
+	indexes         []*Index
+	indexesByName   map[string]*Index
 	indexesByColID  map[uint32][]*Index
 	primaryIndex    *Index
 	autoIncrementPK bool
@@ -144,15 +149,7 @@ func (c *Catalog) GetTableByName(dbName, tableName string) (*Table, error) {
 }
 
 func (db *Database) GetTables() []*Table {
-	ts := make([]*Table, len(db.tablesByName))
-
-	i := 0
-	for _, t := range db.tablesByID {
-		ts[i] = t
-		i++
-	}
-
-	return ts
+	return db.tables
 }
 
 func (db *Database) GetTableByName(name string) (*Table, error) {
@@ -272,6 +269,30 @@ func (i *Index) prefix() string {
 	return SIndexPrefix
 }
 
+func (i *Index) Name() string {
+	return indexName(i.table.name, i.cols)
+}
+
+func indexName(tableName string, cols []*Column) string {
+	var buf strings.Builder
+
+	buf.WriteString(tableName)
+
+	buf.WriteString("[")
+
+	for c, col := range cols {
+		buf.WriteString(col.colName)
+
+		if c < len(cols)-1 {
+			buf.WriteString(",")
+		}
+	}
+
+	buf.WriteString("]")
+
+	return buf.String()
+}
+
 func (db *Database) newTable(name string, colsSpec []*ColSpec) (table *Table, err error) {
 	if len(name) == 0 || len(colsSpec) == 0 {
 		return nil, ErrIllegalArguments
@@ -282,7 +303,7 @@ func (db *Database) newTable(name string, colsSpec []*ColSpec) (table *Table, er
 		return nil, fmt.Errorf("%w (%s)", ErrTableAlreadyExists, name)
 	}
 
-	id := len(db.tablesByID) + 1
+	id := len(db.tables) + 1
 
 	table = &Table{
 		id:             uint32(id),
@@ -291,7 +312,7 @@ func (db *Database) newTable(name string, colsSpec []*ColSpec) (table *Table, er
 		cols:           make([]*Column, len(colsSpec)),
 		colsByID:       make(map[uint32]*Column),
 		colsByName:     make(map[string]*Column),
-		indexes:        make(map[string]*Index),
+		indexesByName:  make(map[string]*Index),
 		indexesByColID: make(map[uint32][]*Index),
 	}
 
@@ -326,6 +347,7 @@ func (db *Database) newTable(name string, colsSpec []*ColSpec) (table *Table, er
 		table.colsByName[col.colName] = col
 	}
 
+	db.tables = append(db.tables, table)
 	db.tablesByID[table.id] = table
 	db.tablesByName[table.name] = table
 
@@ -356,13 +378,6 @@ func (t *Table) newIndex(unique bool, colIDs []uint32) (index *Index, err error)
 		colsByID[colID] = col
 	}
 
-	indexKey := indexKeyFrom(cols)
-
-	_, exists := t.indexes[indexKey]
-	if exists {
-		return nil, ErrIndexAlreadyExists
-	}
-
 	index = &Index{
 		id:       uint32(len(t.indexes)),
 		table:    t,
@@ -371,7 +386,13 @@ func (t *Table) newIndex(unique bool, colIDs []uint32) (index *Index, err error)
 		colsByID: colsByID,
 	}
 
-	t.indexes[indexKey] = index
+	_, exists := t.indexesByName[index.Name()]
+	if exists {
+		return nil, ErrIndexAlreadyExists
+	}
+
+	t.indexes = append(t.indexes, index)
+	t.indexesByName[index.Name()] = index
 
 	// having a direct way to get the indexes by colID
 	for _, col := range index.cols {

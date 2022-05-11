@@ -17,10 +17,10 @@ package sql
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,7 +28,7 @@ import (
 	"github.com/codenotary/immudb/embedded/store"
 )
 
-var ErrNoSupported = errors.New("not yet supported")
+var ErrNoSupported = errors.New("not supported")
 var ErrIllegalArguments = store.ErrIllegalArguments
 var ErrParsingError = errors.New("parsing error")
 var ErrDDLorDMLTxOnly = errors.New("transactions can NOT combine DDL and DML statements")
@@ -39,6 +39,7 @@ var ErrTableAlreadyExists = errors.New("table already exists")
 var ErrTableDoesNotExist = errors.New("table does not exist")
 var ErrColumnDoesNotExist = errors.New("column does not exist")
 var ErrColumnNotIndexed = errors.New("column is not indexed")
+var ErrFunctionDoesNotExist = errors.New("function does not exist")
 var ErrLimitedKeyType = errors.New("indexed key of invalid type. Supported types are: INTEGER, VARCHAR[256] OR BLOB[256]")
 var ErrLimitedAutoIncrement = errors.New("only INTEGER single-column primary keys can be set as auto incremental")
 var ErrLimitedMaxLen = errors.New("only VARCHAR and BLOB types support max length")
@@ -72,6 +73,7 @@ var ErrLimitedCount = errors.New("only unbounded counting is supported i.e. COUN
 var ErrTxDoesNotExist = errors.New("tx does not exist")
 var ErrNestedTxNotSupported = errors.New("nested tx are not supported")
 var ErrNoOngoingTx = errors.New("no ongoing transaction")
+var ErrNonTransactionalStmt = errors.New("non transactional statement")
 var ErrDivisionByZero = errors.New("division by zero")
 var ErrMissingParameter = errors.New("missing parameter")
 var ErrUnsupportedParameter = errors.New("unsupported parameter")
@@ -99,12 +101,22 @@ type Engine struct {
 
 	defaultDatabase string
 
+	multidbHandler MultiDBHandler
+
 	mutex sync.RWMutex
+}
+
+type MultiDBHandler interface {
+	ListDatabases(ctx context.Context) ([]string, error)
+	CreateDatabase(ctx context.Context, db string) error
+	UseDatabase(ctx context.Context, db string) error
 }
 
 //SQLTx (no-thread safe) represents an interactive or incremental transaction with support of RYOW
 type SQLTx struct {
 	engine *Engine
+
+	ctx context.Context
 
 	tx *store.OngoingTx
 
@@ -143,8 +155,15 @@ func NewEngine(store *store.ImmuStore, opts *Options) (*Engine, error) {
 	return e, nil
 }
 
+func (e *Engine) SetMultiDBHandler(handler MultiDBHandler) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
+	e.multidbHandler = handler
+}
+
 func (e *Engine) SetDefaultDatabase(dbName string) error {
-	tx, err := e.newTx(false)
+	tx, err := e.NewTx(context.Background())
 	if err != nil {
 		return err
 	}
@@ -170,7 +189,7 @@ func (e *Engine) DefaultDatabase() string {
 	return e.defaultDatabase
 }
 
-func (e *Engine) newTx(explicitClose bool) (*SQLTx, error) {
+func (e *Engine) NewTx(ctx context.Context) (*SQLTx, error) {
 	e.mutex.RLock()
 	defer e.mutex.RUnlock()
 
@@ -199,12 +218,12 @@ func (e *Engine) newTx(explicitClose bool) (*SQLTx, error) {
 
 	return &SQLTx{
 		engine:           e,
+		ctx:              ctx,
 		tx:               tx,
 		catalog:          catalog,
 		currentDB:        currentDB,
 		lastInsertedPKs:  make(map[string]int64),
 		firstInsertedPKs: make(map[string]int64),
-		explicitClose:    explicitClose,
 	}, nil
 }
 
@@ -419,16 +438,6 @@ func (db *Database) loadTables(sqlPrefix []byte, tx *store.OngoingTx) error {
 	}
 
 	return nil
-}
-
-func indexKeyFrom(cols []*Column) string {
-	var buf bytes.Buffer
-
-	for _, col := range cols {
-		buf.WriteString(strconv.FormatUint(uint64(col.id), 16))
-	}
-
-	return buf.String()
 }
 
 func loadMaxPK(sqlPrefix []byte, tx *store.OngoingTx, table *Table) ([]byte, error) {
@@ -1116,9 +1125,32 @@ func (e *Engine) ExecPreparedStmts(stmts []SQLStmt, params map[string]interface{
 			return nil, nil, ErrIllegalArguments
 		}
 
+		_, isDBSelectionStmt := stmt.(*UseDatabaseStmt)
+
+		// handle the case when working in non-autocommit mode outside a transaction block
+		if isDBSelectionStmt && (currTx != nil && !currTx.closed) && !currTx.explicitClose {
+			err = currTx.commit()
+			if err == nil {
+				committedTxs = append(committedTxs, currTx)
+			}
+			if err != nil {
+				return nil, committedTxs, err
+			}
+		}
+
 		if currTx == nil || currTx.closed {
+			var ctx context.Context
+
+			if currTx != nil {
+				ctx = currTx.ctx
+			} else if tx != nil {
+				ctx = tx.ctx
+			} else {
+				ctx = context.Background()
+			}
+
 			// begin tx with implicit commit
-			currTx, err = e.newTx(false)
+			currTx, err = e.NewTx(ctx)
 			if err != nil {
 				return nil, committedTxs, err
 			}
@@ -1151,7 +1183,9 @@ func (e *Engine) ExecPreparedStmts(stmts []SQLStmt, params map[string]interface{
 		}
 
 		committedTxs = append(committedTxs, currTx)
+	}
 
+	if currTx == nil || currTx.closed {
 		return nil, committedTxs, nil
 	}
 
@@ -1183,7 +1217,7 @@ func (e *Engine) QueryPreparedStmt(stmt DataSource, params map[string]interface{
 	qtx := tx
 
 	if qtx == nil {
-		qtx, err = e.newTx(false)
+		qtx, err = e.NewTx(context.Background())
 		if err != nil {
 			return nil, err
 		}
@@ -1218,7 +1252,7 @@ func (e *Engine) Catalog(tx *SQLTx) (catalog *Catalog, err error) {
 	qtx := tx
 
 	if qtx == nil {
-		qtx, err = e.newTx(false)
+		qtx, err = e.NewTx(context.Background())
 		if err != nil {
 			return nil, err
 		}
@@ -1245,7 +1279,7 @@ func (e *Engine) InferParametersPreparedStmts(stmts []SQLStmt, tx *SQLTx) (param
 	qtx := tx
 
 	if qtx == nil {
-		qtx, err = e.newTx(false)
+		qtx, err = e.NewTx(context.Background())
 		if err != nil {
 			return nil, err
 		}
