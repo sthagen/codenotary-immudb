@@ -46,7 +46,13 @@ func TestCreateDatabase(t *testing.T) {
 	_, _, err = engine.Exec("CREATE DATABASE db1", nil, nil)
 	require.Equal(t, ErrDatabaseAlreadyExists, err)
 
+	_, _, err = engine.Exec("CREATE DATABASE IF NOT EXISTS db1", nil, nil)
+	require.NoError(t, err)
+
 	_, _, err = engine.Exec("CREATE DATABASE db2", nil, nil)
+	require.NoError(t, err)
+
+	_, _, err = engine.Exec("CREATE DATABASE IF NOT EXISTS db3", nil, nil)
 	require.NoError(t, err)
 }
 
@@ -90,7 +96,7 @@ func TestCreateTable(t *testing.T) {
 	_, _, err = engine.Exec("CREATE TABLE table1 (id INTEGER, PRIMARY KEY id)", nil, nil)
 	require.Equal(t, ErrNoDatabaseSelected, err)
 
-	_, _, err = engine.Exec("CREATE DATABASE db1", nil, nil)
+	_, _, err = engine.Exec("CREATE DATABASE IF NOT EXISTS db1", nil, nil)
 	require.NoError(t, err)
 
 	_, _, err = engine.Exec("USE DATABASE db1; CREATE TABLE table1 (name VARCHAR, PRIMARY KEY id)", nil, nil)
@@ -685,7 +691,14 @@ func TestAutoIncrementPK(t *testing.T) {
 		require.ErrorIs(t, err, ErrLimitedAutoIncrement)
 	})
 
-	_, _, err = engine.Exec("CREATE TABLE table1 (id INTEGER NOT NULL AUTO_INCREMENT, title VARCHAR, PRIMARY KEY id)", nil, nil)
+	_, _, err = engine.Exec(`
+			CREATE TABLE table1 (
+				id INTEGER NOT NULL AUTO_INCREMENT,
+				title VARCHAR,
+				active BOOLEAN,
+				PRIMARY KEY id
+			)
+	`, nil, nil)
 	require.NoError(t, err)
 
 	_, ctxs, err := engine.Exec("INSERT INTO table1(title) VALUES ('name1')", nil, nil)
@@ -5061,7 +5074,7 @@ func (h *multidbHandlerMock) ListDatabases(ctx context.Context) ([]string, error
 	return h.dbs, nil
 }
 
-func (h *multidbHandlerMock) CreateDatabase(ctx context.Context, db string) error {
+func (h *multidbHandlerMock) CreateDatabase(ctx context.Context, db string, ifNotExists bool) error {
 	return ErrNoSupported
 }
 
