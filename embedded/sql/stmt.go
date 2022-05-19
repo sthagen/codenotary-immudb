@@ -199,11 +199,11 @@ func (stmt *CreateDatabaseStmt) inferParameters(tx *SQLTx, params map[string]SQL
 }
 
 func (stmt *CreateDatabaseStmt) execAt(tx *SQLTx, params map[string]interface{}) (*SQLTx, error) {
-	if tx.engine.multidbHandler != nil {
-		if tx.explicitClose {
-			return nil, fmt.Errorf("%w: database creation can not be done within a transaction", ErrNonTransactionalStmt)
-		}
+	if tx.explicitClose {
+		return nil, fmt.Errorf("%w: database creation can not be done within a transaction", ErrNonTransactionalStmt)
+	}
 
+	if tx.engine.multidbHandler != nil {
 		return nil, tx.engine.multidbHandler.CreateDatabase(tx.ctx, stmt.DB, stmt.ifNotExists)
 	}
 
@@ -234,13 +234,26 @@ func (stmt *UseDatabaseStmt) inferParameters(tx *SQLTx, params map[string]SQLVal
 }
 
 func (stmt *UseDatabaseStmt) execAt(tx *SQLTx, params map[string]interface{}) (*SQLTx, error) {
-	if tx.engine.multidbHandler != nil {
-		if tx.explicitClose {
-			return nil, fmt.Errorf("%w: database selection can NOT be executed within a transaction block", ErrNonTransactionalStmt)
-		}
-
-		return nil, tx.engine.multidbHandler.UseDatabase(tx.ctx, stmt.DB)
+	if stmt.DB == "" {
+		return nil, fmt.Errorf("%w: no database name was provided", ErrIllegalArguments)
 	}
+
+	if tx.explicitClose {
+		return nil, fmt.Errorf("%w: database selection can NOT be executed within a transaction block", ErrNonTransactionalStmt)
+	}
+
+	if tx.engine.multidbHandler != nil {
+		return tx, tx.engine.multidbHandler.UseDatabase(tx.ctx, stmt.DB)
+	}
+
+	_, exists := tx.catalog.dbsByName[stmt.DB]
+	if !exists {
+		return nil, ErrDatabaseDoesNotExist
+	}
+
+	tx.engine.mutex.Lock()
+	tx.engine.currentDatabase = stmt.DB
+	tx.engine.mutex.Unlock()
 
 	return tx, tx.useDatabase(stmt.DB)
 }
@@ -255,6 +268,34 @@ func (stmt *UseSnapshotStmt) inferParameters(tx *SQLTx, params map[string]SQLVal
 
 func (stmt *UseSnapshotStmt) execAt(tx *SQLTx, params map[string]interface{}) (*SQLTx, error) {
 	return nil, ErrNoSupported
+}
+
+func persistColumn(col *Column, tx *SQLTx) error {
+	//{auto_incremental | nullable}{maxLen}{colNAME})
+	v := make([]byte, 1+4+len(col.colName))
+
+	if col.autoIncrement {
+		v[0] = v[0] | autoIncrementFlag
+	}
+
+	if col.notNull {
+		v[0] = v[0] | nullableFlag
+	}
+
+	binary.BigEndian.PutUint32(v[1:], uint32(col.MaxLen()))
+
+	copy(v[5:], []byte(col.Name()))
+
+	mappedKey := mapKey(
+		tx.sqlPrefix(),
+		catalogColumnPrefix,
+		EncodeID(col.table.db.id),
+		EncodeID(col.table.id),
+		EncodeID(col.id),
+		[]byte(col.colType),
+	)
+
+	return tx.set(mappedKey, nil, v)
 }
 
 type CreateTableStmt struct {
@@ -289,35 +330,13 @@ func (stmt *CreateTableStmt) execAt(tx *SQLTx, params map[string]interface{}) (*
 	}
 
 	for _, col := range table.Cols() {
-		//{auto_incremental | nullable}{maxLen}{colNAME})
-		v := make([]byte, 1+4+len(col.colName))
-
 		if col.autoIncrement {
 			if len(table.primaryIndex.cols) > 1 || col.id != table.primaryIndex.cols[0].id {
 				return nil, ErrLimitedAutoIncrement
 			}
-
-			v[0] = v[0] | autoIncrementFlag
 		}
 
-		if col.notNull {
-			v[0] = v[0] | nullableFlag
-		}
-
-		binary.BigEndian.PutUint32(v[1:], uint32(col.MaxLen()))
-
-		copy(v[5:], []byte(col.Name()))
-
-		mappedKey := mapKey(
-			tx.sqlPrefix(),
-			catalogColumnPrefix,
-			EncodeID(tx.currentDB.id),
-			EncodeID(table.id),
-			EncodeID(col.id),
-			[]byte(col.colType),
-		)
-
-		err = tx.set(mappedKey, nil, v)
+		err := persistColumn(col, tx)
 		if err != nil {
 			return nil, err
 		}
@@ -439,7 +458,59 @@ func (stmt *AddColumnStmt) inferParameters(tx *SQLTx, params map[string]SQLValue
 }
 
 func (stmt *AddColumnStmt) execAt(tx *SQLTx, params map[string]interface{}) (*SQLTx, error) {
-	return nil, ErrNoSupported
+	if tx.currentDB == nil {
+		return nil, ErrNoDatabaseSelected
+	}
+
+	table, err := tx.currentDB.GetTableByName(stmt.table)
+	if err != nil {
+		return nil, err
+	}
+
+	col, err := table.newColumn(stmt.colSpec)
+	if err != nil {
+		return nil, err
+	}
+
+	err = persistColumn(col, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	return tx, nil
+}
+
+type RenameColumnStmt struct {
+	table   string
+	oldName string
+	newName string
+}
+
+func (stmt *RenameColumnStmt) inferParameters(tx *SQLTx, params map[string]SQLValueType) error {
+	return nil
+}
+
+func (stmt *RenameColumnStmt) execAt(tx *SQLTx, params map[string]interface{}) (*SQLTx, error) {
+	if tx.currentDB == nil {
+		return nil, ErrNoDatabaseSelected
+	}
+
+	table, err := tx.currentDB.GetTableByName(stmt.table)
+	if err != nil {
+		return nil, err
+	}
+
+	col, err := table.renameColumn(stmt.oldName, stmt.newName)
+	if err != nil {
+		return nil, err
+	}
+
+	err = persistColumn(col, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	return tx, nil
 }
 
 type UpsertIntoStmt struct {

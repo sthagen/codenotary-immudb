@@ -38,6 +38,8 @@ var ErrNoDatabaseSelected = errors.New("no database selected")
 var ErrTableAlreadyExists = errors.New("table already exists")
 var ErrTableDoesNotExist = errors.New("table does not exist")
 var ErrColumnDoesNotExist = errors.New("column does not exist")
+var ErrColumnAlreadyExists = errors.New("column already exists")
+var ErrSameOldAndNewColumnName = errors.New("same old and new column names")
 var ErrColumnNotIndexed = errors.New("column is not indexed")
 var ErrFunctionDoesNotExist = errors.New("function does not exist")
 var ErrLimitedKeyType = errors.New("indexed key of invalid type. Supported types are: INTEGER, VARCHAR[256] OR BLOB[256]")
@@ -48,6 +50,7 @@ var ErrInvalidColumn = errors.New("invalid column")
 var ErrPKCanNotBeNull = errors.New("primary key can not be null")
 var ErrPKCanNotBeUpdated = errors.New("primary key can not be updated")
 var ErrNotNullableColumnCannotBeNull = errors.New("not nullable column can not be null")
+var ErrNewColumnMustBeNullable = errors.New("new column must be nullable")
 var ErrIndexAlreadyExists = errors.New("index already exists")
 var ErrMaxNumberOfColumnsInIndexExceeded = errors.New("number of columns in multi-column index exceeded")
 var ErrNoAvailableIndex = errors.New("no available index")
@@ -99,7 +102,7 @@ type Engine struct {
 	distinctLimit int
 	autocommit    bool
 
-	defaultDatabase string
+	currentDatabase string
 
 	multidbHandler MultiDBHandler
 
@@ -110,6 +113,7 @@ type MultiDBHandler interface {
 	ListDatabases(ctx context.Context) ([]string, error)
 	CreateDatabase(ctx context.Context, db string, ifNotExists bool) error
 	UseDatabase(ctx context.Context, db string) error
+	ExecPreparedStmts(ctx context.Context, stmts []SQLStmt, params map[string]interface{}) (ntx *SQLTx, committedTxs []*SQLTx, err error)
 }
 
 //SQLTx (no-thread safe) represents an interactive or incremental transaction with support of RYOW
@@ -162,7 +166,7 @@ func (e *Engine) SetMultiDBHandler(handler MultiDBHandler) {
 	e.multidbHandler = handler
 }
 
-func (e *Engine) SetDefaultDatabase(dbName string) error {
+func (e *Engine) SetCurrentDatabase(dbName string) error {
 	tx, err := e.NewTx(context.Background())
 	if err != nil {
 		return err
@@ -177,16 +181,16 @@ func (e *Engine) SetDefaultDatabase(dbName string) error {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
-	e.defaultDatabase = db.name
+	e.currentDatabase = db.name
 
 	return nil
 }
 
-func (e *Engine) DefaultDatabase() string {
+func (e *Engine) CurrentDatabase() string {
 	e.mutex.RLock()
 	defer e.mutex.RUnlock()
 
-	return e.defaultDatabase
+	return e.currentDatabase
 }
 
 func (e *Engine) NewTx(ctx context.Context) (*SQLTx, error) {
@@ -207,13 +211,13 @@ func (e *Engine) NewTx(ctx context.Context) (*SQLTx, error) {
 
 	var currentDB *Database
 
-	if e.defaultDatabase != "" {
-		defaultDatabase, exists := catalog.dbsByName[e.defaultDatabase]
+	if e.currentDatabase != "" {
+		db, exists := catalog.dbsByName[e.currentDatabase]
 		if !exists {
 			return nil, ErrDatabaseDoesNotExist
 		}
 
-		currentDB = defaultDatabase
+		currentDB = db
 	}
 
 	return &SQLTx{
@@ -1108,21 +1112,52 @@ func (e *Engine) Exec(sql string, params map[string]interface{}, tx *SQLTx) (ntx
 }
 
 func (e *Engine) ExecPreparedStmts(stmts []SQLStmt, params map[string]interface{}, tx *SQLTx) (ntx *SQLTx, committedTxs []*SQLTx, err error) {
+	ntx, ctxs, pendingStmts, err := e.execPreparedStmts(stmts, params, tx)
+	if err != nil {
+		return ntx, ctxs, err
+	}
+
+	if len(pendingStmts) > 0 {
+		// a different database was selected
+
+		if e.multidbHandler == nil || ntx != nil {
+			return ntx, ctxs, fmt.Errorf("%w: all statements should have been executed when not using a multidbHandler", ErrUnexpected)
+		}
+
+		var ctx context.Context
+
+		if tx != nil {
+			ctx = tx.ctx
+		} else {
+			ctx = context.Background()
+		}
+
+		ntx, hctxs, err := e.multidbHandler.ExecPreparedStmts(ctx, pendingStmts, params)
+
+		return ntx, append(ctxs, hctxs...), err
+	}
+
+	return ntx, ctxs, nil
+}
+
+func (e *Engine) execPreparedStmts(stmts []SQLStmt, params map[string]interface{}, tx *SQLTx) (ntx *SQLTx, committedTxs []*SQLTx, pendingStmts []SQLStmt, err error) {
 	if len(stmts) == 0 {
-		return nil, nil, ErrIllegalArguments
+		return nil, nil, stmts, ErrIllegalArguments
 	}
 
 	// TODO: eval params at once
 	nparams, err := normalizeParams(params)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, stmts, err
 	}
 
 	currTx := tx
 
+	execStmts := 0
+
 	for _, stmt := range stmts {
 		if stmt == nil {
-			return nil, nil, ErrIllegalArguments
+			return nil, nil, stmts[execStmts:], ErrIllegalArguments
 		}
 
 		_, isDBSelectionStmt := stmt.(*UseDatabaseStmt)
@@ -1134,7 +1169,7 @@ func (e *Engine) ExecPreparedStmts(stmts []SQLStmt, params map[string]interface{
 				committedTxs = append(committedTxs, currTx)
 			}
 			if err != nil {
-				return nil, committedTxs, err
+				return nil, committedTxs, stmts[execStmts:], err
 			}
 		}
 
@@ -1152,20 +1187,20 @@ func (e *Engine) ExecPreparedStmts(stmts []SQLStmt, params map[string]interface{
 			// begin tx with implicit commit
 			currTx, err = e.NewTx(ctx)
 			if err != nil {
-				return nil, committedTxs, err
+				return nil, committedTxs, stmts[execStmts:], err
 			}
 		}
 
 		ntx, err := stmt.execAt(currTx, nparams)
 		if err != nil {
 			currTx.Cancel()
-			return nil, committedTxs, err
+			return nil, committedTxs, stmts[execStmts:], err
 		}
 
 		if !currTx.closed && !currTx.explicitClose && e.autocommit {
 			err = currTx.commit()
 			if err != nil {
-				return nil, committedTxs, err
+				return nil, committedTxs, stmts[execStmts:], err
 			}
 		}
 
@@ -1174,22 +1209,28 @@ func (e *Engine) ExecPreparedStmts(stmts []SQLStmt, params map[string]interface{
 		}
 
 		currTx = ntx
+
+		execStmts++
+
+		if isDBSelectionStmt && e.multidbHandler != nil {
+			break
+		}
 	}
 
 	if currTx != nil && !currTx.closed && !currTx.explicitClose {
 		err = currTx.commit()
 		if err != nil {
-			return nil, committedTxs, err
+			return nil, committedTxs, stmts[execStmts:], err
 		}
 
 		committedTxs = append(committedTxs, currTx)
 	}
 
-	if currTx == nil || currTx.closed {
-		return nil, committedTxs, nil
+	if currTx != nil && currTx.closed {
+		currTx = nil
 	}
 
-	return currTx, committedTxs, nil
+	return currTx, committedTxs, stmts[execStmts:], nil
 }
 
 func (e *Engine) Query(sql string, params map[string]interface{}, tx *SQLTx) (RowReader, error) {
