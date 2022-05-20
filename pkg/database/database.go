@@ -40,8 +40,9 @@ const MaxKeyScanLimit = 1000
 
 const dbInstanceName = "dbinstance"
 
-var ErrMaxKeyResolutionLimitReached = errors.New("max key resolution limit reached. It may be due to cyclic references")
-var ErrMaxKeyScanLimitExceeded = errors.New("max key scan limit exceeded")
+var ErrKeyResolutionLimitReached = errors.New("key resolution limit reached. It may be due to cyclic references")
+var ErrResultSizeLimitExceeded = errors.New("result size limit exceeded")
+var ErrResultSizeLimitReached = errors.New("result size limit reached")
 var ErrIllegalArguments = store.ErrIllegalArguments
 var ErrIllegalState = store.ErrIllegalState
 var ErrIsReplica = errors.New("database is read-only because it's a replica")
@@ -59,6 +60,7 @@ type DB interface {
 	AsReplica(asReplica bool)
 	IsReplica() bool
 
+	MaxResultSize() int
 	UseTimeFunc(timeFunc store.TimeFunc) error
 
 	// State
@@ -142,6 +144,8 @@ type db struct {
 	options *Options
 
 	name string
+
+	maxResultSize int
 }
 
 // OpenDB Opens an existing Database from disk
@@ -153,10 +157,11 @@ func OpenDB(dbName string, multidbHandler sql.MultiDBHandler, op *Options, log l
 	log.Infof("Opening database '%s' {replica = %v}...", dbName, op.replica)
 
 	dbi := &db{
-		Logger:  log,
-		options: op,
-		name:    dbName,
-		mutex:   &instrumentedRWMutex{},
+		Logger:        log,
+		options:       op,
+		name:          dbName,
+		maxResultSize: MaxKeyScanLimit,
+		mutex:         &instrumentedRWMutex{},
 	}
 
 	dbDir := dbi.Path()
@@ -258,10 +263,11 @@ func NewDB(dbName string, multidbHandler sql.MultiDBHandler, op *Options, log lo
 	log.Infof("Creating database '%s' {replica = %v}...", dbName, op.replica)
 
 	dbi := &db{
-		Logger:  log,
-		options: op,
-		name:    dbName,
-		mutex:   &instrumentedRWMutex{},
+		Logger:        log,
+		options:       op,
+		name:          dbName,
+		maxResultSize: MaxKeyScanLimit,
+		mutex:         &instrumentedRWMutex{},
 	}
 
 	dbDir := filepath.Join(op.GetDBRootPath(), dbName)
@@ -304,8 +310,8 @@ func NewDB(dbName string, multidbHandler sql.MultiDBHandler, op *Options, log lo
 	return dbi, nil
 }
 
-func (d *db) isReplica() bool {
-	return d.options.replica
+func (d *db) MaxResultSize() int {
+	return d.maxResultSize
 }
 
 // UseTimeFunc ...
@@ -578,7 +584,7 @@ func (d *db) resolveValue(
 			)
 		}
 		if resolved == MaxKeyResolutionLimit {
-			return nil, ErrMaxKeyResolutionLimitReached
+			return nil, ErrKeyResolutionLimitReached
 		}
 
 		atTx := binary.BigEndian.Uint64(TrimPrefix(val))
@@ -1223,14 +1229,15 @@ func (d *db) TxScan(req *schema.TxScanRequest) (*schema.TxList, error) {
 		return nil, ErrIllegalArguments
 	}
 
-	if req.Limit > MaxKeyScanLimit {
-		return nil, ErrMaxKeyScanLimitExceeded
+	if int(req.Limit) > d.maxResultSize {
+		return nil, fmt.Errorf("%w: the specified limit (%d) is larger than the maximum allowed one (%d)",
+			ErrResultSizeLimitExceeded, req.Limit, d.maxResultSize)
 	}
 
 	limit := int(req.Limit)
 
 	if req.Limit == 0 {
-		limit = MaxKeyScanLimit
+		limit = d.maxResultSize
 	}
 
 	snap, err := d.snapshotSince(req.SinceTx, req.NoWait)
@@ -1246,7 +1253,7 @@ func (d *db) TxScan(req *schema.TxScanRequest) (*schema.TxList, error) {
 
 	txList := &schema.TxList{}
 
-	for i := 0; i < limit; i++ {
+	for l := 1; l <= limit; l++ {
 		tx, err := txReader.Read()
 		if err == store.ErrNoMoreEntries {
 			break
@@ -1261,6 +1268,13 @@ func (d *db) TxScan(req *schema.TxScanRequest) (*schema.TxList, error) {
 		}
 
 		txList.Txs = append(txList.Txs, sTx)
+
+		if l == d.maxResultSize {
+			return txList,
+				fmt.Errorf("%w: found at least %d entries (maximum limit). "+
+					"Pagination over large results can be achieved by using the limit and initialTx arguments",
+					ErrResultSizeLimitReached, d.maxResultSize)
+		}
 	}
 
 	return txList, nil
@@ -1272,8 +1286,9 @@ func (d *db) History(req *schema.HistoryRequest) (*schema.Entries, error) {
 		return nil, ErrIllegalArguments
 	}
 
-	if req.Limit > MaxKeyScanLimit {
-		return nil, ErrMaxKeyScanLimitExceeded
+	if int(req.Limit) > d.maxResultSize {
+		return nil, fmt.Errorf("%w: the specified limit (%d) is larger than the maximum allowed one (%d)",
+			ErrResultSizeLimitExceeded, req.Limit, d.maxResultSize)
 	}
 
 	currTxID, _ := d.st.Alh()
@@ -1295,7 +1310,7 @@ func (d *db) History(req *schema.HistoryRequest) (*schema.Entries, error) {
 	limit := int(req.Limit)
 
 	if req.Limit == 0 {
-		limit = MaxKeyScanLimit
+		limit = d.maxResultSize
 	}
 
 	key := EncodeKey(req.Key)
@@ -1349,6 +1364,13 @@ func (d *db) History(req *schema.HistoryRequest) (*schema.Entries, error) {
 		} else {
 			revision++
 		}
+	}
+
+	if limit == d.maxResultSize && hCount >= uint64(d.maxResultSize) {
+		return list,
+			fmt.Errorf("%w: found at least %d entries (the maximum limit). "+
+				"Pagination over large results can be achieved by using the limit and initialTx arguments",
+				ErrResultSizeLimitReached, d.maxResultSize)
 	}
 
 	return list, nil
@@ -1410,6 +1432,10 @@ func (d *db) IsReplica() bool {
 	d.mutex.RLock()
 	defer d.mutex.RUnlock()
 
+	return d.isReplica()
+}
+
+func (d *db) isReplica() bool {
 	return d.options.replica
 }
 

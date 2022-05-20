@@ -409,11 +409,7 @@ func (d *db) SQLQueryPrepared(stmt sql.DataSource, namedParams []*schema.NamedPa
 
 	res := &schema.SQLQueryResult{Columns: cols}
 
-	for l := 0; ; l++ {
-		if l == MaxKeyScanLimit {
-			return res, ErrMaxKeyScanLimitExceeded
-		}
-
+	for l := 1; ; l++ {
 		row, err := r.Read()
 		if err == sql.ErrNoMoreRows {
 			break
@@ -441,6 +437,12 @@ func (d *db) SQLQueryPrepared(stmt sql.DataSource, namedParams []*schema.NamedPa
 		}
 
 		res.Rows = append(res.Rows, rrow)
+
+		if l == d.maxResultSize {
+			return res, fmt.Errorf("%w: found at least %d rows (the maximum limit). "+
+				"Query constraints can be applied using the LIMIT clause",
+				ErrResultSizeLimitReached, d.maxResultSize)
+		}
 	}
 
 	return res, nil
