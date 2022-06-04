@@ -1262,6 +1262,11 @@ func (e *Engine) QueryPreparedStmt(stmt DataSource, params map[string]interface{
 		if err != nil {
 			return nil, err
 		}
+		defer func() {
+			if err != nil {
+				qtx.Cancel()
+			}
+		}()
 	}
 
 	// TODO: eval params at once
