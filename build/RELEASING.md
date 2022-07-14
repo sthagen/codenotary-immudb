@@ -116,34 +116,8 @@ Use the following template for release notes:
 
 # Downloads
 
-**Docker image**
-https://hub.docker.com/r/codenotary/immudb
-
-**Immudb Binaries**
-
-File | SHA256
-------------- | -------------
 <!--
-    Paste checksums from github step: pushCI / Build binaries and notarize sources/Calculate checksums
-    Ensure to paste as a plain text
--->
-
-
-**Immuclient Binaries**
-
-File | SHA256
-------------- | -------------
-<!--
-    Paste checksums from github step: pushCI / Build binaries and notarize sources/Calculate checksums
-    Ensure to paste as a plain text
--->
-
-**Immuadmin Binaries**
-
-File | SHA256
-------------- | -------------
-<!--
-    Paste checksums from github step: pushCI / Build binaries and notarize sources/Calculate checksums
+    Paste output from github step: pushCI / Build binaries and notarize sources/Calculate checksums
     Ensure to paste as a plain text
 -->
 ```
@@ -159,9 +133,6 @@ Following binaries are validated automatically in github actions:
 * linux-arm64
 * windows-amd64
 * darwin-amd64
-
-The linux-s390x build is tested on github but it can occasionally fail due to unknown
-issue with zip checksum mismatch. For that build, repeat the github action job.
 
 The following builds have to be manually tested:
 

@@ -39,6 +39,7 @@ V_LDFLAGS_COMMON := -s -X "github.com/codenotary/immudb/cmd/version.Version=${VE
 V_LDFLAGS_STATIC := ${V_LDFLAGS_COMMON} \
 				  -X github.com/codenotary/immudb/cmd/version.Static=static \
 				  -extldflags "-static"
+GRPC_GATEWAY_VERSION := $(shell go list -m -versions github.com/grpc-ecosystem/grpc-gateway | awk -F ' ' '{print $$NF}')
 ifdef WEBCONSOLE
 IMMUDB_BUILD_TAGS=-tags webconsole
 endif
@@ -116,32 +117,37 @@ coverage:
 	cat coverage.txt | grep -v "schema.pb" | grep -v "immuclient" | grep -v "immuadmin" | grep -v "helper" | grep -v "cmdtest" | grep -v "sservice" | grep -v "version" > coverage.out
 	$(GO) tool cover -func coverage.out
 
-
 .PHONY: build/codegen
 build/codegen:
 	$(PROTOC) -I pkg/api/schema/ pkg/api/schema/schema.proto \
-	-I$(GOPATH)/pkg/mod \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0/third_party/googleapis \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0 \
-	--go_out=plugins=grpc,paths=source_relative:pkg/api/schema
+	  -I$(GOPATH)/pkg/mod \
+	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION)/third_party/googleapis \
+	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION) \
+	  --go_out=paths=source_relative:pkg/api/schema \
+	  --go-grpc_out=require_unimplemented_servers=false,paths=source_relative:pkg/api/schema \
+	  --plugin=protoc-gen-go=$(PWD)/scripts/protoc-gen-go \
+	  --plugin=protoc-gen-go-grpc=$(PWD)/scripts/protoc-gen-go-grpc
 
 	$(PROTOC) -I pkg/api/schema/ pkg/api/schema/schema.proto \
-	-I$(GOPATH)/pkg/mod \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0/third_party/googleapis \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0 \
-  	--grpc-gateway_out=logtostderr=true,paths=source_relative:pkg/api/schema \
+	  -I$(GOPATH)/pkg/mod \
+	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION)/third_party/googleapis \
+	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION) \
+	  --grpc-gateway_out=logtostderr=true,paths=source_relative:pkg/api/schema \
+	  --plugin=protoc-gen-grpc-gateway=$(PWD)/scripts/protoc-gen-grpc-gateway
 
 	$(PROTOC) -I pkg/api/schema/ pkg/api/schema/schema.proto \
-	-I$(GOPATH)/pkg/mod \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0/third_party/googleapis \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0 \
-  	--swagger_out=logtostderr=true:pkg/api/schema
+	  -I$(GOPATH)/pkg/mod \
+	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION)/third_party/googleapis \
+	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION) \
+	  --swagger_out=logtostderr=true:pkg/api/schema \
+	  --plugin=protoc-gen-swagger=$(PWD)/scripts/protoc-gen-swagger
 
 	$(PROTOC) -I pkg/api/schema/ pkg/api/schema/schema.proto \
-	-I$(GOPATH)/pkg/mod \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0/third_party/googleapis \
-	-I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@v1.16.0 \
-	--doc_out=pkg/api/schema --doc_opt=markdown,docs.md \
+	  -I$(GOPATH)/pkg/mod \
+	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION)/third_party/googleapis \
+	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION) \
+	  --doc_out=pkg/api/schema --doc_opt=markdown,docs.md \
+	  --plugin=protoc-gen-doc=$(PWD)/scripts/protoc-gen-doc
 
 .PHONY: clean
 clean:
@@ -216,11 +222,7 @@ dist/sign:
 
 .PHONY: dist/binary.md
 dist/binary.md:
-	@for f in ./dist/*; do \
-		ff=$$(basename $$f); \
-		shm_id=$$(sha256sum $$f | awk '{print $$1}'); \
-		printf "[$$ff](https://github.com/vchain-us/immudb/releases/download/v${VERSION}/$$ff) | $$shm_id \n" ; \
-	done
+	@build/gen-downloads-md.sh "${VERSION}"
 
 ./webconsole/dist:
 ifeq (${WEBCONSOLE}, default)

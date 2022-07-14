@@ -29,7 +29,7 @@ require (
 	github.com/prometheus/client_golang v1.12.2
 	github.com/prometheus/client_model v0.2.0
 	github.com/prometheus/common v0.32.1
-	github.com/pseudomuto/protoc-gen-doc v1.5.1
+	github.com/pseudomuto/protoc-gen-doc v1.4.1
 	github.com/pseudomuto/protokit v0.2.1 // indirect
 	github.com/rakyll/statik v0.1.7
 	github.com/rogpeppe/go-internal v1.8.0
@@ -41,10 +41,11 @@ require (
 	github.com/stretchr/testify v1.7.1
 	github.com/takama/daemon v0.12.0
 	golang.org/x/crypto v0.0.0-20220525230936-793ad666bf5e
-	golang.org/x/net v0.0.0-20220526153639-5463443f8c37
-	golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a
+	golang.org/x/net v0.0.0-20220708220712-1185a9018129
+	golang.org/x/sys v0.0.0-20220708085239-5a0f0661e09d
 	google.golang.org/genproto v0.0.0-20220519153652-3a47de7e79bd
 	google.golang.org/grpc v1.46.2
+	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.1.0
 	google.golang.org/protobuf v1.28.0
 	gopkg.in/ini.v1 v1.66.6 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

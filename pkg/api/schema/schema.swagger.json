@@ -1491,6 +1491,30 @@
         ]
       }
     },
+    "/serverinfo": {
+      "get": {
+        "summary": "ServerInfo returns information about the server instance.\nServerInfoRequest is defined for future extensions.",
+        "operationId": "ImmuService_ServerInfo",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/schemaServerInfoResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/runtimeError"
+            }
+          }
+        },
+        "tags": [
+          "ImmuService"
+        ],
+        "security": []
+      }
+    },
     "/user": {
       "post": {
         "operationId": "ImmuService_CreateUser",
@@ -2881,6 +2905,16 @@
           "format": "double"
         }
       }
+    },
+    "schemaServerInfoResponse": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "The version of the server instance."
+        }
+      },
+      "description": "ServerInfoResponse contains information about the server instance."
     },
     "schemaSetActiveUserRequest": {
       "type": "object",

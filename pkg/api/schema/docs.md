@@ -88,6 +88,8 @@
     - [SQLValue](#immudb.schema.SQLValue)
     - [ScanRequest](#immudb.schema.ScanRequest)
     - [Score](#immudb.schema.Score)
+    - [ServerInfoRequest](#immudb.schema.ServerInfoRequest)
+    - [ServerInfoResponse](#immudb.schema.ServerInfoResponse)
     - [SetActiveUserRequest](#immudb.schema.SetActiveUserRequest)
     - [SetRequest](#immudb.schema.SetRequest)
     - [Signature](#immudb.schema.Signature)
@@ -1546,6 +1548,31 @@
 
 
 
+<a name="immudb.schema.ServerInfoRequest"></a>
+
+### ServerInfoRequest
+ServerInfoRequest exists to provide extensibility for rpc ServerInfo.
+
+
+
+
+
+
+<a name="immudb.schema.ServerInfoResponse"></a>
+
+### ServerInfoResponse
+ServerInfoResponse contains information about the server instance.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| version | [string](#string) |  | The version of the server instance. |
+
+
+
+
+
+
 <a name="immudb.schema.SetActiveUserRequest"></a>
 
 ### SetActiveUserRequest
@@ -2261,6 +2288,7 @@ immudb gRPC &amp; REST service
 | VerifiableTxById | [VerifiableTxRequest](#immudb.schema.VerifiableTxRequest) | [VerifiableTx](#immudb.schema.VerifiableTx) |  |
 | TxScan | [TxScanRequest](#immudb.schema.TxScanRequest) | [TxList](#immudb.schema.TxList) |  |
 | History | [HistoryRequest](#immudb.schema.HistoryRequest) | [Entries](#immudb.schema.Entries) |  |
+| ServerInfo | [ServerInfoRequest](#immudb.schema.ServerInfoRequest) | [ServerInfoResponse](#immudb.schema.ServerInfoResponse) | ServerInfo returns information about the server instance. ServerInfoRequest is defined for future extensions. |
 | Health | [.google.protobuf.Empty](#google.protobuf.Empty) | [HealthResponse](#immudb.schema.HealthResponse) |  |
 | DatabaseHealth | [.google.protobuf.Empty](#google.protobuf.Empty) | [DatabaseHealthResponse](#immudb.schema.DatabaseHealthResponse) |  |
 | CurrentState | [.google.protobuf.Empty](#google.protobuf.Empty) | [ImmutableState](#immudb.schema.ImmutableState) |  |

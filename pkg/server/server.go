@@ -696,9 +696,14 @@ func (s *ImmuServer) UpdateMTLSConfig(ctx context.Context, req *schema.MTLSConfi
 	return nil, ErrNotSupported
 }
 
+// ServerInfo returns information about the server instance.
+func (s *ImmuServer) ServerInfo(ctx context.Context, req *schema.ServerInfoRequest) (*schema.ServerInfoResponse, error) {
+	return &schema.ServerInfoResponse{Version: version.Version}, nil
+}
+
 // Health ...
 func (s *ImmuServer) Health(ctx context.Context, _ *empty.Empty) (*schema.HealthResponse, error) {
-	return &schema.HealthResponse{Status: true, Version: fmt.Sprintf("%s", Version.Version)}, nil
+	return &schema.HealthResponse{Status: true, Version: Version.Version}, nil
 }
 
 func (s *ImmuServer) installShutdownHandler() {
