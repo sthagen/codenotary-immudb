@@ -50,7 +50,8 @@ func TestOptions(t *testing.T) {
 		op.WebBind() != "0.0.0.0:8080" ||
 		op.MetricsBind() != "0.0.0.0:9497" ||
 		op.PgsqlServer ||
-		op.PgsqlServerPort != 5432 {
+		op.PgsqlServerPort != 5432 ||
+		op.PProf != false {
 		t.Errorf("database default options mismatch")
 	}
 }
@@ -69,7 +70,8 @@ func TestSetOptions(t *testing.T) {
 		WithWebServer(false).
 		WithTLS(tlsConfig).
 		WithPgsqlServer(true).
-		WithPgsqlServerPort(123456)
+		WithPgsqlServerPort(123456).
+		WithPProf(true)
 
 	if op.GetAuth() != false ||
 		op.Dir != "immudb_dir" ||
@@ -94,7 +96,8 @@ func TestSetOptions(t *testing.T) {
 		op.TLSConfig != tlsConfig ||
 		op.TokenExpiryTimeMin != 52 ||
 		!op.PgsqlServer ||
-		op.PgsqlServerPort != 123456 {
+		op.PgsqlServerPort != 123456 ||
+		op.PProf != true {
 		t.Errorf("database default options mismatch")
 	}
 }
@@ -162,6 +165,35 @@ Superadmin default credentials
 				WithS3Location("s3-location").
 				WithS3PathPrefix("s3-path-prefix"),
 		)
+
+	assert.Equal(t, expected, op.String())
+}
+
+func TestOptionsStringWithPProf(t *testing.T) {
+	expected := `================ Config ================
+Data dir         : ./data
+Address          : 0.0.0.0:3322
+Metrics address  : 0.0.0.0:9497/metrics
+pprof enabled    : true
+Config file      : configs/immudb.toml
+PID file         : immu.pid
+Log file         : immu.log
+Max recv msg size: 33554432
+Auth enabled     : true
+Dev mode         : false
+Default database : defaultdb
+Maintenance mode : false
+Synced mode      : true
+----------------------------------------
+Superadmin default credentials
+   Username      : immudb
+   Password      : immudb
+========================================`
+
+	op := DefaultOptions().
+		WithPidfile("immu.pid").
+		WithLogfile("immu.log").
+		WithPProf(true)
 
 	assert.Equal(t, expected, op.String())
 }

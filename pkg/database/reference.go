@@ -51,10 +51,8 @@ func (d *db) SetReference(req *schema.ReferenceRequest) (*schema.TxHeader, error
 		return nil, err
 	}
 
-	txHolder := d.st.NewTxHolder()
-
 	// check key does not exists or it's already a reference
-	entry, err := d.getAtTx(EncodeKey(req.Key), req.AtTx, 0, d.st, txHolder, 0)
+	entry, err := d.getAtTx(EncodeKey(req.Key), req.AtTx, 0, d.st, 0)
 	if err != nil && err != store.ErrKeyNotFound {
 		return nil, err
 	}
@@ -63,7 +61,7 @@ func (d *db) SetReference(req *schema.ReferenceRequest) (*schema.TxHeader, error
 	}
 
 	// check referenced key exists and it's not a reference
-	refEntry, err := d.getAtTx(EncodeKey(req.ReferencedKey), req.AtTx, 0, d.st, txHolder, 0)
+	refEntry, err := d.getAtTx(EncodeKey(req.ReferencedKey), req.AtTx, 0, d.st, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -126,32 +124,35 @@ func (d *db) VerifiableSetReference(req *schema.VerifiableReferenceRequest) (*sc
 		return nil, store.ErrIllegalArguments
 	}
 
+	// Preallocate tx buffers
+	lastTx, err := d.allocTx()
+	if err != nil {
+		return nil, err
+	}
+	defer d.releaseTx(lastTx)
+
 	txMetatadata, err := d.SetReference(req.ReferenceRequest)
 	if err != nil {
 		return nil, err
 	}
-
-	lastTx := d.st.NewTxHolder()
 
 	err = d.st.ReadTx(uint64(txMetatadata.Id), lastTx)
 	if err != nil {
 		return nil, err
 	}
 
-	var prevTx *store.Tx
+	var prevTxHdr *store.TxHeader
 
 	if req.ProveSinceTx == 0 {
-		prevTx = lastTx
+		prevTxHdr = lastTx.Header()
 	} else {
-		prevTx = d.st.NewTxHolder()
-
-		err = d.st.ReadTx(req.ProveSinceTx, prevTx)
+		prevTxHdr, err = d.st.ReadTxHeader(req.ProveSinceTx)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	dualProof, err := d.st.DualProof(prevTx, lastTx)
+	dualProof, err := d.st.DualProof(prevTxHdr, lastTx.Header())
 	if err != nil {
 		return nil, err
 	}

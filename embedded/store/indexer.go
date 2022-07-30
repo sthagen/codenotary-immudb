@@ -204,7 +204,11 @@ func (idx *indexer) Close() error {
 
 func (idx *indexer) WaitForIndexingUpto(txID uint64, cancellation <-chan struct{}) error {
 	if idx.wHub != nil {
-		return idx.wHub.WaitFor(txID, cancellation)
+		err := idx.wHub.WaitFor(txID, cancellation)
+		if err == watchers.ErrAlreadyClosed {
+			return ErrAlreadyClosed
+		}
+		return err
 	}
 
 	return watchers.ErrMaxWaitessLimitExceeded
@@ -314,19 +318,18 @@ func (idx *indexer) Pause() {
 }
 
 func (idx *indexer) doIndexing(cancellation <-chan struct{}) {
-	committedTxID, _, _ := idx.store.commitState()
+	committedTxID := idx.store.lastCommittedTxID()
 	idx.metricsLastCommittedTrx.Set(float64(committedTxID))
 
 	for {
 		lastIndexedTx := idx.index.Ts()
+		idx.metricsLastIndexedTrx.Set(float64(lastIndexedTx))
 
 		if idx.wHub != nil {
 			idx.wHub.DoneUpto(lastIndexedTx)
 		}
 
-		idx.metricsLastIndexedTrx.Set(float64(lastIndexedTx))
-
-		err := idx.store.WaitForTx(lastIndexedTx+1, cancellation)
+		err := idx.store.commitWHub.WaitFor(lastIndexedTx+1, cancellation)
 		if err == watchers.ErrCancellationRequested || err == watchers.ErrAlreadyClosed {
 			return
 		}
@@ -335,7 +338,7 @@ func (idx *indexer) doIndexing(cancellation <-chan struct{}) {
 			time.Sleep(60 * time.Second)
 		}
 
-		committedTxID, _, _ := idx.store.commitState()
+		committedTxID := idx.store.lastCommittedTxID()
 		idx.metricsLastCommittedTrx.Set(float64(committedTxID))
 
 		txsToIndex := committedTxID - lastIndexedTx
@@ -354,7 +357,7 @@ func (idx *indexer) doIndexing(cancellation <-chan struct{}) {
 		}
 		idx.stateCond.L.Unlock()
 
-		err = idx.indexTX(lastIndexedTx + 1)
+		err = idx.indexTx(lastIndexedTx + 1)
 		if err == ErrAlreadyClosed || err == tbtree.ErrAlreadyClosed {
 			return
 		}
@@ -365,7 +368,7 @@ func (idx *indexer) doIndexing(cancellation <-chan struct{}) {
 	}
 }
 
-func (idx *indexer) indexTX(txID uint64) error {
+func (idx *indexer) indexTx(txID uint64) error {
 	err := idx.store.ReadTx(txID, idx.tx)
 	if err != nil {
 		return err

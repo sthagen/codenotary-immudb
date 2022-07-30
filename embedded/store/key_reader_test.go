@@ -94,7 +94,7 @@ func TestImmudbStoreReaderAsBefore(t *testing.T) {
 	immuStore, err := Open("data_store_reader_as_before", opts)
 	require.NoError(t, err)
 
-	defer immuStore.Close()
+	defer immustoreClose(t, immuStore)
 
 	txCount := 100
 	eCount := 100

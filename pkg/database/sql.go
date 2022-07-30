@@ -92,8 +92,6 @@ func (d *db) VerifiableSQLGet(req *schema.VerifiableSQLGetRequest) (*schema.Veri
 		}
 	}
 
-	tx := d.st.NewTxHolder()
-
 	// build the encoded key for the pk
 	pkKey := sql.MapKey(
 		[]byte{SQLPrefix},
@@ -103,10 +101,16 @@ func (d *db) VerifiableSQLGet(req *schema.VerifiableSQLGetRequest) (*schema.Veri
 		sql.EncodeID(sql.PKIndexID),
 		valbuf.Bytes())
 
-	e, err := d.sqlGetAt(pkKey, req.SqlGetRequest.AtTx, d.st, tx)
+	e, err := d.sqlGetAt(pkKey, req.SqlGetRequest.AtTx, d.st)
 	if err != nil {
 		return nil, err
 	}
+
+	tx, err := d.allocTx()
+	if err != nil {
+		return nil, err
+	}
+	defer d.releaseTx(tx)
 
 	// key-value inclusion proof
 	err = d.st.ReadTx(e.Tx, tx)
@@ -119,30 +123,28 @@ func (d *db) VerifiableSQLGet(req *schema.VerifiableSQLGetRequest) (*schema.Veri
 		return nil, err
 	}
 
-	var rootTx *store.Tx
+	var rootTxHdr *store.TxHeader
 
 	if req.ProveSinceTx == 0 {
-		rootTx = tx
+		rootTxHdr = tx.Header()
 	} else {
-		rootTx = d.st.NewTxHolder()
-
-		err = d.st.ReadTx(req.ProveSinceTx, rootTx)
+		rootTxHdr, err = d.st.ReadTxHeader(req.ProveSinceTx)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	var sourceTx, targetTx *store.Tx
+	var sourceTxHdr, targetTxHdr *store.TxHeader
 
 	if req.ProveSinceTx <= e.Tx {
-		sourceTx = rootTx
-		targetTx = tx
+		sourceTxHdr = rootTxHdr
+		targetTxHdr = tx.Header()
 	} else {
-		sourceTx = tx
-		targetTx = rootTx
+		sourceTxHdr = tx.Header()
+		targetTxHdr = rootTxHdr
 	}
 
-	dualProof, err := d.st.DualProof(sourceTx, targetTx)
+	dualProof, err := d.st.DualProof(sourceTxHdr, targetTxHdr)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +186,7 @@ func (d *db) VerifiableSQLGet(req *schema.VerifiableSQLGetRequest) (*schema.Veri
 	}, nil
 }
 
-func (d *db) sqlGetAt(key []byte, atTx uint64, index store.KeyIndex, tx *store.Tx) (entry *schema.SQLEntry, err error) {
+func (d *db) sqlGetAt(key []byte, atTx uint64, index store.KeyIndex) (entry *schema.SQLEntry, err error) {
 	var txID uint64
 	var md *store.KVMetadata
 	var val []byte
@@ -206,7 +208,7 @@ func (d *db) sqlGetAt(key []byte, atTx uint64, index store.KeyIndex, tx *store.T
 	} else {
 		txID = atTx
 
-		md, val, err = d.readMetadataAndValue(key, atTx, tx)
+		md, val, err = d.readMetadataAndValue(key, atTx)
 		if err != nil {
 			return nil, err
 		}

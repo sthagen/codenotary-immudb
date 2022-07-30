@@ -20,17 +20,20 @@ import (
 	"os"
 	"time"
 
+	"github.com/codenotary/immudb/embedded/ahtree"
 	"github.com/codenotary/immudb/embedded/appendable"
 	"github.com/codenotary/immudb/embedded/appendable/multiapp"
 	"github.com/codenotary/immudb/embedded/tbtree"
 	"github.com/codenotary/immudb/pkg/logger"
 )
 
+const DefaultMaxActiveTransactions = 1000
 const DefaultMaxConcurrency = 30
 const DefaultMaxIOConcurrency = 1
 const DefaultMaxTxEntries = 1 << 10 // 1024
 const DefaultMaxKeyLen = 1024
 const DefaultMaxValueLen = 4096 // 4Kb
+const DefaultSyncFrequency = 20 * time.Millisecond
 const DefaultFileMode = os.FileMode(0755)
 const DefaultMaxLinearProofLen = 1 << 10
 const DefaultFileSize = multiapp.DefaultFileSize
@@ -54,13 +57,17 @@ type AppFactoryFunc func(
 type TimeFunc func() time.Time
 
 type Options struct {
-	ReadOnly bool
-	Synced   bool
+	ReadOnly      bool
+	Synced        bool
+	SyncFrequency time.Duration
+
 	FileMode os.FileMode
 	logger   logger.Logger
 
 	appFactory         AppFactoryFunc
 	CompactionDisabled bool
+
+	MaxActiveTransactions int
 
 	MaxConcurrency    int
 	MaxIOConcurrency  int
@@ -87,6 +94,9 @@ type Options struct {
 
 	// options below affect indexing
 	IndexOpts *IndexOptions
+
+	// options below affect appendable hash tree
+	AHTOpts *AHTOptions
 }
 
 type IndexOptions struct {
@@ -105,12 +115,19 @@ type IndexOptions struct {
 	CommitLogMaxOpenedFiles  int
 }
 
+type AHTOptions struct {
+	SyncThld int
+}
+
 func DefaultOptions() *Options {
 	return &Options{
-		ReadOnly: false,
-		Synced:   true,
-		FileMode: DefaultFileMode,
-		logger:   logger.NewSimpleLogger("immudb ", os.Stderr),
+		ReadOnly:      false,
+		Synced:        true,
+		SyncFrequency: DefaultSyncFrequency,
+		FileMode:      DefaultFileMode,
+		logger:        logger.NewSimpleLogger("immudb ", os.Stderr),
+
+		MaxActiveTransactions: DefaultMaxActiveTransactions,
 
 		MaxConcurrency:    DefaultMaxConcurrency,
 		MaxIOConcurrency:  DefaultMaxIOConcurrency,
@@ -139,6 +156,8 @@ func DefaultOptions() *Options {
 		CompressionLevel:  DefaultCompressionLevel,
 
 		IndexOpts: DefaultIndexOptions(),
+
+		AHTOpts: DefaultAHTOptions(),
 	}
 }
 
@@ -160,9 +179,23 @@ func DefaultIndexOptions() *IndexOptions {
 	}
 }
 
+func DefaultAHTOptions() *AHTOptions {
+	return &AHTOptions{
+		SyncThld: ahtree.DefaultSyncThld,
+	}
+}
+
 func (opts *Options) Validate() error {
 	if opts == nil {
 		return fmt.Errorf("%w: nil options", ErrInvalidOptions)
+	}
+
+	if opts.SyncFrequency < 0 {
+		return fmt.Errorf("%w: invalid SyncFrequency", ErrInvalidOptions)
+	}
+
+	if opts.MaxActiveTransactions <= 0 {
+		return fmt.Errorf("%w: invalid MaxActiveTransactions", ErrInvalidOptions)
 	}
 
 	if opts.MaxConcurrency <= 0 {
@@ -222,7 +255,12 @@ func (opts *Options) Validate() error {
 		return fmt.Errorf("%w: invalid log", ErrInvalidOptions)
 	}
 
-	return opts.IndexOpts.Validate()
+	err := opts.IndexOpts.Validate()
+	if err != nil {
+		return err
+	}
+
+	return opts.AHTOpts.Validate()
 }
 
 func (opts *IndexOptions) Validate() error {
@@ -272,6 +310,17 @@ func (opts *IndexOptions) Validate() error {
 	return nil
 }
 
+func (opts *AHTOptions) Validate() error {
+	if opts == nil {
+		return fmt.Errorf("%w: nil AHT options ", ErrInvalidOptions)
+	}
+	if opts.SyncThld <= 0 {
+		return fmt.Errorf("%w: invalid AHT option SyncThld", ErrInvalidOptions)
+	}
+
+	return nil
+}
+
 func (opts *Options) WithReadOnly(readOnly bool) *Options {
 	opts.ReadOnly = readOnly
 	return opts
@@ -279,6 +328,11 @@ func (opts *Options) WithReadOnly(readOnly bool) *Options {
 
 func (opts *Options) WithSynced(synced bool) *Options {
 	opts.Synced = synced
+	return opts
+}
+
+func (opts *Options) WithSyncFrequency(frequency time.Duration) *Options {
+	opts.SyncFrequency = frequency
 	return opts
 }
 
@@ -299,6 +353,11 @@ func (opts *Options) WithAppFactory(appFactory AppFactoryFunc) *Options {
 
 func (opts *Options) WithCompactionDisabled(disabled bool) *Options {
 	opts.CompactionDisabled = disabled
+	return opts
+}
+
+func (opts *Options) WithMaxActiveTransactions(maxActiveTransactions int) *Options {
+	opts.MaxActiveTransactions = maxActiveTransactions
 	return opts
 }
 
@@ -387,6 +446,11 @@ func (opts *Options) WithIndexOptions(indexOptions *IndexOptions) *Options {
 	return opts
 }
 
+func (opts *Options) WithAHTOptions(ahtOptions *AHTOptions) *Options {
+	opts.AHTOpts = ahtOptions
+	return opts
+}
+
 // IndexOptions
 
 func (opts *IndexOptions) WithCacheSize(cacheSize int) *IndexOptions {
@@ -451,5 +515,12 @@ func (opts *IndexOptions) WithHistoryLogMaxOpenedFiles(historyLogMaxOpenedFiles 
 
 func (opts *IndexOptions) WithCommitLogMaxOpenedFiles(commitLogMaxOpenedFiles int) *IndexOptions {
 	opts.CommitLogMaxOpenedFiles = commitLogMaxOpenedFiles
+	return opts
+}
+
+// AHTOptions
+
+func (opts *AHTOptions) WithSyncThld(syncThld int) *AHTOptions {
+	opts.SyncThld = syncThld
 	return opts
 }

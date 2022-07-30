@@ -21,7 +21,9 @@ import (
 	"strings"
 
 	c "github.com/codenotary/immudb/cmd/helper"
+	"github.com/codenotary/immudb/embedded/store"
 	"github.com/codenotary/immudb/pkg/api/schema"
+	"github.com/codenotary/immudb/pkg/database"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -37,6 +39,8 @@ func addDbUpdateFlags(c *cobra.Command) {
 	c.Flags().String("replication-follower-username", "", "set username used for replication")
 	c.Flags().String("replication-follower-password", "", "set password used for replication")
 	c.Flags().Uint32("write-tx-header-version", 1, "set write tx header version (use 0 for compatibility with immudb 1.1, 1 for immudb 1.2+)")
+	c.Flags().Uint32("max-commit-concurrency", store.DefaultMaxConcurrency, "set the maximum commit concurrency")
+	c.Flags().Uint32("read-tx-pool-size", database.DefaultReadTxPoolSize, "set transaction read pool size (used for reading transaction objects)")
 	c.Flags().Bool("autoload", true, "enable database autoloading")
 }
 
@@ -378,6 +382,16 @@ func prepareDatabaseNullableSettings(flags *pflag.FlagSet) (*schema.DatabaseNull
 		return nil, err
 	}
 
+	ret.MaxConcurrency, err = condUInt32("max-commit-concurrency")
+	if err != nil {
+		return nil, err
+	}
+
+	ret.ReadTxPoolSize, err = condUInt32("read-tx-pool-size")
+	if err != nil {
+		return nil, err
+	}
+
 	ret.Autoload, err = condBool("autoload")
 	if err != nil {
 		return nil, err
@@ -399,6 +413,14 @@ func databaseNullableSettingsStr(settings *schema.DatabaseNullableSettings) stri
 
 	if settings.WriteTxHeaderVersion != nil {
 		propertiesStr = append(propertiesStr, fmt.Sprintf("write-tx-header-version: %d", settings.WriteTxHeaderVersion.GetValue()))
+	}
+
+	if settings.MaxConcurrency != nil {
+		propertiesStr = append(propertiesStr, fmt.Sprintf("max-commit-concurrency: %d", settings.GetMaxConcurrency().GetValue()))
+	}
+
+	if settings.ReadTxPoolSize != nil {
+		propertiesStr = append(propertiesStr, fmt.Sprintf("read-tx-pool-size: %d", settings.GetMaxConcurrency().GetValue()))
 	}
 
 	if settings.Autoload != nil {

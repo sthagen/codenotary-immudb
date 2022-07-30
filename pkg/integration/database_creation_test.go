@@ -101,6 +101,7 @@ func TestCreateDatabaseV2(t *testing.T) {
 		VLogMaxOpenedFiles:      &schema.NullableUint32{Value: 8},
 		TxLogMaxOpenedFiles:     &schema.NullableUint32{Value: 4},
 		CommitLogMaxOpenedFiles: &schema.NullableUint32{Value: 2},
+		SyncFrequency:           &schema.NullableMilliseconds{Value: 15},
 		IndexSettings: &schema.IndexNullableSettings{
 			FlushThreshold:           &schema.NullableUint32{Value: 256},
 			SyncThreshold:            &schema.NullableUint32{Value: 512},
@@ -114,6 +115,9 @@ func TestCreateDatabaseV2(t *testing.T) {
 			NodesLogMaxOpenedFiles:   &schema.NullableUint32{Value: 20},
 			HistoryLogMaxOpenedFiles: &schema.NullableUint32{Value: 15},
 			CommitLogMaxOpenedFiles:  &schema.NullableUint32{Value: 3},
+		},
+		AhtSettings: &schema.AHTNullableSettings{
+			SyncThreshold: &schema.NullableUint32{Value: 10_000},
 		},
 	}
 	_, err = client.CreateDatabaseV2(context.Background(), "db1", dbNullableSettings)
@@ -136,6 +140,7 @@ func TestCreateDatabaseV2(t *testing.T) {
 	require.Equal(t, dbNullableSettings.VLogMaxOpenedFiles.Value, res.Settings.VLogMaxOpenedFiles.Value)
 	require.Equal(t, dbNullableSettings.TxLogMaxOpenedFiles.Value, res.Settings.TxLogMaxOpenedFiles.Value)
 	require.Equal(t, dbNullableSettings.CommitLogMaxOpenedFiles.Value, res.Settings.CommitLogMaxOpenedFiles.Value)
+	require.Equal(t, dbNullableSettings.SyncFrequency.Value, res.Settings.SyncFrequency.Value)
 
 	require.Equal(t, dbNullableSettings.IndexSettings.FlushThreshold.Value, res.Settings.IndexSettings.FlushThreshold.Value)
 	require.Equal(t, dbNullableSettings.IndexSettings.SyncThreshold.Value, res.Settings.IndexSettings.SyncThreshold.Value)
@@ -149,6 +154,8 @@ func TestCreateDatabaseV2(t *testing.T) {
 	require.Equal(t, dbNullableSettings.IndexSettings.NodesLogMaxOpenedFiles.Value, res.Settings.IndexSettings.NodesLogMaxOpenedFiles.Value)
 	require.Equal(t, dbNullableSettings.IndexSettings.HistoryLogMaxOpenedFiles.Value, res.Settings.IndexSettings.HistoryLogMaxOpenedFiles.Value)
 	require.Equal(t, dbNullableSettings.IndexSettings.CommitLogMaxOpenedFiles.Value, res.Settings.IndexSettings.CommitLogMaxOpenedFiles.Value)
+
+	require.Equal(t, dbNullableSettings.AhtSettings.SyncThreshold.Value, res.Settings.AhtSettings.SyncThreshold.Value)
 
 	_, err = client.UpdateDatabaseV2(context.Background(), "db1", &schema.DatabaseNullableSettings{})
 	require.NoError(t, err)

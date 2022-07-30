@@ -58,7 +58,7 @@ func (d *db) ZAdd(req *schema.ZAddRequest) (*schema.TxHeader, error) {
 	// check referenced key exists and it's not a reference
 	key := EncodeKey(req.Key)
 
-	refEntry, err := d.getAtTx(key, req.AtTx, 0, d.st, d.st.NewTxHolder(), 0)
+	refEntry, err := d.getAtTx(key, req.AtTx, 0, d.st, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -186,8 +186,6 @@ func (d *db) ZScan(req *schema.ZScanRequest) (*schema.ZEntries, error) {
 	}
 	defer r.Close()
 
-	tx := d.st.NewTxHolder()
-
 	entries := &schema.ZEntries{}
 
 	for l := 1; l <= limit; l++ {
@@ -218,7 +216,7 @@ func (d *db) ZScan(req *schema.ZScanRequest) (*schema.ZEntries, error) {
 
 		atTx := binary.BigEndian.Uint64(zKey[keyOff+len(key):])
 
-		e, err := d.getAtTx(key, atTx, 1, snap, tx, 0)
+		e, err := d.getAtTx(key, atTx, 1, snap, 0)
 		if err == store.ErrKeyNotFound {
 			// ignore deleted ones (referenced key may have been deleted)
 			continue
@@ -258,32 +256,33 @@ func (d *db) VerifiableZAdd(req *schema.VerifiableZAddRequest) (*schema.Verifiab
 		return nil, store.ErrIllegalArguments
 	}
 
+	lastTx, err := d.allocTx()
+	if err != nil {
+		return nil, err
+	}
+	defer d.releaseTx(lastTx)
+
 	txMetatadata, err := d.ZAdd(req.ZAddRequest)
 	if err != nil {
 		return nil, err
 	}
-
-	lastTx := d.st.NewTxHolder()
 
 	err = d.st.ReadTx(uint64(txMetatadata.Id), lastTx)
 	if err != nil {
 		return nil, err
 	}
 
-	var prevTx *store.Tx
-
+	var prevTxHdr *store.TxHeader
 	if req.ProveSinceTx == 0 {
-		prevTx = lastTx
+		prevTxHdr = lastTx.Header()
 	} else {
-		prevTx = d.st.NewTxHolder()
-
-		err = d.st.ReadTx(req.ProveSinceTx, prevTx)
+		prevTxHdr, err = d.st.ReadTxHeader(req.ProveSinceTx)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	dualProof, err := d.st.DualProof(prevTx, lastTx)
+	dualProof, err := d.st.DualProof(prevTxHdr, lastTx.Header())
 	if err != nil {
 		return nil, err
 	}

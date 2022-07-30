@@ -2462,6 +2462,7 @@ func (i periodInstant) resolve(tx *SQLTx, params map[string]interface{}, asc, in
 
 		return uint64(txID - 1), nil
 	} else {
+
 		var ts time.Time
 
 		if instantVal.Type() == TimestampType {
@@ -2487,24 +2488,24 @@ func (i periodInstant) resolve(tx *SQLTx, params map[string]interface{}, asc, in
 				sts = sts.Add(1 * time.Second)
 			}
 
-			tx, err := tx.engine.store.FirstTxSince(sts)
+			txHdr, err := tx.engine.store.FirstTxSince(sts)
 			if err != nil {
 				return 0, err
 			}
 
-			return tx.Header().ID, nil
+			return txHdr.ID, nil
 		}
 
 		if !inclusive {
 			sts = sts.Add(-1 * time.Second)
 		}
 
-		tx, err := tx.engine.store.LastTxUntil(sts)
+		txHdr, err := tx.engine.store.LastTxUntil(sts)
 		if err != nil {
 			return 0, err
 		}
 
-		return tx.Header().ID, nil
+		return txHdr.ID, nil
 	}
 }
 

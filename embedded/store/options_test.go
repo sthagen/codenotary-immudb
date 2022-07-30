@@ -33,6 +33,7 @@ func TestInvalidOptions(t *testing.T) {
 		{"empty", &Options{}},
 		{"logger", DefaultOptions().WithLogger(nil)},
 		{"MaxConcurrency", DefaultOptions().WithMaxConcurrency(0)},
+		{"SyncFrequency", DefaultOptions().WithSyncFrequency(-1)},
 		{"MaxIOConcurrency", DefaultOptions().WithMaxIOConcurrency(0)},
 		{"MaxIOConcurrency-max", DefaultOptions().WithMaxIOConcurrency(MaxParallelIO + 1)},
 		{"MaxLinearProofLen", DefaultOptions().WithMaxLinearProofLen(-1)},
@@ -85,6 +86,21 @@ func TestInvalidIndexOptions(t *testing.T) {
 	}
 }
 
+func TestInvalidAHTOptions(t *testing.T) {
+	for _, d := range []struct {
+		n    string
+		opts *AHTOptions
+	}{
+		{"nil", nil},
+		{"empty", &AHTOptions{}},
+		{"SyncThld", DefaultAHTOptions().WithSyncThld(0)},
+	} {
+		t.Run(d.n, func(t *testing.T) {
+			require.ErrorIs(t, d.opts.Validate(), ErrInvalidOptions)
+		})
+	}
+}
+
 func TestDefaultOptions(t *testing.T) {
 	require.NoError(t, DefaultOptions().Validate())
 }
@@ -98,6 +114,8 @@ func TestValidOptions(t *testing.T) {
 	require.Equal(t, DefaultMaxConcurrency, opts.WithMaxConcurrency(DefaultMaxConcurrency).MaxConcurrency)
 	require.Equal(t, DefaultFileMode, opts.WithFileMode(DefaultFileMode).FileMode)
 	require.Equal(t, DefaultFileSize, opts.WithFileSize(DefaultFileSize).FileSize)
+	require.Equal(t, DefaultSyncFrequency, opts.WithSyncFrequency(DefaultSyncFrequency).SyncFrequency)
+	require.Equal(t, DefaultMaxActiveTransactions, opts.WithMaxActiveTransactions(DefaultMaxActiveTransactions).MaxActiveTransactions)
 	require.Equal(t, DefaultMaxIOConcurrency, opts.WithMaxIOConcurrency(DefaultMaxIOConcurrency).MaxIOConcurrency)
 	require.Equal(t, DefaultMaxKeyLen, opts.WithMaxKeyLen(DefaultMaxKeyLen).MaxKeyLen)
 	require.Equal(t, DefaultMaxLinearProofLen, opts.WithMaxLinearProofLen(DefaultMaxLinearProofLen).MaxLinearProofLen)
@@ -116,6 +134,8 @@ func TestValidOptions(t *testing.T) {
 	require.True(t, opts.WithSynced(true).Synced)
 
 	require.NotNil(t, opts.WithIndexOptions(DefaultIndexOptions()).IndexOpts)
+
+	require.NotNil(t, opts.WithAHTOptions(DefaultAHTOptions()).AHTOpts)
 
 	require.False(t, opts.WithReadOnly(false).ReadOnly)
 
@@ -162,6 +182,15 @@ func TestValidOptions(t *testing.T) {
 	require.Equal(t, 1*time.Millisecond, indexOpts.WithDelayDuringCompaction(1*time.Millisecond).DelayDuringCompaction)
 	require.Equal(t, 4096*2, indexOpts.WithFlushBufferSize(4096*2).FlushBufferSize)
 	require.Equal(t, float32(10), indexOpts.WithCleanupPercentage(10).CleanupPercentage)
+
+	require.Nil(t, opts.WithAHTOptions(nil).AHTOpts)
+	require.ErrorIs(t, opts.Validate(), ErrInvalidOptions)
+
+	ahtOpts := &AHTOptions{}
+	opts.WithAHTOptions(ahtOpts)
+	require.ErrorIs(t, opts.Validate(), ErrInvalidOptions)
+
+	require.Equal(t, 10_000, ahtOpts.WithSyncThld(10_000).SyncThld)
 
 	require.NoError(t, opts.Validate())
 }

@@ -1767,6 +1767,14 @@
         }
       }
     },
+    "schemaAHTNullableSettings": {
+      "type": "object",
+      "properties": {
+        "syncThreshold": {
+          "$ref": "#/definitions/schemaNullableUint32"
+        }
+      }
+    },
     "schemaChangePasswordRequest": {
       "type": "object",
       "properties": {
@@ -1987,6 +1995,15 @@
         },
         "autoload": {
           "$ref": "#/definitions/schemaNullableBool"
+        },
+        "readTxPoolSize": {
+          "$ref": "#/definitions/schemaNullableUint32"
+        },
+        "syncFrequency": {
+          "$ref": "#/definitions/schemaNullableMilliseconds"
+        },
+        "ahtSettings": {
+          "$ref": "#/definitions/schemaAHTNullableSettings"
         }
       }
     },
@@ -2542,6 +2559,15 @@
         "value": {
           "type": "number",
           "format": "float"
+        }
+      }
+    },
+    "schemaNullableMilliseconds": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string",
+          "format": "int64"
         }
       }
     },

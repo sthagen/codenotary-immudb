@@ -21,16 +21,20 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/codenotary/immudb/embedded/ahtree"
 	"github.com/codenotary/immudb/embedded/store"
 	"github.com/codenotary/immudb/embedded/tbtree"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/database"
 )
 
+type Milliseconds int64
+
 type dbOptions struct {
 	Database string `json:"database"`
 
-	synced bool // currently a global immudb instance option
+	synced        bool         // currently a global immudb instance option
+	SyncFrequency Milliseconds `json:"syncFrequency"` // ms
 
 	// replication options
 	Replica          bool   `json:"replica"`
@@ -57,7 +61,11 @@ type dbOptions struct {
 	CommitLogMaxOpenedFiles int `json:"commitLogMaxOpenedFiles"`
 	WriteTxHeaderVersion    int `json:"writeTxHeaderVersion"`
 
+	ReadTxPoolSize int `json:"readTxPoolSize"`
+
 	IndexOptions *indexOptions `json:"indexOptions"`
+
+	AHTOptions *ahtOptions `json:"ahtOptions"`
 
 	Autoload featureState `json:"autoload"` // unspecfied is considered as enabled for backward compatibility
 
@@ -95,16 +103,21 @@ type indexOptions struct {
 	CommitLogMaxOpenedFiles  int     `json:"commitLogMaxOpenedFiles"`
 }
 
+type ahtOptions struct {
+	SyncThreshold int `json:"syncThreshold"`
+}
+
 const DefaultMaxValueLen = 1 << 25   //32Mb
 const DefaultStoreFileSize = 1 << 29 //512Mb
 
-func (s *ImmuServer) defaultDBOptions(database string) *dbOptions {
+func (s *ImmuServer) defaultDBOptions(dbName string) *dbOptions {
+
 	dbOpts := &dbOptions{
-		Database: database,
+		Database: dbName,
 
-		synced: s.Options.synced,
-
-		Replica: s.Options.ReplicationOptions != nil,
+		synced:        s.Options.synced,
+		SyncFrequency: Milliseconds(store.DefaultSyncFrequency.Milliseconds()),
+		Replica:       s.Options.ReplicationOptions != nil,
 
 		FileSize:     DefaultStoreFileSize,
 		MaxKeyLen:    store.DefaultMaxKeyLen,
@@ -120,15 +133,18 @@ func (s *ImmuServer) defaultDBOptions(database string) *dbOptions {
 		TxLogMaxOpenedFiles:     store.DefaultTxLogMaxOpenedFiles,
 		CommitLogMaxOpenedFiles: store.DefaultCommitLogMaxOpenedFiles,
 		WriteTxHeaderVersion:    store.DefaultWriteTxHeaderVersion,
+		ReadTxPoolSize:          database.DefaultReadTxPoolSize,
 
 		IndexOptions: s.defaultIndexOptions(),
+
+		AHTOptions: s.defaultAHTOptions(),
 
 		Autoload: unspecifiedState,
 
 		CreatedAt: time.Now(),
 	}
 
-	if dbOpts.Replica && (database == s.Options.systemAdminDBName || database == s.Options.defaultDBName) {
+	if dbOpts.Replica && (dbName == s.Options.systemAdminDBName || dbName == s.Options.defaultDBName) {
 		repOpts := s.Options.ReplicationOptions
 
 		dbOpts.MasterDatabase = dbOpts.Database // replica of systemdb and defaultdb must have the same name as in master
@@ -159,11 +175,18 @@ func (s *ImmuServer) defaultIndexOptions() *indexOptions {
 	}
 }
 
+func (s *ImmuServer) defaultAHTOptions() *ahtOptions {
+	return &ahtOptions{
+		SyncThreshold: ahtree.DefaultSyncThld,
+	}
+}
+
 func (s *ImmuServer) databaseOptionsFrom(opts *dbOptions) *database.Options {
 	return database.DefaultOption().
 		WithDBRootPath(s.Options.Dir).
 		WithStoreOptions(s.storeOptionsForDB(opts.Database, s.remoteStorage, opts.storeOptions())).
-		AsReplica(opts.Replica)
+		AsReplica(opts.Replica).
+		WithReadTxPoolSize(opts.ReadTxPoolSize)
 }
 
 func (opts *dbOptions) storeOptions() *store.Options {
@@ -186,8 +209,15 @@ func (opts *dbOptions) storeOptions() *store.Options {
 			WithCommitLogMaxOpenedFiles(opts.IndexOptions.CommitLogMaxOpenedFiles)
 	}
 
+	ahtOpts := store.DefaultAHTOptions()
+
+	if opts.AHTOptions != nil {
+		ahtOpts.WithSyncThld(opts.AHTOptions.SyncThreshold)
+	}
+
 	stOpts := store.DefaultOptions().
 		WithSynced(opts.synced).
+		WithSyncFrequency(time.Millisecond * time.Duration(opts.SyncFrequency)).
 		WithFileSize(opts.FileSize).
 		WithMaxKeyLen(opts.MaxKeyLen).
 		WithMaxValueLen(opts.MaxValueLen).
@@ -200,7 +230,8 @@ func (opts *dbOptions) storeOptions() *store.Options {
 		WithTxLogMaxOpenedFiles(opts.TxLogMaxOpenedFiles).
 		WithCommitLogMaxOpenedFiles(opts.CommitLogMaxOpenedFiles).
 		WithMaxLinearProofLen(0). // fixed no limitation, it may be customized in the future
-		WithIndexOptions(indexOpts)
+		WithIndexOptions(indexOpts).
+		WithAHTOptions(ahtOpts)
 
 	if opts.ExcludeCommitTime {
 		stOpts.WithTimeFunc(func() time.Time { return time.Unix(0, 0) })
@@ -221,6 +252,8 @@ func (opts *dbOptions) databaseNullableSettings() *schema.DatabaseNullableSettin
 			FollowerUsername: &schema.NullableString{Value: opts.FollowerUsername},
 			FollowerPassword: &schema.NullableString{Value: opts.FollowerPassword},
 		},
+
+		SyncFrequency: &schema.NullableMilliseconds{Value: int64(opts.SyncFrequency)},
 
 		FileSize:     &schema.NullableUint32{Value: uint32(opts.FileSize)},
 		MaxKeyLen:    &schema.NullableUint32{Value: uint32(opts.MaxKeyLen)},
@@ -253,9 +286,15 @@ func (opts *dbOptions) databaseNullableSettings() *schema.DatabaseNullableSettin
 			CommitLogMaxOpenedFiles:  &schema.NullableUint32{Value: uint32(opts.IndexOptions.CommitLogMaxOpenedFiles)},
 		},
 
+		AhtSettings: &schema.AHTNullableSettings{
+			SyncThreshold: &schema.NullableUint32{Value: uint32(opts.AHTOptions.SyncThreshold)},
+		},
+
 		WriteTxHeaderVersion: &schema.NullableUint32{Value: uint32(opts.WriteTxHeaderVersion)},
 
 		Autoload: &schema.NullableBool{Value: opts.Autoload.isEnabled()},
+
+		ReadTxPoolSize: &schema.NullableUint32{Value: uint32(opts.ReadTxPoolSize)},
 	}
 }
 
@@ -323,6 +362,12 @@ func (s *ImmuServer) overwriteWith(opts *dbOptions, settings *schema.DatabaseNul
 
 	opts.synced = s.Options.synced
 
+	// database instance options
+	if settings.ReadTxPoolSize != nil {
+		opts.ReadTxPoolSize = int(settings.ReadTxPoolSize.Value)
+	}
+
+	// replication settings
 	if settings.ReplicationSettings != nil {
 		rs := settings.ReplicationSettings
 
@@ -346,6 +391,12 @@ func (s *ImmuServer) overwriteWith(opts *dbOptions, settings *schema.DatabaseNul
 		}
 	}
 
+	// store options
+
+	if settings.SyncFrequency != nil {
+		opts.SyncFrequency = Milliseconds(settings.SyncFrequency.Value)
+	}
+
 	if settings.FileSize != nil {
 		opts.FileSize = int(settings.FileSize.Value)
 	}
@@ -362,7 +413,6 @@ func (s *ImmuServer) overwriteWith(opts *dbOptions, settings *schema.DatabaseNul
 		opts.MaxTxEntries = int(settings.MaxTxEntries.Value)
 	}
 
-	// store options
 	if settings.ExcludeCommitTime != nil {
 		opts.ExcludeCommitTime = settings.ExcludeCommitTime.Value
 	}
@@ -446,6 +496,17 @@ func (s *ImmuServer) overwriteWith(opts *dbOptions, settings *schema.DatabaseNul
 		}
 	}
 
+	// aht options
+	if settings.AhtSettings != nil {
+		if opts.AHTOptions == nil {
+			opts.AHTOptions = s.defaultAHTOptions()
+		}
+
+		if settings.AhtSettings.SyncThreshold != nil {
+			opts.AHTOptions.SyncThreshold = int(settings.AhtSettings.SyncThreshold.Value)
+		}
+	}
+
 	err := opts.Validate()
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrIllegalArguments, err)
@@ -462,6 +523,13 @@ func (opts *dbOptions) Validate() error {
 			opts.FollowerUsername != "" ||
 			opts.FollowerPassword != "") {
 		return fmt.Errorf("%w: invalid replication options for database '%s'", ErrIllegalArguments, opts.Database)
+	}
+
+	if opts.ReadTxPoolSize <= 0 {
+		return fmt.Errorf(
+			"%w: invalid read tx pool size (%d) for database '%s'",
+			ErrIllegalArguments, opts.ReadTxPoolSize, opts.Database,
+		)
 	}
 
 	return opts.storeOptions().Validate()
@@ -539,6 +607,7 @@ func (s *ImmuServer) logDBOptions(database string, opts *dbOptions) {
 	// in logs such as replication passwords
 	s.Logger.Infof("%s.Autoload: %v", database, opts.Autoload.isEnabled())
 	s.Logger.Infof("%s.Synced: %v", database, opts.synced)
+	s.Logger.Infof("%s.SyncFrequency: %v", database, opts.SyncFrequency)
 	s.Logger.Infof("%s.Replica: %v", database, opts.Replica)
 	s.Logger.Infof("%s.FileSize: %v", database, opts.FileSize)
 	s.Logger.Infof("%s.MaxKeyLen: %v", database, opts.MaxKeyLen)
@@ -552,6 +621,7 @@ func (s *ImmuServer) logDBOptions(database string, opts *dbOptions) {
 	s.Logger.Infof("%s.TxLogMaxOpenedFiles: %v", database, opts.TxLogMaxOpenedFiles)
 	s.Logger.Infof("%s.CommitLogMaxOpenedFiles: %v", database, opts.CommitLogMaxOpenedFiles)
 	s.Logger.Infof("%s.WriteTxHeaderVersion: %v", database, opts.WriteTxHeaderVersion)
+	s.Logger.Infof("%s.ReadTxPoolSize: %v", database, opts.ReadTxPoolSize)
 	s.Logger.Infof("%s.IndexOptions.FlushThreshold: %v", database, opts.IndexOptions.FlushThreshold)
 	s.Logger.Infof("%s.IndexOptions.SyncThreshold: %v", database, opts.IndexOptions.SyncThreshold)
 	s.Logger.Infof("%s.IndexOptions.FlushBufferSize: %v", database, opts.IndexOptions.FlushBufferSize)
@@ -565,4 +635,5 @@ func (s *ImmuServer) logDBOptions(database string, opts *dbOptions) {
 	s.Logger.Infof("%s.IndexOptions.NodesLogMaxOpenedFiles: %v", database, opts.IndexOptions.NodesLogMaxOpenedFiles)
 	s.Logger.Infof("%s.IndexOptions.HistoryLogMaxOpenedFiles: %v", database, opts.IndexOptions.HistoryLogMaxOpenedFiles)
 	s.Logger.Infof("%s.IndexOptions.CommitLogMaxOpenedFiles: %v", database, opts.IndexOptions.CommitLogMaxOpenedFiles)
+	s.Logger.Infof("%s.AHTOptions.SyncThreshold: %v", database, opts.AHTOptions.SyncThreshold)
 }

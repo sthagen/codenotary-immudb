@@ -68,6 +68,8 @@ func parseOptions() (options *server.Options, err error) {
 	pgsqlServer := viper.GetBool("pgsql-server")
 	pgsqlServerPort := viper.GetInt("pgsql-server-port")
 
+	pprof := viper.GetBool("pprof")
+
 	s3Storage := viper.GetBool("s3-storage")
 	s3Endpoint := viper.GetString("s3-endpoint")
 	s3AccessKeyID := viper.GetString("s3-access-key-id")
@@ -86,6 +88,7 @@ func parseOptions() (options *server.Options, err error) {
 		WithS3PathPrefix(s3PathPrefix)
 
 	sessionOptions := sessions.DefaultOptions().
+		WithMaxSessions(viper.GetInt("max-sessions")).
 		WithSessionGuardCheckInterval(viper.GetDuration("sessions-guard-check-interval")).
 		WithMaxSessionInactivityTime(viper.GetDuration("max-session-inactivity-time")).
 		WithMaxSessionAgeTime(viper.GetDuration("max-session-age-time")).
@@ -122,7 +125,8 @@ func parseOptions() (options *server.Options, err error) {
 		WithWebServerPort(webServerPort).
 		WithPgsqlServer(pgsqlServer).
 		WithPgsqlServerPort(pgsqlServerPort).
-		WithSessionOptions(sessionOptions)
+		WithSessionOptions(sessionOptions).
+		WithPProf(pprof)
 
 	return options, nil
 }

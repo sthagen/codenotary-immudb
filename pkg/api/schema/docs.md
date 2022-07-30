@@ -4,6 +4,7 @@
 ## Table of Contents
 
 - [schema.proto](#schema.proto)
+    - [AHTNullableSettings](#immudb.schema.AHTNullableSettings)
     - [AuthConfig](#immudb.schema.AuthConfig)
     - [ChangePasswordRequest](#immudb.schema.ChangePasswordRequest)
     - [ChangePermissionRequest](#immudb.schema.ChangePermissionRequest)
@@ -63,6 +64,7 @@
     - [NewTxResponse](#immudb.schema.NewTxResponse)
     - [NullableBool](#immudb.schema.NullableBool)
     - [NullableFloat](#immudb.schema.NullableFloat)
+    - [NullableMilliseconds](#immudb.schema.NullableMilliseconds)
     - [NullableString](#immudb.schema.NullableString)
     - [NullableUint32](#immudb.schema.NullableUint32)
     - [NullableUint64](#immudb.schema.NullableUint64)
@@ -142,6 +144,21 @@
 <p align="right"><a href="#top">Top</a></p>
 
 ## schema.proto
+
+
+
+<a name="immudb.schema.AHTNullableSettings"></a>
+
+### AHTNullableSettings
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| syncThreshold | [NullableUint32](#immudb.schema.NullableUint32) |  |  |
+
+
+
 
 
 
@@ -422,6 +439,9 @@
 | indexSettings | [IndexNullableSettings](#immudb.schema.IndexNullableSettings) |  |  |
 | writeTxHeaderVersion | [NullableUint32](#immudb.schema.NullableUint32) |  |  |
 | autoload | [NullableBool](#immudb.schema.NullableBool) |  |  |
+| readTxPoolSize | [NullableUint32](#immudb.schema.NullableUint32) |  |  |
+| syncFrequency | [NullableMilliseconds](#immudb.schema.NullableMilliseconds) |  |  |
+| ahtSettings | [AHTNullableSettings](#immudb.schema.AHTNullableSettings) |  |  |
 
 
 
@@ -1117,6 +1137,21 @@
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | value | [float](#float) |  |  |
+
+
+
+
+
+
+<a name="immudb.schema.NullableMilliseconds"></a>
+
+### NullableMilliseconds
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| value | [int64](#int64) |  |  |
 
 
 

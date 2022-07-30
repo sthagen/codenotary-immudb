@@ -62,8 +62,6 @@ type KeyReader struct {
 
 	offset  uint64
 	skipped uint64
-
-	_tx *Tx
 }
 
 type KeyReaderSpec struct {
@@ -169,7 +167,6 @@ func (s *Snapshot) NewKeyReader(spec *KeyReaderSpec) (*KeyReader, error) {
 		filters:        spec.Filters,
 		refInterceptor: refInterceptor,
 		offset:         spec.Offset,
-		_tx:            s.st.NewTxHolder(),
 	}, nil
 }
 
@@ -322,23 +319,18 @@ func (r *KeyReader) ReadBetween(initialTxID, finalTxID uint64) (key []byte, val 
 			return nil, nil, 0, err
 		}
 
-		err = r.snap.st.ReadTx(ktxID, r._tx)
-		if err != nil {
-			return nil, nil, 0, err
-		}
-
-		e, err := r._tx.EntryOf(key)
+		e, header, err := r.snap.st.ReadTxEntry(ktxID, key)
 		if err != nil {
 			return nil, nil, 0, err
 		}
 
 		val = &valueRef{
-			tx:     r._tx.header.ID,
+			tx:     header.ID,
 			hc:     hc,
 			hVal:   e.hVal,
 			vOff:   int64(e.vOff),
 			valLen: uint32(e.vLen),
-			txmd:   r._tx.header.Metadata,
+			txmd:   header.Metadata,
 			kvmd:   e.md,
 			st:     r.snap.st,
 		}
