@@ -19,9 +19,10 @@ package immuadmin
 import (
 	"fmt"
 
+	"github.com/spf13/cobra"
+
 	c "github.com/codenotary/immudb/cmd/helper"
 	"github.com/codenotary/immudb/cmd/immuadmin/command/stats"
-	"github.com/spf13/cobra"
 )
 
 func (cl *commandline) status(cmd *cobra.Command) {

@@ -14,19 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package immuclient
+package cli
 
-import (
-	"testing"
-
-	"github.com/stretchr/testify/require"
-)
-
-func TestNew(t *testing.T) {
-	cmd := NewCommand()
-	require.Len(t, cmd.Commands(), 32)
-	cmd.SetArgs([]string{"--help"})
-
-	err := Execute(cmd)
-	require.NoError(t, err)
+func (cli *cli) serverInfo(args []string) (string, error) {
+	return cli.immucl.ServerInfo(args)
 }
