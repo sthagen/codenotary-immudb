@@ -48,6 +48,7 @@ var ErrUnexpectedLinkingError = errors.New("internal inconsistency between linea
 var ErrorNoEntriesProvided = errors.New("no entries provided")
 var ErrWriteOnlyTx = errors.New("write-only transaction")
 var ErrTxReadConflict = errors.New("tx read conflict")
+var ErrTxAlreadyCommitted = errors.New("tx already committed")
 var ErrorMaxTxEntriesLimitExceeded = errors.New("max number of entries per tx exceeded")
 var ErrNullKey = errors.New("null key")
 var ErrorMaxKeyLenExceeded = errors.New("max key length exceeded")
@@ -757,6 +758,13 @@ func (s *ImmuStore) Alh() (uint64, [sha256.Size]byte) {
 	return s.committedTxID, s.committedAlh
 }
 
+func (s *ImmuStore) preAlh() (uint64, [sha256.Size]byte) {
+	s.commitStateRWMutex.RLock()
+	defer s.commitStateRWMutex.RUnlock()
+
+	return s.preCommittedTxID, s.preCommittedAlh
+}
+
 func (s *ImmuStore) BlInfo() (uint64, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -1112,27 +1120,29 @@ func (s *ImmuStore) precommit(otx *OngoingTx, expectedHeader *TxHeader, waitForI
 
 	s.mutex.Unlock()
 
-	var ts int64
-	var blTxID uint64
 	var version int
 
 	if expectedHeader == nil {
-		ts = s.timeFunc().Unix()
-		blTxID = s.aht.Size()
 		version = s.writeTxHeaderVersion
 	} else {
-		ts = expectedHeader.Ts
-		blTxID = expectedHeader.BlTxID
 		version = expectedHeader.Version
 
-		//TxHeader is validated against current store
+		// TxHeader is validated against current store
 
-		currTxID, currAlh := s.Alh()
+		currPrecomittedTxID, currPrecommittedAlh := s.preAlh()
+
+		if currPrecomittedTxID >= expectedHeader.ID {
+			return nil, ErrTxAlreadyCommitted
+		}
 
 		var blRoot [sha256.Size]byte
 
-		if blTxID > 0 {
-			blRoot, err = s.aht.RootAt(blTxID)
+		if expectedHeader.BlTxID >= expectedHeader.ID {
+			return nil, ErrIllegalArguments
+		}
+
+		if expectedHeader.BlTxID > 0 {
+			blRoot, err = s.aht.RootAt(expectedHeader.BlTxID)
 			if err != nil && err != ahtree.ErrEmptyTree {
 				return nil, err
 			}
@@ -1148,24 +1158,22 @@ func (s *ImmuStore) precommit(otx *OngoingTx, expectedHeader *TxHeader, waitForI
 			}
 		}
 
-		if currTxID != expectedHeader.ID-1 ||
-			currAlh != expectedHeader.PrevAlh ||
+		if currPrecomittedTxID != expectedHeader.ID-1 ||
+			currPrecommittedAlh != expectedHeader.PrevAlh ||
 			blRoot != expectedHeader.BlRoot ||
 			len(otx.entries) != expectedHeader.NEntries {
 			return nil, ErrIllegalArguments
 		}
-
 	}
-
-	appendableCh := make(chan appendableResult)
-	go s.appendData(otx.entries, appendableCh)
 
 	tx, err := s.fetchAllocTx()
 	if err != nil {
-		<-appendableCh // wait for data to be written
 		return nil, err
 	}
 	defer s.releaseAllocTx(tx)
+
+	appendableCh := make(chan appendableResult)
+	go s.appendData(otx.entries, appendableCh)
 
 	tx.header.Version = version
 	tx.header.Metadata = otx.metadata
@@ -1206,6 +1214,24 @@ func (s *ImmuStore) precommit(otx *OngoingTx, expectedHeader *TxHeader, waitForI
 	}
 
 	precommittedTxID := s.lastPreCommittedTxID()
+
+	var ts int64
+	var blTxID uint64
+	if expectedHeader == nil {
+		ts = s.timeFunc().Unix()
+		blTxID = s.aht.Size()
+	} else {
+		ts = expectedHeader.Ts
+		blTxID = expectedHeader.BlTxID
+
+		// currTxID and currAlh were already checked before,
+		// but we have to add an additional check once the commit mutex
+		// is locked to ensure that those constraints are still valid
+		// in case of simultaneous writers
+		if precommittedTxID != expectedHeader.ID-1 {
+			return nil, ErrTxAlreadyCommitted
+		}
+	}
 
 	if !otx.IsWriteOnly() && otx.snap.Ts() <= precommittedTxID {
 		return nil, ErrTxReadConflict
@@ -1534,15 +1560,14 @@ func (s *ImmuStore) preCommitWith(callback func(txID uint64, index KeyIndex) ([]
 		s.indexer.Pause()
 	}
 
-	appendableCh := make(chan appendableResult)
-	go s.appendData(otx.entries, appendableCh)
-
 	tx, err := s.fetchAllocTx()
 	if err != nil {
-		<-appendableCh // wait for data to be written
 		return nil, err
 	}
 	defer s.releaseAllocTx(tx)
+
+	appendableCh := make(chan appendableResult)
+	go s.appendData(otx.entries, appendableCh)
 
 	tx.header.Version = s.writeTxHeaderVersion
 	tx.header.NEntries = len(otx.entries)
@@ -1880,6 +1905,10 @@ func (s *ImmuStore) ReplicateTx(exportedTx []byte, waitForIndexing bool) (*TxHea
 
 		kLen := int(binary.BigEndian.Uint16(exportedTx[i:]))
 		i += sszSize
+
+		if len(exportedTx) < i+sszSize+lszSize+kLen {
+			return nil, ErrIllegalArguments
+		}
 
 		key := make([]byte, kLen)
 		copy(key, exportedTx[i:])

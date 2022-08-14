@@ -2315,13 +2315,15 @@ func TestUncommittedTxOverwriting(t *testing.T) {
 }
 
 func TestExportAndReplicateTx(t *testing.T) {
+	defer os.RemoveAll("data_master_export_replicate")
 	masterStore, err := Open("data_master_export_replicate", DefaultOptions())
 	require.NoError(t, err)
-	defer os.RemoveAll("data_master_export_replicate")
+	defer immustoreClose(t, masterStore)
 
+	defer os.RemoveAll("data_replica_export_replicate")
 	replicaStore, err := Open("data_replica_export_replicate", DefaultOptions())
 	require.NoError(t, err)
-	defer os.RemoveAll("data_replica_export_replicate")
+	defer immustoreClose(t, replicaStore)
 
 	tx, err := masterStore.NewWriteOnlyTx()
 	require.NoError(t, err)
@@ -2349,6 +2351,119 @@ func TestExportAndReplicateTx(t *testing.T) {
 
 	_, err = replicaStore.ReplicateTx(nil, false)
 	require.ErrorIs(t, err, ErrIllegalArguments)
+}
+
+func TestExportAndReplicateTxCornerCases(t *testing.T) {
+	defer os.RemoveAll("data_master_export_replicate")
+	masterStore, err := Open("data_master_export_replicate", DefaultOptions())
+	require.NoError(t, err)
+	defer immustoreClose(t, masterStore)
+
+	defer os.RemoveAll("data_replica_export_replicate")
+	replicaStore, err := Open("data_replica_export_replicate", DefaultOptions())
+	require.NoError(t, err)
+	defer immustoreClose(t, replicaStore)
+
+	tx, err := masterStore.NewWriteOnlyTx()
+	require.NoError(t, err)
+
+	tx.WithMetadata(NewTxMetadata())
+
+	err = tx.Set([]byte("key1"), nil, []byte("value1"))
+	require.NoError(t, err)
+
+	hdr, err := tx.Commit()
+	require.NoError(t, err)
+	require.NotNil(t, hdr)
+
+	txholder := tempTxHolder(t, masterStore)
+
+	t.Run("prevent replicating broken data", func(t *testing.T) {
+		etx, err := masterStore.ExportTx(1, txholder)
+		require.NoError(t, err)
+
+		for i := range etx {
+			if i >= 44 && i < 52 {
+				// Timestamp - this field is part of innerHash thus is not validated through EH
+				continue
+			}
+
+			t.Run(fmt.Sprintf("broken byte at position %d", i), func(t *testing.T) {
+
+				// Break etx by modifying a single byte of the packet
+				brokenEtx := make([]byte, len(etx))
+				copy(brokenEtx, etx)
+				brokenEtx[i]++
+
+				_, err = replicaStore.ReplicateTx(brokenEtx, false)
+				require.Error(t, err)
+
+				if !errors.Is(err, ErrIllegalArguments) &&
+					!errors.Is(err, ErrCorruptedData) &&
+					!errors.Is(err, ErrNewerVersionOrCorruptedData) {
+					require.Failf(t, "Incorrect error", "Incorrect error received from validation: %v", err)
+				}
+			})
+		}
+	})
+}
+
+func TestExportAndReplicateTxSimultaneousWriters(t *testing.T) {
+	defer os.RemoveAll("data_master_export_replicate")
+	masterStore, err := Open("data_master_export_replicate", DefaultOptions())
+	require.NoError(t, err)
+	defer immustoreClose(t, masterStore)
+
+	defer os.RemoveAll("data_replica_export_replicate")
+	replicaOpts := DefaultOptions().WithMaxConcurrency(100)
+	replicaStore, err := Open("data_replica_export_replicate", replicaOpts)
+	require.NoError(t, err)
+	defer immustoreClose(t, replicaStore)
+
+	const txCount = 3
+
+	for i := 0; i < txCount; i++ {
+		t.Run(fmt.Sprintf("tx: %d", i), func(t *testing.T) {
+			tx, err := masterStore.NewWriteOnlyTx()
+			require.NoError(t, err)
+
+			tx.WithMetadata(NewTxMetadata())
+
+			err = tx.Set([]byte(fmt.Sprintf("key%d", i)), nil, []byte(fmt.Sprintf("value%d", i)))
+			require.NoError(t, err)
+
+			hdr, err := tx.Commit()
+			require.NoError(t, err)
+			require.NotNil(t, hdr)
+
+			txholder := tempTxHolder(t, replicaStore)
+			etx, err := masterStore.ExportTx(hdr.ID, txholder)
+			require.NoError(t, err)
+
+			// Replicate the same transactions concurrently, only one must succeed
+			errors := make([]error, replicaStore.maxConcurrency)
+			wg := sync.WaitGroup{}
+			for j := 0; j < replicaStore.maxConcurrency; j++ {
+				wg.Add(1)
+				go func(j int) {
+					defer wg.Done()
+					_, errors[j] = replicaStore.ReplicateTx(etx, false)
+				}(j)
+			}
+			wg.Wait()
+
+			winnersCnt := 0
+			for _, err := range errors {
+				if err == nil {
+					winnersCnt++
+				} else {
+					require.ErrorIs(t, err, ErrTxAlreadyCommitted)
+				}
+			}
+			require.Equal(t, 1, winnersCnt)
+			require.EqualValues(t, i+1, replicaStore.TxCount())
+		})
+	}
 }
 
 var errEmulatedAppendableError = errors.New("emulated appendable error")
@@ -2948,4 +3063,70 @@ func TestTimeBasedTxLookup(t *testing.T) {
 			require.GreaterOrEqual(t, txts[hdr.ID], ts)
 		}
 	}
+}
+
+func TestBlTXOrdering(t *testing.T) {
+	dir, err := ioutil.TempDir("", "test_bltx_ordering")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	opts := DefaultOptions().WithMaxConcurrency(200)
+
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
+
+	defer immustoreClose(t, immuStore)
+
+	t.Run("run multiple simultaneous writes", func(t *testing.T) {
+		wg := sync.WaitGroup{}
+		done := make(chan struct{})
+		for i := 0; i < opts.MaxConcurrency; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				for {
+					select {
+					case <-done:
+						return
+					default:
+					}
+					tx, err := immuStore.NewWriteOnlyTx()
+					require.NoError(t, err)
+
+					tx.Set([]byte(fmt.Sprintf("key:%d", i)), nil, []byte("value"))
+
+					_, err = tx.Commit()
+					require.NoError(t, err)
+				}
+			}(i)
+		}
+		// Perform writes for larger time so that transactions will have different
+		// timestamps
+		time.Sleep(2 * time.Second)
+		close(done)
+		wg.Wait()
+	})
+
+	t.Run("verify dual proofs for sequences of transactions", func(t *testing.T) {
+		maxTxID, _ := immuStore.Alh()
+
+		for i := uint64(1); i < maxTxID; i++ {
+
+			srcTxHeader, err := immuStore.ReadTxHeader(i)
+			require.NoError(t, err)
+
+			dstTxHeader, err := immuStore.ReadTxHeader(i + 1)
+			require.NoError(t, err)
+
+			require.LessOrEqual(t, srcTxHeader.BlTxID, dstTxHeader.BlTxID)
+			require.LessOrEqual(t, srcTxHeader.Ts, dstTxHeader.Ts)
+
+			proof, err := immuStore.DualProof(srcTxHeader, dstTxHeader)
+			require.NoError(t, err)
+
+			verifies := VerifyDualProof(proof, i, i+1, srcTxHeader.Alh(), dstTxHeader.Alh())
+			require.True(t, verifies)
+		}
+
+	})
 }
