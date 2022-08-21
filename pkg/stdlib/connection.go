@@ -1,5 +1,5 @@
 /*
-Copyright 2022 CodeNotary, Inc. All rights reserved.
+Copyright 2022 Codenotary Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -93,7 +93,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, argsV []driver.Na
 		if err != nil {
 			return nil, err
 		}
-		return &Rows{rows: queryResult.Rows}, nil
+		return &Rows{rows: queryResult.Rows, columns: queryResult.Columns}, nil
 	}
 
 	queryResult, err = c.immuClient.SQLQuery(ctx, query, vals, true)
@@ -101,7 +101,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, argsV []driver.Na
 		return nil, err
 	}
 
-	return &Rows{rows: queryResult.Rows}, nil
+	return &Rows{rows: queryResult.Rows, columns: queryResult.Columns}, nil
 }
 
 func (c *Conn) CheckNamedValue(nv *driver.NamedValue) error {

@@ -1,5 +1,5 @@
 /*
-Copyright 2022 CodeNotary, Inc. All rights reserved.
+Copyright 2022 Codenotary Inc. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,17 +32,16 @@ import (
 )
 
 type Rows struct {
-	index uint64
-	rows  []*schema.Row
+	index   uint64
+	rows    []*schema.Row
+	columns []*schema.Column
 }
 
 func (r *Rows) Columns() []string {
 	names := make([]string, 0)
-	if len(r.rows) > 0 {
-		for _, n := range r.rows[0].Columns {
-			name := n[strings.LastIndex(n, ".")+1 : len(n)-1]
-			names = append(names, string(name))
-		}
+	for _, n := range r.columns {
+		name := n.Name[strings.LastIndex(n.Name, ".")+1 : len(n.Name)-1]
+		names = append(names, string(name))
 	}
 	return names
 }
