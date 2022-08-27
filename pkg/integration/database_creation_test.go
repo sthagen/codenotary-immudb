@@ -17,6 +17,7 @@ package integration
 
 import (
 	"context"
+	"io/ioutil"
 	"os"
 	"testing"
 
@@ -29,11 +30,14 @@ import (
 )
 
 func TestCreateDatabase(t *testing.T) {
-	options := server.DefaultOptions()
-	bs := servertest.NewBufconnServer(options)
+	dir, err := ioutil.TempDir("", "integration_test")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
 
-	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	options := server.DefaultOptions().WithDir(dir)
+	bs := servertest.NewBufconnServer(options)
 
 	bs.Start()
 	defer bs.Stop()
@@ -41,7 +45,7 @@ func TestCreateDatabase(t *testing.T) {
 	clientOpts := immudb.DefaultOptions().WithDialOptions([]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()})
 	client := immudb.NewClient().WithOptions(clientOpts)
 
-	err := client.OpenSession(context.TODO(), []byte(`immudb`), []byte(`immudb`), "defaultdb")
+	err = client.OpenSession(context.TODO(), []byte(`immudb`), []byte(`immudb`), "defaultdb")
 	require.NoError(t, err)
 
 	dbSettings := &schema.DatabaseSettings{
@@ -71,11 +75,14 @@ func TestCreateDatabase(t *testing.T) {
 }
 
 func TestCreateDatabaseV2(t *testing.T) {
-	options := server.DefaultOptions()
-	bs := servertest.NewBufconnServer(options)
+	dir, err := ioutil.TempDir("", "integration_test")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
 
-	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	options := server.DefaultOptions().WithDir(dir)
+	bs := servertest.NewBufconnServer(options)
 
 	bs.Start()
 	defer bs.Stop()
@@ -83,7 +90,7 @@ func TestCreateDatabaseV2(t *testing.T) {
 	clientOpts := immudb.DefaultOptions().WithDialOptions([]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()})
 	client := immudb.NewClient().WithOptions(clientOpts)
 
-	err := client.OpenSession(context.TODO(), []byte(`immudb`), []byte(`immudb`), "defaultdb")
+	err = client.OpenSession(context.TODO(), []byte(`immudb`), []byte(`immudb`), "defaultdb")
 	require.NoError(t, err)
 
 	dbNullableSettings := &schema.DatabaseNullableSettings{
@@ -102,6 +109,7 @@ func TestCreateDatabaseV2(t *testing.T) {
 		TxLogMaxOpenedFiles:     &schema.NullableUint32{Value: 4},
 		CommitLogMaxOpenedFiles: &schema.NullableUint32{Value: 2},
 		SyncFrequency:           &schema.NullableMilliseconds{Value: 15},
+		WriteBufferSize:         &schema.NullableUint32{Value: 4000},
 		IndexSettings: &schema.IndexNullableSettings{
 			FlushThreshold:           &schema.NullableUint32{Value: 256},
 			SyncThreshold:            &schema.NullableUint32{Value: 512},
@@ -117,7 +125,8 @@ func TestCreateDatabaseV2(t *testing.T) {
 			CommitLogMaxOpenedFiles:  &schema.NullableUint32{Value: 3},
 		},
 		AhtSettings: &schema.AHTNullableSettings{
-			SyncThreshold: &schema.NullableUint32{Value: 10_000},
+			SyncThreshold:   &schema.NullableUint32{Value: 10_000},
+			WriteBufferSize: &schema.NullableUint32{Value: 8000},
 		},
 	}
 	_, err = client.CreateDatabaseV2(context.Background(), "db1", dbNullableSettings)
@@ -141,6 +150,7 @@ func TestCreateDatabaseV2(t *testing.T) {
 	require.Equal(t, dbNullableSettings.TxLogMaxOpenedFiles.Value, res.Settings.TxLogMaxOpenedFiles.Value)
 	require.Equal(t, dbNullableSettings.CommitLogMaxOpenedFiles.Value, res.Settings.CommitLogMaxOpenedFiles.Value)
 	require.Equal(t, dbNullableSettings.SyncFrequency.Value, res.Settings.SyncFrequency.Value)
+	require.Equal(t, dbNullableSettings.WriteBufferSize.Value, res.Settings.WriteBufferSize.Value)
 
 	require.Equal(t, dbNullableSettings.IndexSettings.FlushThreshold.Value, res.Settings.IndexSettings.FlushThreshold.Value)
 	require.Equal(t, dbNullableSettings.IndexSettings.SyncThreshold.Value, res.Settings.IndexSettings.SyncThreshold.Value)
@@ -156,6 +166,7 @@ func TestCreateDatabaseV2(t *testing.T) {
 	require.Equal(t, dbNullableSettings.IndexSettings.CommitLogMaxOpenedFiles.Value, res.Settings.IndexSettings.CommitLogMaxOpenedFiles.Value)
 
 	require.Equal(t, dbNullableSettings.AhtSettings.SyncThreshold.Value, res.Settings.AhtSettings.SyncThreshold.Value)
+	require.Equal(t, dbNullableSettings.AhtSettings.WriteBufferSize.Value, res.Settings.AhtSettings.WriteBufferSize.Value)
 
 	_, err = client.UpdateDatabaseV2(context.Background(), "db1", &schema.DatabaseNullableSettings{})
 	require.NoError(t, err)

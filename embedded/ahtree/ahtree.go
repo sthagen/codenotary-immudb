@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math/bits"
 	"os"
 	"path/filepath"
@@ -30,15 +31,16 @@ import (
 	"github.com/codenotary/immudb/embedded/multierr"
 )
 
-var ErrIllegalArguments = errors.New("illegal arguments")
-var ErrorPathIsNotADirectory = errors.New("path is not a directory")
-var ErrorCorruptedData = errors.New("data log is corrupted")
-var ErrorCorruptedDigests = errors.New("hash log is corrupted")
-var ErrAlreadyClosed = errors.New("already closed")
-var ErrEmptyTree = errors.New("empty tree")
-var ErrReadOnly = errors.New("cannot append when opened in read-only mode")
-var ErrUnexistentData = errors.New("attempt to read unexistent data")
-var ErrCannotResetToLargerSize = errors.New("can not reset the tree to a larger size")
+var ErrIllegalArguments = errors.New("ahtree: illegal arguments")
+var ErrInvalidOptions = fmt.Errorf("%w: invalid options", ErrIllegalArguments)
+var ErrorPathIsNotADirectory = errors.New("ahtree: path is not a directory")
+var ErrorCorruptedData = errors.New("ahtree: data log is corrupted")
+var ErrorCorruptedDigests = errors.New("ahtree: hash log is corrupted")
+var ErrAlreadyClosed = errors.New("ahtree: already closed")
+var ErrEmptyTree = errors.New("ahtree: empty tree")
+var ErrReadOnly = errors.New("ahtree: read-only mode")
+var ErrUnexistentData = errors.New("ahtree: attempt to read unexistent data")
+var ErrCannotResetToLargerSize = errors.New("ahtree: can not reset the tree to a larger size")
 
 const LeafPrefix = byte(0)
 const NodePrefix = byte(1)
@@ -53,7 +55,7 @@ const cLogEntrySize = offsetSize + szSize
 const offsetSize = 8
 const szSize = 4
 
-//AHtree stands for Appendable Hash Tree
+// AHtree stands for Appendable Hash Tree
 type AHtree struct {
 	pLog appendable.Appendable
 	dLog appendable.Appendable
@@ -81,8 +83,9 @@ type AHtree struct {
 }
 
 func Open(path string, opts *Options) (*AHtree, error) {
-	if !validOptions(opts) {
-		return nil, ErrIllegalArguments
+	err := opts.Validate()
+	if err != nil {
+		return nil, err
 	}
 
 	finfo, err := os.Stat(path)
@@ -96,7 +99,7 @@ func Open(path string, opts *Options) (*AHtree, error) {
 			return nil, err
 		}
 	} else if !finfo.IsDir() {
-		return nil, ErrorPathIsNotADirectory
+		return nil, fmt.Errorf("%w: '%s'", ErrorPathIsNotADirectory, path)
 	}
 
 	metadata := appendable.NewMetadata(nil)
@@ -104,7 +107,10 @@ func Open(path string, opts *Options) (*AHtree, error) {
 
 	appendableOpts := multiapp.DefaultOptions().
 		WithReadOnly(opts.readOnly).
-		WithSynced(false).
+		WithReadBufferSize(opts.readBufferSize).
+		WithWriteBufferSize(opts.writeBufferSize).
+		WithRetryableSync(opts.retryableSync).
+		WithAutoSync(opts.autoSync).
 		WithFileSize(opts.fileSize).
 		WithFileMode(opts.fileMode).
 		WithMetadata(metadata.Bytes())
@@ -139,8 +145,13 @@ func Open(path string, opts *Options) (*AHtree, error) {
 }
 
 func OpenWith(pLog, dLog, cLog appendable.Appendable, opts *Options) (*AHtree, error) {
-	if !validOptions(opts) || pLog == nil || dLog == nil || cLog == nil {
-		return nil, ErrIllegalArguments
+	if pLog == nil || dLog == nil || cLog == nil {
+		return nil, fmt.Errorf("%w: nil appendable", ErrIllegalArguments)
+	}
+
+	err := opts.Validate()
+	if err != nil {
+		return nil, err
 	}
 
 	cLogSize, err := cLog.Size()
@@ -169,6 +180,11 @@ func OpenWith(pLog, dLog, cLog appendable.Appendable, opts *Options) (*AHtree, e
 		return nil, err
 	}
 
+	var cLogBuf []byte
+	if !opts.readOnly {
+		cLogBuf = make([]byte, opts.syncThld*cLogEntrySize)
+	}
+
 	t := &AHtree{
 		pLog:             pLog,
 		dLog:             dLog,
@@ -181,7 +197,7 @@ func OpenWith(pLog, dLog, cLog appendable.Appendable, opts *Options) (*AHtree, e
 		dCache:           dCache,
 		syncThld:         opts.syncThld,
 		readOnly:         opts.readOnly,
-		cLogBuf:          make([]byte, opts.syncThld*cLogEntrySize),
+		cLogBuf:          cLogBuf,
 	}
 
 	if cLogSize == 0 {
@@ -300,11 +316,6 @@ func (t *AHtree) Append(d []byte) (n uint64, h [sha256.Size]byte, err error) {
 		l++
 	}
 
-	err = t.pLog.Flush()
-	if err != nil {
-		return
-	}
-
 	// will overwrite partially written and uncommitted data
 	err = t.dLog.SetOffset(t.dLogSize)
 	if err != nil {
@@ -312,11 +323,6 @@ func (t *AHtree) Append(d []byte) (n uint64, h [sha256.Size]byte, err error) {
 	}
 
 	_, _, err = t.dLog.Append(t._digests[:dCount*sha256.Size])
-	if err != nil {
-		return
-	}
-
-	err = t.dLog.Flush()
 	if err != nil {
 		return
 	}
@@ -775,7 +781,17 @@ func (t *AHtree) sync() error {
 		return nil
 	}
 
-	err := t.pLog.Sync()
+	err := t.pLog.Flush()
+	if err != nil {
+		return err
+	}
+
+	err = t.pLog.Sync()
+	if err != nil {
+		return err
+	}
+
+	err = t.dLog.Flush()
 	if err != nil {
 		return err
 	}

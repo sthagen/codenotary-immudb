@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"testing"
 
@@ -33,21 +34,29 @@ import (
 )
 
 func TestImmuClient_SQL(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true).WithSigningKey("./../../test/signer/ec1.key")
-	bs := servertest.NewBufconnServer(options)
+	dir, err := ioutil.TempDir("", "integration_test")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
 
-	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	options := server.DefaultOptions().
+		WithDir(dir).
+		WithAuth(true).
+		WithSigningKey("./../../../test/signer/ec1.key")
+
+	bs := servertest.NewBufconnServer(options)
 
 	bs.Start()
 	defer bs.Stop()
 
 	clientOpts := ic.DefaultOptions().
 		WithDialOptions([]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}).
-		WithServerSigningPubKey("./../../test/signer/ec1.pub")
+		WithServerSigningPubKey("./../../../test/signer/ec1.pub")
 
 	client, err := ic.NewImmuClient(clientOpts)
 	require.NoError(t, err)
+
 	lr, err := client.Login(context.TODO(), []byte(`immudb`), []byte(`immudb`))
 	require.NoError(t, err)
 
@@ -242,16 +251,25 @@ func TestImmuClient_SQL(t *testing.T) {
 }
 
 func TestImmuClient_SQL_Errors(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
+	dir, err := ioutil.TempDir("", "integration_test")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
 
-	defer os.RemoveAll(options.Dir)
 	defer os.Remove(".state-")
+
+	options := server.DefaultOptions().
+		WithDir(dir).
+		WithAuth(true)
+
+	bs := servertest.NewBufconnServer(options)
 
 	bs.Start()
 	defer bs.Stop()
 
-	client, err := ic.NewImmuClient(ic.DefaultOptions().WithDialOptions([]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()}))
+	cliOpts := ic.DefaultOptions().
+		WithDialOptions([]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()})
+
+	client, err := ic.NewImmuClient(cliOpts)
 	require.NoError(t, err)
 
 	_, err = client.SQLExec(context.Background(), "", map[string]interface{}{

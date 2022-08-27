@@ -17,6 +17,7 @@ package store
 
 import (
 	"encoding/binary"
+	"io/ioutil"
 	"os"
 	"testing"
 
@@ -24,10 +25,12 @@ import (
 )
 
 func TestImmudbStoreReader(t *testing.T) {
-	defer os.RemoveAll("data_store_reader")
+	dir, err := ioutil.TempDir("", "data_store_reader")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
 
 	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(4)
-	immuStore, err := Open("data_store_reader", opts)
+	immuStore, err := Open(dir, opts)
 	require.NoError(t, err)
 
 	defer immuStore.Close()
@@ -60,7 +63,7 @@ func TestImmudbStoreReader(t *testing.T) {
 	defer snap.Close()
 
 	_, err = snap.NewKeyReader(nil)
-	require.Equal(t, ErrIllegalArguments, err)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 
 	reader, err := snap.NewKeyReader(&KeyReaderSpec{})
 	require.NoError(t, err)
@@ -84,14 +87,16 @@ func TestImmudbStoreReader(t *testing.T) {
 	}
 
 	_, _, err = reader.Read()
-	require.Equal(t, ErrNoMoreEntries, err)
+	require.ErrorIs(t, err, ErrNoMoreEntries)
 }
 
 func TestImmudbStoreReaderAsBefore(t *testing.T) {
-	defer os.RemoveAll("data_store_reader_as_before")
+	dir, err := ioutil.TempDir("", "data_store_reader_as_before")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
 
 	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(4)
-	immuStore, err := Open("data_store_reader_as_before", opts)
+	immuStore, err := Open(dir, opts)
 	require.NoError(t, err)
 
 	defer immustoreClose(t, immuStore)
@@ -146,7 +151,7 @@ func TestImmudbStoreReaderAsBefore(t *testing.T) {
 		}
 
 		_, _, err = reader.Read()
-		require.Equal(t, ErrNoMoreEntries, err)
+		require.ErrorIs(t, err, ErrNoMoreEntries)
 
 		err = reader.Reset()
 		require.NoError(t, err)
@@ -154,10 +159,12 @@ func TestImmudbStoreReaderAsBefore(t *testing.T) {
 }
 
 func TestImmudbStoreReaderWithOffset(t *testing.T) {
-	defer os.RemoveAll("data_store_reader_offset")
+	dir, err := ioutil.TempDir("", "data_store_reader_offset")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
 
 	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(4)
-	immuStore, err := Open("data_store_reader_offset", opts)
+	immuStore, err := Open(dir, opts)
 	require.NoError(t, err)
 
 	defer immuStore.Close()
@@ -215,14 +222,16 @@ func TestImmudbStoreReaderWithOffset(t *testing.T) {
 	}
 
 	_, _, err = reader.Read()
-	require.Equal(t, ErrNoMoreEntries, err)
+	require.ErrorIs(t, err, ErrNoMoreEntries)
 }
 
 func TestImmudbStoreReaderAsBeforeWithOffset(t *testing.T) {
-	defer os.RemoveAll("data_store_reader_as_before_offset")
+	dir, err := ioutil.TempDir("", "data_store_reader_as_before_offset")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
 
 	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(4)
-	immuStore, err := Open("data_store_reader_as_before_offset", opts)
+	immuStore, err := Open(dir, opts)
 	require.NoError(t, err)
 
 	defer immuStore.Close()
@@ -281,7 +290,7 @@ func TestImmudbStoreReaderAsBeforeWithOffset(t *testing.T) {
 		}
 
 		_, _, err = reader.Read()
-		require.Equal(t, ErrNoMoreEntries, err)
+		require.ErrorIs(t, err, ErrNoMoreEntries)
 
 		err = reader.Reset()
 		require.NoError(t, err)

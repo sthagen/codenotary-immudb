@@ -16,6 +16,7 @@ limitations under the License.
 package singleapp
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/codenotary/immudb/embedded/appendable"
@@ -28,15 +29,17 @@ const DefaultReadBufferSize = 4096
 const DefaultWriteBufferSize = 4096
 
 type Options struct {
-	readOnly bool
-	synced   bool
+	readOnly       bool
+	readBufferSize int
+
+	writeBuffer   []byte
+	retryableSync bool // if retryableSync is enabled, buffer space is released only after a successful sync
+	autoSync      bool // if autoSync is enabled, sync is called when the buffer is full
+
 	fileMode os.FileMode
 
 	compressionFormat int
 	compressionLevel  int
-
-	readBufferSize  int
-	writeBufferSize int
 
 	metadata []byte
 }
@@ -44,19 +47,30 @@ type Options struct {
 func DefaultOptions() *Options {
 	return &Options{
 		readOnly:          false,
-		synced:            true,
+		retryableSync:     true,
+		autoSync:          true,
 		fileMode:          DefaultFileMode,
 		compressionFormat: DefaultCompressionFormat,
 		compressionLevel:  DefaultCompressionLevel,
 		readBufferSize:    DefaultReadBufferSize,
-		writeBufferSize:   DefaultWriteBufferSize,
+		writeBuffer:       make([]byte, DefaultWriteBufferSize),
 	}
 }
 
-func (opts *Options) Valid() bool {
-	return opts != nil &&
-		opts.readBufferSize > 0 &&
-		opts.writeBufferSize > 0
+func (opts *Options) Validate() error {
+	if opts == nil {
+		return fmt.Errorf("%w: nil options", ErrInvalidOptions)
+	}
+
+	if opts.readBufferSize <= 0 {
+		return fmt.Errorf("%w: invalid readBufferSize", ErrInvalidOptions)
+	}
+
+	if !opts.readOnly && len(opts.writeBuffer) == 0 {
+		return fmt.Errorf("%w: invalid writeBuffer", ErrInvalidOptions)
+	}
+
+	return nil
 }
 
 func (opts *Options) WithReadOnly(readOnly bool) *Options {
@@ -64,8 +78,13 @@ func (opts *Options) WithReadOnly(readOnly bool) *Options {
 	return opts
 }
 
-func (opts *Options) WithSynced(synced bool) *Options {
-	opts.synced = synced
+func (opts *Options) WithRetryableSync(retryableSync bool) *Options {
+	opts.retryableSync = retryableSync
+	return opts
+}
+
+func (opts *Options) WithAutoSync(autoSync bool) *Options {
+	opts.autoSync = autoSync
 	return opts
 }
 
@@ -91,8 +110,8 @@ func (opts *Options) GetReadBufferSize() int {
 	return opts.readBufferSize
 }
 
-func (opts *Options) GetWriteBufferSize() int {
-	return opts.writeBufferSize
+func (opts *Options) GetWriteBuffer() []byte {
+	return opts.writeBuffer
 }
 
 func (opts *Options) WithCompresionLevel(compressionLevel int) *Options {
@@ -110,7 +129,7 @@ func (opts *Options) WithReadBufferSize(size int) *Options {
 	return opts
 }
 
-func (opts *Options) WithWriteBufferSize(size int) *Options {
-	opts.writeBufferSize = size
+func (opts *Options) WithWriteBuffer(b []byte) *Options {
+	opts.writeBuffer = b
 	return opts
 }

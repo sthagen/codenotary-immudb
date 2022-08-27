@@ -16,6 +16,7 @@ limitations under the License.
 package multiapp
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/codenotary/immudb/embedded/appendable"
@@ -30,8 +31,13 @@ const DefaultReadBufferSize = 4096
 const DefaultWriteBufferSize = 4096
 
 type Options struct {
-	readOnly          bool
-	synced            bool
+	readOnly       bool
+	readBufferSize int
+
+	writeBufferSize int
+	retryableSync   bool // if retryableSync is enabled, buffer space is released only after a successful sync
+	autoSync        bool // if autoSync is enabled, sync is called when the buffer is full
+
 	fileMode          os.FileMode
 	fileSize          int
 	fileExt           string
@@ -39,14 +45,13 @@ type Options struct {
 	maxOpenedFiles    int
 	compressionFormat int
 	compressionLevel  int
-	readBufferSize    int
-	writeBufferSize   int
 }
 
 func DefaultOptions() *Options {
 	return &Options{
 		readOnly:          false,
-		synced:            true,
+		retryableSync:     true,
+		autoSync:          true,
 		fileMode:          DefaultFileMode,
 		fileSize:          DefaultFileSize,
 		fileExt:           "aof",
@@ -58,13 +63,32 @@ func DefaultOptions() *Options {
 	}
 }
 
-func (opts *Options) Valid() bool {
-	return opts != nil &&
-		opts.fileSize > 0 &&
-		opts.maxOpenedFiles > 0 &&
-		opts.fileExt != "" &&
-		opts.readBufferSize > 0 &&
-		opts.writeBufferSize > 0
+func (opts *Options) Validate() error {
+	if opts == nil {
+		return fmt.Errorf("%w: nil options", ErrInvalidOptions)
+	}
+
+	if opts.fileSize <= 0 {
+		return fmt.Errorf("%w: invalid fileSize", ErrInvalidOptions)
+	}
+
+	if opts.maxOpenedFiles <= 0 {
+		return fmt.Errorf("%w: invalid maxOpenedFiles", ErrInvalidOptions)
+	}
+
+	if opts.fileExt == "" {
+		return fmt.Errorf("%w: invalid fileExt", ErrInvalidOptions)
+	}
+
+	if opts.readBufferSize <= 0 {
+		return fmt.Errorf("%w: invalid readBufferSize", ErrInvalidOptions)
+	}
+
+	if !opts.readOnly && opts.writeBufferSize <= 0 {
+		return fmt.Errorf("%w: invalid writeBufferSize", ErrInvalidOptions)
+	}
+
+	return nil
 }
 
 func (opt *Options) WithReadOnly(readOnly bool) *Options {
@@ -72,8 +96,13 @@ func (opt *Options) WithReadOnly(readOnly bool) *Options {
 	return opt
 }
 
-func (opt *Options) WithSynced(synced bool) *Options {
-	opt.synced = synced
+func (opt *Options) WithRetryableSync(retryableSync bool) *Options {
+	opt.retryableSync = retryableSync
+	return opt
+}
+
+func (opt *Options) WithAutoSync(autoSync bool) *Options {
+	opt.autoSync = autoSync
 	return opt
 }
 

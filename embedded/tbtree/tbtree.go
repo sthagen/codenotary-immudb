@@ -32,6 +32,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codenotary/immudb/embedded"
 	"github.com/codenotary/immudb/embedded/appendable"
 	"github.com/codenotary/immudb/embedded/appendable/multiapp"
 	"github.com/codenotary/immudb/embedded/cache"
@@ -40,23 +41,26 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-var ErrIllegalArguments = errors.New("illegal arguments")
-var ErrorPathIsNotADirectory = errors.New("path is not a directory")
-var ErrReadingFileContent = errors.New("error reading required file content")
-var ErrKeyNotFound = errors.New("key not found")
-var ErrorMaxKeySizeExceeded = errors.New("max key size exceeded")
-var ErrorMaxValueSizeExceeded = errors.New("max value size exceeded")
-var ErrOffsetOutOfRange = errors.New("offset out of range")
-var ErrIllegalState = errors.New("illegal state")
-var ErrAlreadyClosed = errors.New("index already closed")
-var ErrSnapshotsNotClosed = errors.New("snapshots not closed")
-var ErrorToManyActiveSnapshots = errors.New("max active snapshots limit reached")
-var ErrCorruptedFile = errors.New("file is corrupted")
-var ErrCorruptedCLog = errors.New("commit log is corrupted")
-var ErrCompactAlreadyInProgress = errors.New("compact already in progress")
-var ErrCompactionThresholdNotReached = errors.New("compaction threshold not yet reached")
-var ErrIncompatibleDataFormat = errors.New("incompatible data format")
-var ErrTargetPathAlreadyExists = errors.New("target folder already exists")
+var ErrIllegalArguments = fmt.Errorf("tbtree: %w", embedded.ErrIllegalArguments)
+var ErrInvalidOptions = fmt.Errorf("%w: invalid options", ErrIllegalArguments)
+var ErrorPathIsNotADirectory = errors.New("tbtree: path is not a directory")
+var ErrReadingFileContent = errors.New("tbtree: error reading required file content")
+var ErrKeyNotFound = fmt.Errorf("tbtree: %w", embedded.ErrKeyNotFound)
+var ErrorMaxKeySizeExceeded = errors.New("tbtree: max key size exceeded")
+var ErrorMaxValueSizeExceeded = errors.New("tbtree: max value size exceeded")
+var ErrOffsetOutOfRange = fmt.Errorf("tbtree: %w", embedded.ErrOffsetOutOfRange)
+var ErrIllegalState = embedded.ErrIllegalState // TODO: grpc error mapping hardly relies on the actual message, see IllegalStateHandlerInterceptor
+var ErrAlreadyClosed = errors.New("tbtree: index already closed")
+var ErrSnapshotsNotClosed = errors.New("tbtree: snapshots not closed")
+var ErrorToManyActiveSnapshots = errors.New("tbtree: max active snapshots limit reached")
+var ErrCorruptedFile = errors.New("tbtree: file is corrupted")
+var ErrCorruptedCLog = errors.New("tbtree: commit log is corrupted")
+var ErrCompactAlreadyInProgress = errors.New("tbtree: compact already in progress")
+var ErrCompactionThresholdNotReached = errors.New("tbtree: compaction threshold not yet reached")
+var ErrIncompatibleDataFormat = errors.New("tbtree: incompatible data format")
+var ErrTargetPathAlreadyExists = errors.New("tbtree: target folder already exists")
+var ErrNoMoreEntries = fmt.Errorf("tbtree: %w", embedded.ErrNoMoreEntries)
+var ErrReadersNotClosed = errors.New("tbtree: readers not closed")
 
 const Version = 3
 
@@ -307,7 +311,7 @@ func Open(path string, opts *Options) (*TBtree, error) {
 
 	appendableOpts := multiapp.DefaultOptions().
 		WithReadOnly(opts.readOnly).
-		WithSynced(false).
+		WithRetryableSync(false).
 		WithFileSize(opts.fileSize).
 		WithFileMode(opts.fileMode).
 		WithWriteBufferSize(opts.flushBufferSize).
@@ -1363,7 +1367,7 @@ func (t *TBtree) fullDump(snap *Snapshot, progressOutput writeProgressOutputFunc
 
 	appendableOpts := multiapp.DefaultOptions().
 		WithReadOnly(false).
-		WithSynced(false).
+		WithRetryableSync(false).
 		WithFileSize(t.fileSize).
 		WithFileMode(t.fileMode).
 		WithWriteBufferSize(t.flushBufferSize).

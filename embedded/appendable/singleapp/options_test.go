@@ -22,11 +22,23 @@ import (
 )
 
 func TestInvalidOptions(t *testing.T) {
-	require.False(t, (*Options)(nil).Valid())
+	for _, d := range []struct {
+		n    string
+		opts *Options
+	}{
+		{"nil", nil},
+		{"empty", &Options{}},
+		{"ReadBufferSize", DefaultOptions().WithReadBufferSize(0)},
+		{"WriteBuffer", DefaultOptions().WithReadOnly(false).WithWriteBuffer(nil)},
+	} {
+		t.Run(d.n, func(t *testing.T) {
+			require.ErrorIs(t, d.opts.Validate(), ErrInvalidOptions)
+		})
+	}
 }
 
 func TestDefaultOptions(t *testing.T) {
-	require.True(t, DefaultOptions().Valid())
+	require.NoError(t, DefaultOptions().Validate())
 }
 
 func TestValidOptions(t *testing.T) {
@@ -39,15 +51,22 @@ func TestValidOptions(t *testing.T) {
 	require.Equal(t, DefaultCompressionLevel, opts.WithCompresionLevel(DefaultCompressionLevel).compressionLevel)
 	require.Equal(t, DefaultCompressionLevel, opts.WithCompresionLevel(DefaultCompressionLevel).GetCompressionLevel())
 
-	require.True(t, opts.WithSynced(true).synced)
-
-	require.False(t, opts.WithReadOnly(false).readOnly)
-
-	require.Equal(t, DefaultReadBufferSize+1, opts.WithReadBufferSize(DefaultReadBufferSize+1).GetReadBufferSize())
-	require.Equal(t, DefaultWriteBufferSize+2, opts.WithWriteBufferSize(DefaultWriteBufferSize+2).GetWriteBufferSize())
-
-	require.True(t, opts.Valid())
+	require.True(t, opts.WithRetryableSync(true).retryableSync)
+	require.True(t, opts.WithAutoSync(true).autoSync)
 
 	require.True(t, opts.WithReadOnly(true).readOnly)
-	require.True(t, opts.Valid())
+	require.ErrorIs(t, opts.Validate(), ErrInvalidOptions)
+
+	require.Equal(t, DefaultReadBufferSize+1, opts.WithReadBufferSize(DefaultReadBufferSize+1).GetReadBufferSize())
+	require.NoError(t, opts.Validate())
+
+	require.False(t, opts.WithReadOnly(false).readOnly)
+	require.ErrorIs(t, opts.Validate(), ErrInvalidOptions)
+
+	b := make([]byte, DefaultWriteBufferSize)
+	require.Equal(t, b, opts.WithWriteBuffer(b).GetWriteBuffer())
+	require.NoError(t, opts.Validate())
+
+	require.True(t, opts.WithReadOnly(true).readOnly)
+	require.NoError(t, opts.Validate())
 }

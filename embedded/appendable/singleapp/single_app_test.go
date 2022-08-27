@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -30,9 +31,11 @@ import (
 )
 
 func TestSingleApp(t *testing.T) {
+	buf := make([]byte, DefaultWriteBufferSize*5)
+
 	opts := DefaultOptions().
 		WithReadBufferSize(DefaultReadBufferSize * 2).
-		WithWriteBufferSize(DefaultWriteBufferSize * 5)
+		WithWriteBuffer(buf)
 
 	a, err := Open("testdata.aof", opts)
 	defer os.Remove("testdata.aof")
@@ -54,10 +57,10 @@ func TestSingleApp(t *testing.T) {
 	require.Nil(t, md)
 
 	_, _, err = a.Append(nil)
-	require.Equal(t, ErrIllegalArguments, err)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 
 	_, _, err = a.Append([]byte{})
-	require.Equal(t, ErrIllegalArguments, err)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 
 	off, n, err := a.Append([]byte{0})
 	require.NoError(t, err)
@@ -80,19 +83,116 @@ func TestSingleApp(t *testing.T) {
 	bs := make([]byte, 4)
 	n, err = a.ReadAt(bs, 0)
 	require.NoError(t, err)
+	require.Equal(t, 4, n)
 	require.Equal(t, []byte{0, 1, 2, 3}, bs)
 
 	bs = make([]byte, 4)
 	n, err = a.ReadAt(bs, 7)
 	require.NoError(t, err)
+	require.Equal(t, 4, n)
 	require.Equal(t, []byte{7, 8, 9, 10}, bs)
 
 	n, err = a.ReadAt(bs, 1000)
 	require.Equal(t, n, 0)
-	require.Equal(t, err, io.EOF)
+	require.ErrorIs(t, err, io.EOF)
 
 	err = a.Sync()
 	require.NoError(t, err)
+
+	err = a.Close()
+	require.NoError(t, err)
+}
+
+func TestSingleAppSetOffsetWithRetryableSyncOn(t *testing.T) {
+	opts := DefaultOptions().
+		WithWriteBuffer(make([]byte, 64))
+
+	testSingleAppSetOffsetWith(opts, t)
+}
+
+func TestSingleAppSetOffsetWithRetryableSyncOff(t *testing.T) {
+	opts := DefaultOptions().
+		WithRetryableSync(false).
+		WithWriteBuffer(make([]byte, 64))
+
+	testSingleAppSetOffsetWith(opts, t)
+}
+
+func testSingleAppSetOffsetWith(opts *Options, t *testing.T) {
+	a, err := Open("testdata.aof", opts)
+	defer os.Remove("testdata.aof")
+	require.NoError(t, err)
+
+	err = a.SetOffset(-1)
+	require.ErrorIs(t, err, ErrNegativeOffset)
+
+	// prealloc buffer used when writing data
+	writeBuf := make([]byte, len(opts.writeBuffer)*3)
+
+	// prealloc buffer used when reading data
+	readBuf := make([]byte, len(writeBuf))
+
+	for i := 1; i <= len(writeBuf); i++ {
+		// gen some random data
+		rand.Read(writeBuf[:i])
+
+		off, n, err := a.Append(writeBuf[:i])
+		require.NoError(t, err)
+		require.Equal(t, int64(0), off)
+		require.Equal(t, i, n)
+
+		err = a.SetOffset(int64(n + 1))
+		require.ErrorIs(t, err, ErrIllegalArguments)
+
+		// incremental left truncation
+		for j := 0; j <= n; j++ {
+			err = a.SetOffset(int64(n - j))
+			require.NoError(t, err)
+			require.Equal(t, int64(n-j), a.Offset())
+
+			sz, err := a.Size()
+			require.NoError(t, err)
+			require.Equal(t, int64(n-j), sz)
+
+			// read entire content should match what was appended
+			rn, err := a.ReadAt(readBuf[:sz], 0)
+			require.NoError(t, err)
+			require.Equal(t, sz, int64(rn))
+			require.Equal(t, writeBuf[:sz], readBuf[:sz])
+		}
+	}
+
+	require.Zero(t, a.Offset())
+
+	sz, err := a.Size()
+	require.NoError(t, err)
+	require.Zero(t, sz)
+
+	err = a.Close()
+	require.NoError(t, err)
+}
+
+func TestSingleAppSwitchToReadOnlyMode(t *testing.T) {
+	a, err := Open("testdata.aof", DefaultOptions())
+	defer os.Remove("testdata.aof")
+	require.NoError(t, err)
+
+	off, n, err := a.Append([]byte{1, 2, 3})
+	require.NoError(t, err)
+	require.Equal(t, int64(0), off)
+	require.Equal(t, 3, n)
+
+	err = a.SwitchToReadOnlyMode()
+	require.NoError(t, err)
+
+	err = a.SwitchToReadOnlyMode()
+	require.ErrorIs(t, err, ErrReadOnly)
+
+	bs := make([]byte, 3)
+	n, err = a.ReadAt(bs, 0)
+	require.NoError(t, err)
+	require.Equal(t, 3, n)
+	require.Equal(t, []byte{1, 2, 3}, bs)
 
 	err = a.Close()
 	require.NoError(t, err)
@@ -125,16 +225,23 @@ func TestSingleAppReOpening(t *testing.T) {
 	bs := make([]byte, 3)
 	n, err = a.ReadAt(bs, 0)
 	require.NoError(t, err)
+	require.Equal(t, 3, n)
 	require.Equal(t, []byte{1, 2, 3}, bs)
 
+	err = a.SwitchToReadOnlyMode()
+	require.ErrorIs(t, err, ErrReadOnly)
+
+	err = a.SetOffset(sz)
+	require.ErrorIs(t, err, ErrReadOnly)
+
 	_, _, err = a.Append([]byte{})
-	require.Equal(t, ErrReadOnly, err)
+	require.ErrorIs(t, err, ErrReadOnly)
 
 	err = a.Flush()
-	require.Equal(t, ErrReadOnly, err)
+	require.ErrorIs(t, err, ErrReadOnly)
 
 	err = a.Sync()
-	require.Equal(t, ErrReadOnly, err)
+	require.ErrorIs(t, err, ErrReadOnly)
 
 	err = a.Close()
 	require.NoError(t, err)
@@ -148,7 +255,7 @@ func TestSingleAppCorruptedFileReadingMetadata(t *testing.T) {
 
 	// should fail reading metadata len
 	_, err = Open(f.Name(), DefaultOptions())
-	require.Equal(t, ErrCorruptedMetadata, err)
+	require.ErrorIs(t, err, ErrCorruptedMetadata)
 
 	mLenBs := make([]byte, 4)
 	binary.BigEndian.PutUint32(mLenBs, 1)
@@ -162,7 +269,7 @@ func TestSingleAppCorruptedFileReadingMetadata(t *testing.T) {
 
 	// should failt reading metadata
 	_, err = Open(f.Name(), DefaultOptions())
-	require.Equal(t, ErrCorruptedMetadata, err)
+	require.ErrorIs(t, err, ErrCorruptedMetadata)
 }
 
 func TestSingleAppCorruptedFileReadingCompresionFormat(t *testing.T) {
@@ -189,7 +296,7 @@ func TestSingleAppCorruptedFileReadingCompresionFormat(t *testing.T) {
 
 	// should failt reading metadata
 	_, err = Open(f.Name(), DefaultOptions())
-	require.Equal(t, ErrCorruptedMetadata, err)
+	require.ErrorIs(t, err, ErrCorruptedMetadata)
 }
 
 func TestSingleAppCorruptedFileReadingCompresionLevel(t *testing.T) {
@@ -217,7 +324,7 @@ func TestSingleAppCorruptedFileReadingCompresionLevel(t *testing.T) {
 
 	// should failt reading metadata
 	_, err = Open(f.Name(), DefaultOptions())
-	require.Equal(t, ErrCorruptedMetadata, err)
+	require.ErrorIs(t, err, ErrCorruptedMetadata)
 }
 
 func TestSingleAppCorruptedFileReadingCompresionWrappedMetadata(t *testing.T) {
@@ -246,7 +353,7 @@ func TestSingleAppCorruptedFileReadingCompresionWrappedMetadata(t *testing.T) {
 
 	// should failt reading metadata
 	_, err = Open(f.Name(), DefaultOptions())
-	require.Equal(t, ErrCorruptedMetadata, err)
+	require.ErrorIs(t, err, ErrCorruptedMetadata)
 }
 
 func TestSingleAppEdgeCases(t *testing.T) {
@@ -256,7 +363,7 @@ func TestSingleAppEdgeCases(t *testing.T) {
 	_, err = Open("testdata.aof", DefaultOptions().WithReadOnly(true))
 	require.Error(t, err)
 
-	a, err := Open("testdata.aof", DefaultOptions().WithSynced(false))
+	a, err := Open("testdata.aof", DefaultOptions().WithRetryableSync(false))
 	defer os.RemoveAll("testdata.aof")
 	require.NoError(t, err)
 
@@ -423,4 +530,71 @@ func TestSingleAppDiscard(t *testing.T) {
 
 	err = app.Close()
 	require.NoError(t, err)
+}
+
+func BenchmarkAppendFlush(b *testing.B) {
+	opts := DefaultOptions().
+		WithRetryableSync(false).
+		WithWriteBuffer(make([]byte, DefaultWriteBufferSize))
+
+	app, err := Open("testdata_benchmark_flush.aof", opts)
+	if err != nil {
+		panic(err)
+	}
+
+	defer os.RemoveAll("testdata_benchmark_flush.aof")
+
+	b.ResetTimer()
+
+	chunck := make([]byte, 512)
+
+	for i := 0; i < b.N; i++ {
+		for j := 1; j <= 1000; j++ {
+			_, _, err = app.Append(chunck)
+			if err != nil {
+				panic(err)
+			}
+
+			err = app.Flush()
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
+
+	err = app.Close()
+	if err != nil {
+		panic(err)
+	}
+}
+
+func BenchmarkAppendFlushless(b *testing.B) {
+	opts := DefaultOptions().
+		WithRetryableSync(false).
+		WithWriteBuffer(make([]byte, DefaultWriteBufferSize*16))
+
+	app, err := Open("testdata_benchmark_flushless.aof", opts)
+	if err != nil {
+		panic(err)
+	}
+
+	defer os.RemoveAll("testdata_benchmark_flushless.aof")
+
+	b.ResetTimer()
+
+	chunck := make([]byte, 512)
+
+	for i := 0; i < b.N; i++ {
+		for j := 1; j <= 1000; j++ {
+			_, _, err = app.Append(chunck)
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
+
+	err = app.Close()
+	if err != nil {
+		panic(err)
+	}
 }

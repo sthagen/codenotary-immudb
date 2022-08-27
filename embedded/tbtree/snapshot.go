@@ -18,14 +18,10 @@ package tbtree
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"io"
 	"math"
 	"sync"
 )
-
-var ErrNoMoreEntries = errors.New("no more entries")
-var ErrReadersNotClosed = errors.New("readers not closed")
 
 const (
 	InnerNodeType = iota

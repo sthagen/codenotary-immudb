@@ -16,8 +16,8 @@ export GO111MODULE=on
 
 SHELL=/bin/bash -o pipefail
 
-VERSION=1.3.1
-DEFAULT_WEBCONSOLE_VERSION=1.0.16
+VERSION=1.3.2
+DEFAULT_WEBCONSOLE_VERSION=1.0.17
 SERVICES=immudb immuadmin immuclient
 TARGETS=linux/amd64 windows/amd64 darwin/amd64 linux/s390x linux/arm64 freebsd/amd64 darwin/arm64
 
@@ -104,11 +104,11 @@ vendor:
 .PHONY: test
 test:
 	$(GO) vet ./...
-	$(GO) test -failfast ./... ${GO_TEST_FLAGS}
+	LOG_LEVEL=error $(GO) test -v -failfast ./... ${GO_TEST_FLAGS}
 
 .PHONY: test-client
 test-client:
-	$(GO) test -failfast ./pkg/client ${GO_TEST_FLAGS}
+	$(GO) test -v -failfast ./pkg/client ${GO_TEST_FLAGS}
 
 # To view coverage as HTML run: go tool cover -html=coverage.txt
 .PHONY: coverage

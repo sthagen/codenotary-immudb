@@ -22,12 +22,27 @@ import (
 )
 
 func TestInvalidOptions(t *testing.T) {
-	require.False(t, (*Options)(nil).Valid())
-	require.False(t, (&Options{}).Valid())
+	for _, d := range []struct {
+		n    string
+		opts *Options
+	}{
+		{"nil", nil},
+		{"empty", &Options{}},
+		{"FileSize", DefaultOptions().WithFileSize(0)},
+		{"FileSize", DefaultOptions().WithFileSize(0)},
+		{"MaxOpenedFiles", DefaultOptions().WithMaxOpenedFiles(0)},
+		{"FileExt", DefaultOptions().WithFileExt("")},
+		{"ReadBufferSize", DefaultOptions().WithReadBufferSize(0)},
+		{"WriteBufferSize", DefaultOptions().WithReadOnly(false).WithWriteBufferSize(0)},
+	} {
+		t.Run(d.n, func(t *testing.T) {
+			require.ErrorIs(t, d.opts.Validate(), ErrInvalidOptions)
+		})
+	}
 }
 
 func TestDefaultOptions(t *testing.T) {
-	require.True(t, DefaultOptions().Valid())
+	require.NoError(t, DefaultOptions().Validate())
 }
 
 func TestValidOptions(t *testing.T) {
@@ -43,16 +58,21 @@ func TestValidOptions(t *testing.T) {
 	require.Equal(t, DefaultCompressionFormat, opts.WithCompressionFormat(DefaultCompressionFormat).compressionFormat)
 	require.Equal(t, DefaultCompressionLevel, opts.WithCompresionLevel(DefaultCompressionLevel).compressionLevel)
 
-	require.True(t, opts.WithSynced(true).synced)
-
-	require.False(t, opts.WithReadOnly(false).readOnly)
-
-	require.Equal(t, DefaultReadBufferSize+1, opts.WithReadBufferSize(DefaultReadBufferSize+1).GetReadBufferSize())
-	require.Equal(t, DefaultWriteBufferSize+2, opts.WithWriteBufferSize(DefaultWriteBufferSize+2).GetWriteBufferSize())
-
-	require.True(t, opts.Valid())
+	require.True(t, opts.WithRetryableSync(true).retryableSync)
+	require.True(t, opts.WithAutoSync(true).autoSync)
 
 	require.True(t, opts.WithReadOnly(true).readOnly)
+	require.ErrorIs(t, opts.Validate(), ErrInvalidOptions)
 
-	require.True(t, opts.Valid())
+	require.Equal(t, DefaultReadBufferSize+1, opts.WithReadBufferSize(DefaultReadBufferSize+1).GetReadBufferSize())
+	require.NoError(t, opts.Validate())
+
+	require.False(t, opts.WithReadOnly(false).readOnly)
+	require.ErrorIs(t, opts.Validate(), ErrInvalidOptions)
+
+	require.Equal(t, DefaultWriteBufferSize+2, opts.WithWriteBufferSize(DefaultWriteBufferSize+2).GetWriteBufferSize())
+	require.NoError(t, opts.Validate())
+
+	require.True(t, opts.WithReadOnly(true).readOnly)
+	require.NoError(t, opts.Validate())
 }

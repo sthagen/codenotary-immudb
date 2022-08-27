@@ -16,6 +16,7 @@ limitations under the License.
 package ahtree
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/codenotary/immudb/embedded/appendable"
@@ -28,7 +29,8 @@ const DefaultDataCacheSlots = 1_000
 const DefaultDigestsCacheSlots = 100_000
 const DefaultCompressionFormat = appendable.DefaultCompressionFormat
 const DefaultCompressionLevel = appendable.DefaultCompressionLevel
-const DefaultSyncThld = 1000
+const DefaultSyncThld = 100_000
+const DefaultWriteBufferSize = 1 << 24 //16Mb
 
 type AppFactoryFunc func(
 	rootPath string,
@@ -37,8 +39,14 @@ type AppFactoryFunc func(
 ) (appendable.Appendable, error)
 
 type Options struct {
-	syncThld int
-	readOnly bool
+	readOnly       bool
+	readBufferSize int
+
+	writeBufferSize int
+	retryableSync   bool // if retryableSync is enabled, buffer space is released only after a successful sync
+	autoSync        bool // if autoSync is enabled, sync is called when the buffer is full
+	syncThld        int  // sync after appending the specified amount of values
+
 	fileMode os.FileMode
 
 	appFactory AppFactoryFunc
@@ -54,8 +62,14 @@ type Options struct {
 
 func DefaultOptions() *Options {
 	return &Options{
-		readOnly:          false,
-		syncThld:          DefaultSyncThld,
+		readOnly:       false,
+		readBufferSize: multiapp.DefaultReadBufferSize,
+
+		writeBufferSize: multiapp.DefaultWriteBufferSize,
+		retryableSync:   true,
+		autoSync:        true,
+		syncThld:        DefaultSyncThld,
+
 		fileMode:          DefaultFileMode,
 		dataCacheSlots:    DefaultDataCacheSlots,
 		digestsCacheSlots: DefaultDigestsCacheSlots,
@@ -67,16 +81,60 @@ func DefaultOptions() *Options {
 	}
 }
 
-func validOptions(opts *Options) bool {
-	return opts != nil &&
-		opts.fileSize > 0 &&
-		opts.dataCacheSlots > 0 &&
-		opts.digestsCacheSlots > 0 &&
-		opts.syncThld > 0
+func (opts *Options) Validate() error {
+	if opts == nil {
+		return fmt.Errorf("%w: nil options", ErrInvalidOptions)
+	}
+
+	if opts.fileSize <= 0 {
+		return fmt.Errorf("%w: invalid fileSize", ErrInvalidOptions)
+	}
+
+	if opts.dataCacheSlots <= 0 {
+		return fmt.Errorf("%w: invalid dataCacheSlots", ErrInvalidOptions)
+	}
+
+	if opts.digestsCacheSlots <= 0 {
+		return fmt.Errorf("%w: invalid digestsCacheSlots", ErrInvalidOptions)
+	}
+
+	if opts.readBufferSize <= 0 {
+		return fmt.Errorf("%w: invalid readBufferSize", ErrInvalidOptions)
+	}
+
+	if !opts.readOnly && opts.writeBufferSize <= 0 {
+		return fmt.Errorf("%w: invalid writeBufferSize", ErrInvalidOptions)
+	}
+
+	if !opts.readOnly && opts.syncThld <= 0 {
+		return fmt.Errorf("%w: invalid syncThld", ErrInvalidOptions)
+	}
+
+	return nil
 }
 
 func (opts *Options) WithReadOnly(readOnly bool) *Options {
 	opts.readOnly = readOnly
+	return opts
+}
+
+func (opts *Options) WithReadBufferSize(size int) *Options {
+	opts.readBufferSize = size
+	return opts
+}
+
+func (opts *Options) WithWriteBufferSize(size int) *Options {
+	opts.writeBufferSize = size
+	return opts
+}
+
+func (opts *Options) WithRetryableSync(retryableSync bool) *Options {
+	opts.retryableSync = retryableSync
+	return opts
+}
+
+func (opts *Options) WithAutoSync(autoSync bool) *Options {
+	opts.autoSync = autoSync
 	return opts
 }
 

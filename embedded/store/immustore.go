@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codenotary/immudb/embedded"
 	"github.com/codenotary/immudb/embedded/ahtree"
 	"github.com/codenotary/immudb/embedded/appendable"
 	"github.com/codenotary/immudb/embedded/appendable/multiapp"
@@ -42,8 +43,9 @@ import (
 	"github.com/codenotary/immudb/pkg/logger"
 )
 
-var ErrIllegalArguments = errors.New("illegal arguments")
-var ErrAlreadyClosed = errors.New("already closed")
+var ErrIllegalArguments = embedded.ErrIllegalArguments
+var ErrInvalidOptions = fmt.Errorf("%w: invalid options", ErrIllegalArguments)
+var ErrAlreadyClosed = embedded.ErrAlreadyClosed
 var ErrUnexpectedLinkingError = errors.New("internal inconsistency between linear and binary linking")
 var ErrorNoEntriesProvided = errors.New("no entries provided")
 var ErrWriteOnlyTx = errors.New("write-only transaction")
@@ -68,17 +70,16 @@ var ErrCorruptedCLog = errors.New("commit log is corrupted")
 var ErrCorruptedIndex = errors.New("corrupted index")
 var ErrTxSizeGreaterThanMaxTxSize = errors.New("tx size greater than max tx size")
 var ErrCorruptedAHtree = errors.New("appendable hash tree is corrupted")
-var ErrKeyNotFound = tbtree.ErrKeyNotFound
+var ErrKeyNotFound = tbtree.ErrKeyNotFound // TODO: define error in store layer
 var ErrExpiredEntry = fmt.Errorf("%w: expired entry", ErrKeyNotFound)
 var ErrKeyAlreadyExists = errors.New("key already exists")
 var ErrTxNotFound = errors.New("tx not found")
-var ErrNoMoreEntries = tbtree.ErrNoMoreEntries
-var ErrIllegalState = tbtree.ErrIllegalState
-var ErrOffsetOutOfRange = tbtree.ErrOffsetOutOfRange
+var ErrNoMoreEntries = tbtree.ErrNoMoreEntries       // TODO: define error in store layer
+var ErrIllegalState = tbtree.ErrIllegalState         // TODO: define error in store layer
+var ErrOffsetOutOfRange = tbtree.ErrOffsetOutOfRange // TODO: define error in store layer
 var ErrUnexpectedError = errors.New("unexpected error")
 var ErrUnsupportedTxVersion = errors.New("unsupported tx version")
 var ErrNewerVersionOrCorruptedData = errors.New("tx created with a newer version or data is corrupted")
-var ErrInvalidOptions = errors.New("invalid options")
 var ErrTxPoolExhausted = errors.New("transaction pool exhausted")
 
 var ErrInvalidPrecondition = errors.New("invalid precondition")
@@ -229,7 +230,9 @@ func Open(path string, opts *Options) (*ImmuStore, error) {
 
 	appendableOpts := multiapp.DefaultOptions().
 		WithReadOnly(opts.ReadOnly).
-		WithSynced(false).
+		WithWriteBufferSize(opts.WriteBufferSize).
+		WithRetryableSync(opts.Synced).
+		WithAutoSync(true).
 		WithFileSize(opts.FileSize).
 		WithFileMode(opts.FileMode).
 		WithMetadata(metadata.Bytes())
@@ -260,12 +263,12 @@ func Open(path string, opts *Options) (*ImmuStore, error) {
 	}
 
 	vLogs := make([]appendable.Appendable, opts.MaxIOConcurrency)
+	appendableOpts.WithFileExt("val")
+	appendableOpts.WithCompressionFormat(opts.CompressionFormat)
+	appendableOpts.WithCompresionLevel(opts.CompressionLevel)
+	appendableOpts.WithMaxOpenedFiles(opts.VLogMaxOpenedFiles)
+
 	for i := 0; i < opts.MaxIOConcurrency; i++ {
-		appendableOpts.WithSynced(false)
-		appendableOpts.WithFileExt("val")
-		appendableOpts.WithCompressionFormat(opts.CompressionFormat)
-		appendableOpts.WithCompresionLevel(opts.CompressionLevel)
-		appendableOpts.WithMaxOpenedFiles(opts.VLogMaxOpenedFiles)
 		vLog, err := appFactory(path, fmt.Sprintf("val_%d", i), appendableOpts)
 		if err != nil {
 			return nil, err
@@ -396,6 +399,9 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		WithReadOnly(opts.ReadOnly).
 		WithFileMode(opts.FileMode).
 		WithFileSize(fileSize).
+		WithRetryableSync(opts.Synced).
+		WithAutoSync(true).
+		WithWriteBufferSize(opts.AHTOpts.WriteBufferSize).
 		WithSyncThld(opts.AHTOpts.SyncThld)
 
 	if opts.appFactory != nil {
@@ -1025,12 +1031,6 @@ func (s *ImmuStore) appendData(entries []*EntrySpec, donec chan<- appendableResu
 		offsets[i] = encodeOffset(voff, vLogID)
 	}
 
-	err := vLog.Flush()
-	if err != nil {
-		donec <- appendableResult{nil, err}
-		return
-	}
-
 	donec <- appendableResult{offsets, nil}
 }
 
@@ -1401,11 +1401,6 @@ func (s *ImmuStore) performPreCommit(tx *Tx, ts int64, blTxID uint64) error {
 		return err
 	}
 
-	err = s.txLog.Flush()
-	if err != nil {
-		return err
-	}
-
 	_, _, err = s.txLogCache.Put(tx.header.ID, txbs)
 	if err != nil {
 		return err
@@ -1444,11 +1439,6 @@ func (s *ImmuStore) performPreCommit(tx *Tx, ts int64, blTxID uint64) error {
 		}
 
 		_, _, err = s.cLog.Append(cb[:])
-		if err != nil {
-			return err
-		}
-
-		err = s.cLog.Flush()
 		if err != nil {
 			return err
 		}
@@ -2021,11 +2011,12 @@ func (s *ImmuStore) appendableReaderForTx(txID uint64) (*appendable.Reader, erro
 	cacheMiss := false
 
 	txbs, err := s.txLogCache.Get(txID)
-	if err != nil && err != cache.ErrKeyNotFound {
-		return nil, err
-	}
-	if err == cache.ErrKeyNotFound {
-		cacheMiss = true
+	if err != nil {
+		if errors.Is(err, cache.ErrKeyNotFound) {
+			cacheMiss = true
+		} else {
+			return nil, err
+		}
 	}
 
 	txOff, txSize, err := s.txOffsetAndSize(txID)
@@ -2117,7 +2108,7 @@ func (s *ImmuStore) ReadTxEntry(txID uint64, key []byte) (*TxEntry, *TxHeader, e
 			return nil, nil, err
 		}
 
-		if bytes.Compare(e.key(), key) == 0 {
+		if bytes.Equal(e.key(), key) {
 			if ret != nil {
 				return nil, nil, ErrCorruptedTxDataDuplicateKey
 			}
@@ -2266,13 +2257,23 @@ func (s *ImmuStore) sync() error {
 		vLog := s.fetchVLog(i + 1)
 		defer s.releaseVLog(i + 1)
 
-		err := vLog.Sync()
+		err := vLog.Flush()
+		if err != nil {
+			return err
+		}
+
+		err = vLog.Sync()
 		if err != nil {
 			return err
 		}
 	}
 
-	err := s.txLog.Sync()
+	err := s.txLog.Flush()
+	if err != nil {
+		return err
+	}
+
+	err = s.txLog.Sync()
 	if err != nil {
 		return err
 	}

@@ -18,6 +18,7 @@ package store
 import (
 	"encoding/binary"
 	"errors"
+	"io/ioutil"
 	"os"
 	"testing"
 
@@ -27,10 +28,13 @@ import (
 )
 
 func TestTxReader(t *testing.T) {
-	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, err := Open("data_txreader", opts)
+	dir, err := ioutil.TempDir("", "data_txreader")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_txreader")
+	defer os.RemoveAll(dir)
+
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 
 	require.NotNil(t, immuStore)
 
@@ -58,10 +62,10 @@ func TestTxReader(t *testing.T) {
 	}
 
 	_, err = immuStore.NewTxReader(0, false, nil)
-	require.Equal(t, ErrIllegalArguments, err)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 
 	_, err = immuStore.NewTxReader(1, false, nil)
-	require.Equal(t, ErrIllegalArguments, err)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 
 	txHolder := tempTxHolder(t, immuStore)
 
@@ -99,20 +103,24 @@ func TestTxReader(t *testing.T) {
 }
 
 func TestWrapAppendableErr(t *testing.T) {
-	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, err := Open("data_txreader", opts)
+	dir, err := ioutil.TempDir("", "data_txreader_wrap_error")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_txreader")
+	defer os.RemoveAll(dir)
+
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 
 	err = immuStore.wrapAppendableErr(nil, "anAction")
 	require.Nil(t, err)
 
-	err = immuStore.wrapAppendableErr(errors.New("some error"), "anAction")
-	require.Equal(t, errors.New("some error"), err)
+	unwrappedErr := errors.New("some error")
+	err = immuStore.wrapAppendableErr(unwrappedErr, "anAction")
+	require.ErrorIs(t, err, unwrappedErr)
 
 	err = immuStore.wrapAppendableErr(singleapp.ErrAlreadyClosed, "anAction")
-	require.Equal(t, ErrAlreadyClosed, err)
+	require.ErrorIs(t, err, ErrAlreadyClosed)
 
 	err = immuStore.wrapAppendableErr(multiapp.ErrAlreadyClosed, "anAction")
-	require.Equal(t, ErrAlreadyClosed, err)
+	require.ErrorIs(t, err, ErrAlreadyClosed)
 }

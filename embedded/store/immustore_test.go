@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codenotary/immudb/embedded"
 	"github.com/codenotary/immudb/embedded/ahtree"
 	"github.com/codenotary/immudb/embedded/appendable"
 	"github.com/codenotary/immudb/embedded/appendable/mocked"
@@ -53,11 +54,13 @@ func tempTxHolder(t *testing.T, immuStore *ImmuStore) *Tx {
 }
 
 func TestImmudbStoreConcurrency(t *testing.T) {
-	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(4)
-	immuStore, err := Open("data_concurrency", opts)
+	dir, err := ioutil.TempDir("", "data_concurrency")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_concurrency")
+	defer os.RemoveAll(dir)
 
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(4)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 	require.NotNil(t, immuStore)
 
 	defer immustoreClose(t, immuStore)
@@ -137,11 +140,13 @@ func TestImmudbStoreConcurrency(t *testing.T) {
 }
 
 func TestImmudbStoreConcurrentCommits(t *testing.T) {
-	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(5)
-	immuStore, err := Open("data_concurrent_commits", opts)
+	dir, err := ioutil.TempDir("", "data_concurrent_commits")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_concurrent_commits")
+	defer os.RemoveAll(dir)
 
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(5)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 	require.NotNil(t, immuStore)
 
 	defer immustoreClose(t, immuStore)
@@ -211,16 +216,19 @@ func TestImmudbStoreConcurrentCommits(t *testing.T) {
 
 func TestImmudbStoreOpenWithInvalidPath(t *testing.T) {
 	_, err := Open("immustore_test.go", DefaultOptions())
-	require.Equal(t, ErrorPathIsNotADirectory, err)
+	require.ErrorIs(t, err, ErrorPathIsNotADirectory)
 }
 
 func TestImmudbStoreOnClosedStore(t *testing.T) {
-	immuStore, err := Open("closed_store", DefaultOptions().WithMaxConcurrency(1))
+	dir, err := ioutil.TempDir("", "closed_store")
 	require.NoError(t, err)
-	defer os.RemoveAll("closed_store")
+	defer os.RemoveAll(dir)
+
+	immuStore, err := Open(dir, DefaultOptions().WithMaxConcurrency(1))
+	require.NoError(t, err)
 
 	err = immuStore.ReadTx(1, nil)
-	require.Equal(t, ErrTxNotFound, err)
+	require.ErrorIs(t, err, ErrTxNotFound)
 
 	err = immuStore.Close()
 	require.NoError(t, err)
@@ -247,9 +255,12 @@ func TestImmudbStoreOnClosedStore(t *testing.T) {
 }
 
 func TestImmudbStoreSettings(t *testing.T) {
-	immuStore, err := Open("store_settings", DefaultOptions().WithMaxConcurrency(1))
+	dir, err := ioutil.TempDir("", "store_settings")
 	require.NoError(t, err)
-	defer os.RemoveAll("store_settings")
+	defer os.RemoveAll(dir)
+
+	immuStore, err := Open(dir, DefaultOptions().WithMaxConcurrency(1))
+	require.NoError(t, err)
 
 	defer immustoreClose(t, immuStore)
 
@@ -264,39 +275,64 @@ func TestImmudbStoreSettings(t *testing.T) {
 }
 
 func TestImmudbStoreEdgeCases(t *testing.T) {
-	defer os.RemoveAll("edge_cases")
+	t.Run("should fail with invalid options", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
 
-	_, err := Open("edge_cases", nil)
-	require.ErrorIs(t, err, ErrIllegalArguments)
+		_, err = Open(dir, nil)
+		require.ErrorIs(t, err, ErrIllegalArguments)
+	})
 
-	_, err = OpenWith("edge_cases", nil, nil, nil, nil)
-	require.ErrorIs(t, err, ErrIllegalArguments)
+	t.Run("should fail with invalid appendables", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
 
-	opts := DefaultOptions().WithMaxConcurrency(1)
+		_, err = OpenWith(dir, nil, nil, nil, DefaultOptions())
+		require.ErrorIs(t, err, ErrIllegalArguments)
+	})
 
-	_, err = OpenWith("edge_cases", nil, nil, nil, opts)
-	require.ErrorIs(t, err, ErrIllegalArguments)
+	t.Run("should fail with invalid appendables and invlaid options", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
 
-	_, err = Open("invalid\x00_dir_name", DefaultOptions())
-	require.EqualError(t, err, "stat invalid\x00_dir_name: invalid argument")
+		_, err = OpenWith(dir, nil, nil, nil, nil)
+		require.ErrorIs(t, err, ErrIllegalArguments)
+	})
 
-	require.NoError(t, os.MkdirAll("ro_path", 0500))
-	defer os.RemoveAll("ro_path")
+	t.Run("should fail with invalid dir name", func(t *testing.T) {
+		_, err := Open("invalid\x00_dir_name", DefaultOptions())
+		require.EqualError(t, err, "stat invalid\x00_dir_name: invalid argument")
+	})
 
-	_, err = Open("ro_path/subpath", DefaultOptions())
-	require.EqualError(t, err, "mkdir ro_path/subpath: permission denied")
+	t.Run("should fail with permiission denied", func(t *testing.T) {
+		require.NoError(t, os.MkdirAll("ro_path", 0500))
+		defer os.RemoveAll("ro_path")
 
-	for _, failedAppendable := range []string{"tx", "commit", "val_0"} {
-		injectedError := fmt.Errorf("Injected error for: %s", failedAppendable)
-		_, err = Open("edge_cases", DefaultOptions().WithAppFactory(func(rootPath, subPath string, opts *multiapp.Options) (appendable.Appendable, error) {
-			if subPath == failedAppendable {
-				return nil, injectedError
-			}
-			return &mocked.MockedAppendable{}, nil
-		}))
-		require.ErrorIs(t, err, injectedError)
-	}
+		_, err := Open("ro_path/subpath", DefaultOptions())
+		require.EqualError(t, err, "mkdir ro_path/subpath: permission denied")
+	})
 
+	t.Run("should fail when initiating appendables", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		for _, failedAppendable := range []string{"tx", "commit", "val_0"} {
+			injectedError := fmt.Errorf("Injected error for: %s", failedAppendable)
+			_, err = Open(dir, DefaultOptions().WithAppFactory(func(rootPath, subPath string, opts *multiapp.Options) (appendable.Appendable, error) {
+				if subPath == failedAppendable {
+					return nil, injectedError
+				}
+				return &mocked.MockedAppendable{}, nil
+			}))
+			require.ErrorIs(t, err, injectedError)
+		}
+	})
+
+	// basic appendable initialization
 	vLog := &mocked.MockedAppendable{
 		CloseFn: func() error { return nil },
 	}
@@ -314,329 +350,435 @@ func TestImmudbStoreEdgeCases(t *testing.T) {
 		SyncFn:   func() error { return nil },
 	}
 
-	// Should fail reading fileSize from metadata
-	cLog.MetadataFn = func() []byte {
-		return nil
-	}
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog, opts)
-	require.ErrorIs(t, err, ErrCorruptedCLog)
+	t.Run("should fail reading fileSize from metadata", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
 
-	// Should fail reading maxTxEntries from metadata
-	cLog.MetadataFn = func() []byte {
-		md := appendable.NewMetadata(nil)
-		md.PutInt(metaFileSize, 1)
-		return md.Bytes()
-	}
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog, opts)
-	require.ErrorIs(t, err, ErrCorruptedCLog)
+		cLog.MetadataFn = func() []byte {
+			return nil
+		}
 
-	// Should fail reading maxKeyLen from metadata
-	cLog.MetadataFn = func() []byte {
-		md := appendable.NewMetadata(nil)
-		md.PutInt(metaFileSize, 1)
-		md.PutInt(metaMaxTxEntries, 4)
-		return md.Bytes()
-	}
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog, opts)
-	require.ErrorIs(t, err, ErrCorruptedCLog)
+		_, err = OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+		require.ErrorIs(t, err, ErrCorruptedCLog)
+	})
 
-	// Should fail reading maxKeyLen from metadata
-	cLog.MetadataFn = func() []byte {
-		md := appendable.NewMetadata(nil)
-		md.PutInt(metaFileSize, 1)
-		md.PutInt(metaMaxTxEntries, 4)
-		md.PutInt(metaMaxKeyLen, 8)
-		return md.Bytes()
-	}
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog, opts)
-	require.ErrorIs(t, err, ErrCorruptedCLog)
+	t.Run("should fail reading maxTxEntries from metadata", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
 
-	cLog.MetadataFn = func() []byte {
-		md := appendable.NewMetadata(nil)
-		md.PutInt(metaFileSize, 1)
-		md.PutInt(metaMaxTxEntries, 4)
-		md.PutInt(metaMaxKeyLen, 8)
-		md.PutInt(metaMaxValueLen, 16)
-		return md.Bytes()
-	}
+		cLog.MetadataFn = func() []byte {
+			md := appendable.NewMetadata(nil)
+			md.PutInt(metaFileSize, 1)
+			return md.Bytes()
+		}
 
-	// Should fail reading cLogSize
+		_, err = OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+		require.ErrorIs(t, err, ErrCorruptedCLog)
+	})
+
+	t.Run("should fail reading maxKeyLen from metadata", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		cLog.MetadataFn = func() []byte {
+			md := appendable.NewMetadata(nil)
+			md.PutInt(metaFileSize, 1)
+			md.PutInt(metaMaxTxEntries, 4)
+			return md.Bytes()
+		}
+
+		_, err = OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+		require.ErrorIs(t, err, ErrCorruptedCLog)
+	})
+
+	t.Run("should fail reading maxKeyLen from metadata", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		cLog.MetadataFn = func() []byte {
+			md := appendable.NewMetadata(nil)
+			md.PutInt(metaFileSize, 1)
+			md.PutInt(metaMaxTxEntries, 4)
+			md.PutInt(metaMaxKeyLen, 8)
+			return md.Bytes()
+		}
+
+		_, err = OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+		require.ErrorIs(t, err, ErrCorruptedCLog)
+	})
+
+	t.Run("should fail reading cLogSize", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		cLog.MetadataFn = func() []byte {
+			md := appendable.NewMetadata(nil)
+			md.PutInt(metaFileSize, 1)
+			md.PutInt(metaMaxTxEntries, 4)
+			md.PutInt(metaMaxKeyLen, 8)
+			md.PutInt(metaMaxValueLen, 16)
+			return md.Bytes()
+		}
+
+		injectedError := errors.New("error")
+
+		cLog.SizeFn = func() (int64, error) {
+			return 0, injectedError
+		}
+
+		_, err = OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+		require.ErrorIs(t, err, injectedError)
+	})
+
 	injectedError := errors.New("error")
-	cLog.SizeFn = func() (int64, error) {
-		return 0, injectedError
-	}
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog, opts)
-	require.ErrorIs(t, err, injectedError)
 
-	// Should fail setting cLog offset
-	cLog.SizeFn = func() (int64, error) {
-		return cLogEntrySize - 1, nil
-	}
-	cLog.SetOffsetFn = func(off int64) error {
-		return injectedError
-	}
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog, opts)
-	require.ErrorIs(t, err, injectedError)
+	t.Run("should fail setting cLog offset", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
 
-	// Should fail validating cLogSize
-	cLog.SizeFn = func() (int64, error) {
-		return cLogEntrySize - 1, nil
-	}
-	cLog.SetOffsetFn = func(off int64) error {
-		return nil
-	}
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog, opts)
-	require.NoError(t, err)
-
-	// Should fail reading cLog
-	cLog.SizeFn = func() (int64, error) {
-		return cLogEntrySize, nil
-	}
-	cLog.ReadAtFn = func(bs []byte, off int64) (int, error) {
-		return 0, injectedError
-	}
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog, opts)
-	require.ErrorIs(t, err, injectedError)
-
-	// Should fail reading txLogSize
-	cLog.SizeFn = func() (int64, error) {
-		return cLogEntrySize + 1, nil
-	}
-	cLog.SetOffsetFn = func(off int64) error {
-		return nil
-	}
-	txLog.SizeFn = func() (int64, error) {
-		return 0, injectedError
-	}
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog, opts)
-	require.ErrorIs(t, err, injectedError)
-
-	// Should fail reading txLogSize
-	cLog.SizeFn = func() (int64, error) {
-		return cLogEntrySize, nil
-	}
-	cLog.ReadAtFn = func(bs []byte, off int64) (int, error) {
-		for i := 0; i < len(bs); i++ {
-			bs[i]++
+		cLog.SizeFn = func() (int64, error) {
+			return cLogEntrySize - 1, nil
 		}
-		return minInt(len(bs), 8+4+8+8), nil
-	}
-	txLog.SizeFn = func() (int64, error) {
-		return 0, injectedError
-	}
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog, opts)
-	require.ErrorIs(t, err, injectedError)
-
-	// Should fail validating txLogSize
-	cLog.SizeFn = func() (int64, error) {
-		return cLogEntrySize, nil
-	}
-	cLog.ReadAtFn = func(bs []byte, off int64) (int, error) {
-		for i := 0; i < len(bs); i++ {
-			bs[i]++
+		cLog.SetOffsetFn = func(off int64) error {
+			return injectedError
 		}
-		return minInt(len(bs), 8+4+8+8), nil
-	}
-	txLog.SizeFn = func() (int64, error) {
-		return 0, nil
-	}
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog, opts)
-	require.ErrorIs(t, err, ErrorCorruptedTxData)
 
-	// Fail to read last transaction
-	cLog.ReadAtFn = func(bs []byte, off int64) (int, error) {
-		buff := []byte{0, 0, 0, 0, 0, 0, 0, 0}
-		require.Less(t, off, int64(len(buff)))
-		return copy(bs, buff[off:]), nil
-	}
-	txLog.ReadAtFn = func(bs []byte, off int64) (int, error) {
-		return 0, injectedError
-	}
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog, opts)
-	require.ErrorIs(t, err, injectedError)
+		_, err = OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+		require.ErrorIs(t, err, injectedError)
+	})
 
-	// Fail to initialize aht when opening appendable
-	cLog.SizeFn = func() (int64, error) {
-		return 0, nil
-	}
-	optsCopy := *opts
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog,
-		optsCopy.WithAppFactory(func(rootPath, subPath string, opts *multiapp.Options) (appendable.Appendable, error) {
-			if strings.HasPrefix(subPath, "aht/") {
-				return nil, injectedError
+	t.Run("should truncate cLog when validating cLogSize", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		cLog.SizeFn = func() (int64, error) {
+			return cLogEntrySize - 1, nil
+		}
+		cLog.SetOffsetFn = func(off int64) error {
+			return nil
+		}
+
+		st, err := OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+		require.NoError(t, err)
+
+		err = st.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("should fail reading cLog", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		cLog.SizeFn = func() (int64, error) {
+			return cLogEntrySize, nil
+		}
+		cLog.ReadAtFn = func(bs []byte, off int64) (int, error) {
+			return 0, injectedError
+		}
+
+		_, err = OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+		require.ErrorIs(t, err, injectedError)
+	})
+
+	t.Run("should fail reading txLogSize", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		cLog.SizeFn = func() (int64, error) {
+			return cLogEntrySize + 1, nil
+		}
+		cLog.SetOffsetFn = func(off int64) error {
+			return nil
+		}
+		txLog.SizeFn = func() (int64, error) {
+			return 0, injectedError
+		}
+
+		_, err = OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+		require.ErrorIs(t, err, injectedError)
+	})
+
+	t.Run("should fail reading txLogSize", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		cLog.SizeFn = func() (int64, error) {
+			return cLogEntrySize, nil
+		}
+		cLog.ReadAtFn = func(bs []byte, off int64) (int, error) {
+			for i := 0; i < len(bs); i++ {
+				bs[i]++
 			}
-			return &mocked.MockedAppendable{}, nil
-		}),
-	)
-	require.ErrorIs(t, err, injectedError)
+			return minInt(len(bs), 8+4+8+8), nil
+		}
+		txLog.SizeFn = func() (int64, error) {
+			return 0, injectedError
+		}
 
-	// Fail to initialize indexer
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog,
-		optsCopy.WithAppFactory(func(rootPath, subPath string, opts *multiapp.Options) (appendable.Appendable, error) {
-			if strings.HasPrefix(subPath, "index/") {
-				return nil, injectedError
+		_, err = OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+		require.ErrorIs(t, err, injectedError)
+	})
+
+	t.Run("should fail validating txLogSize", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		cLog.SizeFn = func() (int64, error) {
+			return cLogEntrySize, nil
+		}
+		cLog.ReadAtFn = func(bs []byte, off int64) (int, error) {
+			for i := 0; i < len(bs); i++ {
+				bs[i]++
 			}
-			return &mocked.MockedAppendable{
-				SizeFn:  func() (int64, error) { return 0, nil },
-				CloseFn: func() error { return nil },
-			}, nil
-		}),
-	)
-	require.ErrorIs(t, err, injectedError)
+			return minInt(len(bs), 8+4+8+8), nil
+		}
+		txLog.SizeFn = func() (int64, error) {
+			return 0, nil
+		}
 
-	// Incorrect tx in indexer
-	vLog.CloseFn = func() error { return nil }
-	txLog.CloseFn = func() error { return nil }
-	cLog.CloseFn = func() error { return nil }
+		_, err = OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+		require.ErrorIs(t, err, ErrorCorruptedTxData)
+	})
 
-	_, err = OpenWith("edge_cases", vLogs, txLog, cLog,
-		optsCopy.WithAppFactory(func(rootPath, subPath string, opts *multiapp.Options) (appendable.Appendable, error) {
-			nLog := &mocked.MockedAppendable{
-				ReadAtFn: func(bs []byte, off int64) (int, error) {
-					buff := []byte{
-						tbtree.LeafNodeType,
-						0, 1, // One node
-						0, 1, // Key size
-						'k',  // key
-						0, 1, // Value size
-						'v',                    // value
-						0, 0, 0, 0, 0, 0, 0, 1, // Timestamp
-						0, 0, 0, 0, 0, 0, 0, 0, // hOffs
-						0, 0, 0, 0, 0, 0, 0, 0, // hSize
-					}
-					require.Less(t, off, int64(len(buff)))
-					return copy(bs, buff[off:]), nil
-				},
-				SyncFn:  func() error { return nil },
-				CloseFn: func() error { return nil },
-			}
+	t.Run("fail to read last transaction", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
 
-			hLog := &mocked.MockedAppendable{
-				SetOffsetFn: func(off int64) error { return nil },
-				SizeFn: func() (int64, error) {
-					return 0, nil
-				},
-				SyncFn:  func() error { return nil },
-				CloseFn: func() error { return nil },
-			}
+		cLog.ReadAtFn = func(bs []byte, off int64) (int, error) {
+			buff := []byte{0, 0, 0, 0, 0, 0, 0, 0}
+			require.Less(t, off, int64(len(buff)))
+			return copy(bs, buff[off:]), nil
+		}
+		txLog.ReadAtFn = func(bs []byte, off int64) (int, error) {
+			return 0, injectedError
+		}
 
-			switch subPath {
-			case "index/nodes":
-				return nLog, nil
-			case "index/history":
-				return hLog, nil
-			case "index/commit":
+		_, err = OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+		require.ErrorIs(t, err, injectedError)
+	})
+
+	t.Run("fail to initialize aht when opening appendable", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		cLog.SizeFn = func() (int64, error) {
+			return 0, nil
+		}
+
+		_, err = OpenWith(dir, vLogs, txLog, cLog,
+			DefaultOptions().WithAppFactory(func(rootPath, subPath string, opts *multiapp.Options) (appendable.Appendable, error) {
+				if strings.HasPrefix(subPath, "aht/") {
+					return nil, injectedError
+				}
+				return &mocked.MockedAppendable{}, nil
+			}),
+		)
+		require.ErrorIs(t, err, injectedError)
+	})
+
+	t.Run("fail to initialize indexer", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		_, err = OpenWith(dir, vLogs, txLog, cLog,
+			DefaultOptions().WithAppFactory(func(rootPath, subPath string, opts *multiapp.Options) (appendable.Appendable, error) {
+				if strings.HasPrefix(subPath, "index/") {
+					return nil, injectedError
+				}
 				return &mocked.MockedAppendable{
-					SizeFn: func() (int64, error) {
-						// One clog entry
-						return 100, nil
-					},
-					AppendFn: func(bs []byte) (off int64, n int, err error) {
-						return 0, 0, nil
-					},
+					SizeFn:  func() (int64, error) { return 0, nil },
+					CloseFn: func() error { return nil },
+				}, nil
+			}),
+		)
+		require.ErrorIs(t, err, injectedError)
+	})
+
+	t.Run("incorrect tx in indexer", func(t *testing.T) {
+		dir, err := ioutil.TempDir("", "edge_cases")
+		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		vLog.CloseFn = func() error { return nil }
+		txLog.CloseFn = func() error { return nil }
+		cLog.CloseFn = func() error { return nil }
+
+		_, err = OpenWith(dir, vLogs, txLog, cLog,
+			DefaultOptions().WithAppFactory(func(rootPath, subPath string, opts *multiapp.Options) (appendable.Appendable, error) {
+				nLog := &mocked.MockedAppendable{
 					ReadAtFn: func(bs []byte, off int64) (int, error) {
-						buff := [20 + 32 + 16 + 32]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 0, 0, 0, 33}
-						nLogChecksum, err := appendable.Checksum(nLog, 0, 33)
-						if err != nil {
-							return 0, err
+						buff := []byte{
+							tbtree.LeafNodeType,
+							0, 1, // One node
+							0, 1, // Key size
+							'k',  // key
+							0, 1, // Value size
+							'v',                    // value
+							0, 0, 0, 0, 0, 0, 0, 1, // Timestamp
+							0, 0, 0, 0, 0, 0, 0, 0, // hOffs
+							0, 0, 0, 0, 0, 0, 0, 0, // hSize
 						}
-						copy(buff[20:], nLogChecksum[:])
-
-						hLogChecksum, err := appendable.Checksum(hLog, 0, 0)
-						if err != nil {
-							return 0, err
-						}
-						copy(buff[20+32+16:], hLogChecksum[:])
-
 						require.Less(t, off, int64(len(buff)))
 						return copy(bs, buff[off:]), nil
 					},
-					MetadataFn: func() []byte {
-						md := appendable.NewMetadata(nil)
-						md.PutInt(tbtree.MetaVersion, tbtree.Version)
-						md.PutInt(tbtree.MetaMaxNodeSize, tbtree.DefaultMaxNodeSize)
-						md.PutInt(tbtree.MetaMaxKeySize, tbtree.DefaultMaxKeySize)
-						md.PutInt(tbtree.MetaMaxValueSize, tbtree.DefaultMaxValueSize)
-						return md.Bytes()
-					},
-					SetOffsetFn: func(off int64) error { return nil },
-					FlushFn: func() error {
-						return nil
-					},
-					SyncFn: func() error {
-						return nil
-					},
+					SyncFn:  func() error { return nil },
 					CloseFn: func() error { return nil },
+				}
+
+				hLog := &mocked.MockedAppendable{
+					SetOffsetFn: func(off int64) error { return nil },
+					SizeFn: func() (int64, error) {
+						return 0, nil
+					},
+					SyncFn:  func() error { return nil },
+					CloseFn: func() error { return nil },
+				}
+
+				switch subPath {
+				case "index/nodes":
+					return nLog, nil
+				case "index/history":
+					return hLog, nil
+				case "index/commit":
+					return &mocked.MockedAppendable{
+						SizeFn: func() (int64, error) {
+							// One clog entry
+							return 100, nil
+						},
+						AppendFn: func(bs []byte) (off int64, n int, err error) {
+							return 0, 0, nil
+						},
+						ReadAtFn: func(bs []byte, off int64) (int, error) {
+							buff := [20 + 32 + 16 + 32]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 0, 0, 0, 33}
+							nLogChecksum, err := appendable.Checksum(nLog, 0, 33)
+							if err != nil {
+								return 0, err
+							}
+							copy(buff[20:], nLogChecksum[:])
+
+							hLogChecksum, err := appendable.Checksum(hLog, 0, 0)
+							if err != nil {
+								return 0, err
+							}
+							copy(buff[20+32+16:], hLogChecksum[:])
+
+							require.Less(t, off, int64(len(buff)))
+							return copy(bs, buff[off:]), nil
+						},
+						MetadataFn: func() []byte {
+							md := appendable.NewMetadata(nil)
+							md.PutInt(tbtree.MetaVersion, tbtree.Version)
+							md.PutInt(tbtree.MetaMaxNodeSize, tbtree.DefaultMaxNodeSize)
+							md.PutInt(tbtree.MetaMaxKeySize, tbtree.DefaultMaxKeySize)
+							md.PutInt(tbtree.MetaMaxValueSize, tbtree.DefaultMaxValueSize)
+							return md.Bytes()
+						},
+						SetOffsetFn: func(off int64) error { return nil },
+						FlushFn: func() error {
+							return nil
+						},
+						SyncFn: func() error {
+							return nil
+						},
+						CloseFn: func() error { return nil },
+					}, nil
+				}
+				return &mocked.MockedAppendable{
+					SizeFn:   func() (int64, error) { return 0, nil },
+					OffsetFn: func() int64 { return 0 },
+					CloseFn:  func() error { return nil },
 				}, nil
-			}
-			return &mocked.MockedAppendable{
-				SizeFn:   func() (int64, error) { return 0, nil },
-				OffsetFn: func() int64 { return 0 },
-				CloseFn:  func() error { return nil },
-			}, nil
-		}),
-	)
-	require.ErrorIs(t, err, ErrCorruptedCLog)
-
-	// Errors during sync
-	vLog.AppendFn = func(bs []byte) (off int64, n int, err error) { return 0, len(bs), nil }
-	vLog.FlushFn = func() error { return nil }
-
-	txLog.AppendFn = func(bs []byte) (off int64, n int, err error) { return 0, len(bs), nil }
-	txLog.SetOffsetFn = func(off int64) error { return nil }
-	txLog.FlushFn = func() error { return nil }
-
-	cLogBuf := bytes.NewBuffer(nil)
-	cLog.AppendFn = func(bs []byte) (off int64, n int, err error) {
-		off = int64(cLogBuf.Len())
-		n, err = cLogBuf.Write(bs)
-		return
-	}
-	cLog.ReadAtFn = func(bs []byte, off int64) (int, error) {
-		buf := cLogBuf.Bytes()
-		copy(bs, buf[off:])
-		return len(buf) - int(off), nil
-	}
+			}),
+		)
+		require.ErrorIs(t, err, ErrCorruptedCLog)
+	})
 
 	mockedApps := []*mocked.MockedAppendable{vLog, txLog, cLog}
 	for _, app := range mockedApps {
 		app.SyncFn = func() error { return nil }
 	}
-	for i, checkApp := range mockedApps {
-		store, err := OpenWith("edge_cases", vLogs, txLog, cLog, opts.WithSyncFrequency(time.Duration(1)*time.Second))
-		require.NoError(t, err)
 
-		go func() {
-			tx, err := store.NewWriteOnlyTx()
+	t.Run("errors during sync", func(t *testing.T) {
+		// Errors during sync
+		vLog.AppendFn = func(bs []byte) (off int64, n int, err error) { return 0, len(bs), nil }
+		vLog.FlushFn = func() error { return nil }
+
+		txLog.AppendFn = func(bs []byte) (off int64, n int, err error) { return 0, len(bs), nil }
+		txLog.SetOffsetFn = func(off int64) error { return nil }
+		txLog.FlushFn = func() error { return nil }
+
+		cLogBuf := bytes.NewBuffer(nil)
+		cLog.AppendFn = func(bs []byte) (off int64, n int, err error) {
+			off = int64(cLogBuf.Len())
+			n, err = cLogBuf.Write(bs)
+			return
+		}
+		cLog.ReadAtFn = func(bs []byte, off int64) (int, error) {
+			buf := cLogBuf.Bytes()
+			copy(bs, buf[off:])
+			return len(buf) - int(off), nil
+		}
+
+		for i, checkApp := range mockedApps {
+			dir, err := ioutil.TempDir("", "edge_cases")
+			require.NoError(t, err)
+			defer os.RemoveAll(dir)
+
+			store, err := OpenWith(dir, vLogs, txLog, cLog, DefaultOptions().WithSyncFrequency(time.Duration(1)*time.Second))
 			require.NoError(t, err)
 
-			err = tx.Set([]byte("key"), nil, []byte("value"))
+			go func() {
+				tx, err := store.NewWriteOnlyTx()
+				require.NoError(t, err)
+
+				err = tx.Set([]byte("key"), nil, []byte("value"))
+				require.NoError(t, err)
+
+				_, err = tx.AsyncCommit()
+				require.ErrorIs(t, err, ErrAlreadyClosed)
+			}()
+
+			// wait for the tx to be waiting for sync to happen
+			time.Sleep(10 * time.Millisecond)
+
+			injectedError = fmt.Errorf("Injected error %d", i)
+			checkApp.SyncFn = func() error { return injectedError }
+
+			err = store.Sync()
+			require.ErrorIs(t, err, injectedError)
+
+			err = store.Close()
 			require.NoError(t, err)
 
-			_, err = tx.AsyncCommit()
-			require.ErrorIs(t, err, ErrAlreadyClosed)
-		}()
-
-		// wait for the tx to be waiting for sync to happen
-		time.Sleep(10 * time.Millisecond)
-
-		injectedError = fmt.Errorf("Injected error %d", i)
-		checkApp.SyncFn = func() error { return injectedError }
-
-		err = store.Sync()
-		require.ErrorIs(t, err, injectedError)
-
-		err = store.Close()
-		require.NoError(t, err)
-
-		checkApp.SyncFn = func() error { return nil }
-	}
+			checkApp.SyncFn = func() error { return nil }
+		}
+	})
 
 	// Errors during close
-	store, err := OpenWith("edge_cases", vLogs, txLog, cLog, opts)
+	dir, err := ioutil.TempDir("", "edge_cases")
 	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	store, err := OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+	require.NoError(t, err)
+
 	err = store.aht.Close()
 	require.NoError(t, err)
+
 	err = store.Close()
 	require.ErrorIs(t, err, ahtree.ErrAlreadyClosed)
 
@@ -644,16 +786,26 @@ func TestImmudbStoreEdgeCases(t *testing.T) {
 		injectedError = fmt.Errorf("Injected error %d", i)
 		checkApp.CloseFn = func() error { return injectedError }
 
-		store, err := OpenWith("edge_cases", vLogs, txLog, cLog, opts)
+		dir, err := ioutil.TempDir("", "edge_cases")
 		require.NoError(t, err)
+		defer os.RemoveAll(dir)
+
+		store, err := OpenWith(dir, vLogs, txLog, cLog, DefaultOptions())
+		require.NoError(t, err)
+
 		err = store.Close()
 		require.ErrorIs(t, err, injectedError)
 
 		checkApp.CloseFn = func() error { return nil }
 	}
 
-	immuStore, err := Open("edge_cases", opts)
+	dir, err = ioutil.TempDir("", "edge_cases")
 	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	immuStore, err := Open(dir, DefaultOptions().WithMaxConcurrency(1))
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
 
 	var zeroTime time.Time
 
@@ -668,7 +820,7 @@ func TestImmudbStoreEdgeCases(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = immuStore.fetchAllocTx()
-	require.Equal(t, ErrMaxConcurrencyLimitExceeded, err)
+	require.ErrorIs(t, err, ErrMaxConcurrencyLimitExceeded)
 
 	immuStore.releaseAllocTx(tx1)
 
@@ -683,16 +835,16 @@ func TestImmudbStoreEdgeCases(t *testing.T) {
 	targetTx := newTx(1, 1)
 	targetTx.header.ID = 1
 	_, err = immuStore.DualProof(sourceTx.Header(), targetTx.Header())
-	require.Equal(t, ErrSourceTxNewerThanTargetTx, err)
+	require.ErrorIs(t, err, ErrSourceTxNewerThanTargetTx)
 
 	_, err = immuStore.LinearProof(2, 1)
-	require.Equal(t, ErrSourceTxNewerThanTargetTx, err)
+	require.ErrorIs(t, err, ErrSourceTxNewerThanTargetTx)
 
 	_, err = immuStore.LinearProof(1, uint64(1+immuStore.maxLinearProofLen))
-	require.Equal(t, ErrLinearProofMaxLenExceeded, err)
+	require.ErrorIs(t, err, ErrLinearProofMaxLenExceeded)
 
 	_, err = sourceTx.EntryOf([]byte{1, 2, 3})
-	require.Equal(t, ErrKeyNotFound, err)
+	require.ErrorIs(t, err, ErrKeyNotFound)
 
 	t.Run("validateEntries", func(t *testing.T) {
 		err = immuStore.validateEntries(nil)
@@ -781,10 +933,13 @@ func TestImmudbStoreEdgeCases(t *testing.T) {
 }
 
 func TestImmudbSetBlErr(t *testing.T) {
-	opts := DefaultOptions().WithMaxConcurrency(1)
-	immuStore, err := Open("data_bl_err", opts)
+	dir, err := ioutil.TempDir("", "data_bl_err")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_bl_err")
+	defer os.RemoveAll(dir)
+
+	opts := DefaultOptions().WithMaxConcurrency(1)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 
 	defer immustoreClose(t, immuStore)
 
@@ -795,10 +950,13 @@ func TestImmudbSetBlErr(t *testing.T) {
 }
 
 func TestImmudbTxOffsetAndSize(t *testing.T) {
-	opts := DefaultOptions().WithMaxConcurrency(1)
-	immuStore, err := Open("data_tx_off_sz", opts)
+	dir, err := ioutil.TempDir("", "data_tx_off_sz")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_tx_off_sz")
+	defer os.RemoveAll(dir)
+
+	opts := DefaultOptions().WithMaxConcurrency(1)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 
 	defer immustoreClose(t, immuStore)
 
@@ -810,10 +968,13 @@ func TestImmudbTxOffsetAndSize(t *testing.T) {
 }
 
 func TestImmudbStoreIndexing(t *testing.T) {
-	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, err := Open("data_indexing", opts)
+	dir, err := ioutil.TempDir("", "data_indexing")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_indexing")
+	defer os.RemoveAll(dir)
+
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 	require.NotNil(t, immuStore)
 
 	defer immustoreClose(t, immuStore)
@@ -969,9 +1130,13 @@ func TestImmudbStoreIndexing(t *testing.T) {
 }
 
 func TestImmudbStoreRWTransactions(t *testing.T) {
+	dir, err := ioutil.TempDir("", "data_rwtx")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
 	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, _ := Open("data_tx", opts)
-	defer os.RemoveAll("data_tx")
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 
 	defer immustoreClose(t, immuStore)
 
@@ -1056,13 +1221,13 @@ func TestImmudbStoreRWTransactions(t *testing.T) {
 
 	t.Run("read-your-own-writes should be possible before commit", func(t *testing.T) {
 		_, err := immuStore.Get([]byte("key1"))
-		require.ErrorIs(t, err, ErrKeyNotFound)
+		require.ErrorIs(t, err, embedded.ErrKeyNotFound)
 
 		tx, err := immuStore.NewTx()
 		require.NoError(t, err)
 
 		_, err = tx.Get([]byte("key1"))
-		require.ErrorIs(t, err, ErrKeyNotFound)
+		require.ErrorIs(t, err, embedded.ErrKeyNotFound)
 
 		err = tx.Set([]byte("key1"), nil, []byte("value1"))
 		require.NoError(t, err)
@@ -1099,7 +1264,7 @@ func TestImmudbStoreRWTransactions(t *testing.T) {
 		require.Equal(t, []byte("value1"), v)
 
 		_, err = immuStore.Get([]byte("key1"))
-		require.ErrorIs(t, err, ErrKeyNotFound)
+		require.ErrorIs(t, err, embedded.ErrKeyNotFound)
 
 		_, err = tx.Commit()
 		require.NoError(t, err)
@@ -1338,9 +1503,13 @@ func TestImmudbStoreRWTransactions(t *testing.T) {
 }
 
 func TestImmudbStoreKVMetadata(t *testing.T) {
+	dir, err := ioutil.TempDir("", "data_kv_metadata")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
 	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, _ := Open("data_kv_metadata", opts)
-	defer os.RemoveAll("data_kv_metadata")
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 
 	defer immustoreClose(t, immuStore)
 
@@ -1410,9 +1579,13 @@ func TestImmudbStoreKVMetadata(t *testing.T) {
 }
 
 func TestImmudbStoreNonIndexableEntries(t *testing.T) {
+	dir, err := ioutil.TempDir("", "data_kv_metadata_non_indexable")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
 	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, _ := Open("data_kv_metadata_non_indexable", opts)
-	defer os.RemoveAll("data_kv_metadata_non_indexable")
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 
 	defer immustoreClose(t, immuStore)
 
@@ -1479,12 +1652,15 @@ func TestImmudbStoreNonIndexableEntries(t *testing.T) {
 }
 
 func TestImmudbStoreCommitWith(t *testing.T) {
-	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, err := Open("data_commit_with", opts)
+	dir, err := ioutil.TempDir("", "data_commit_with")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_commit_with")
+	defer os.RemoveAll(dir)
 
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 	require.NotNil(t, immuStore)
+
 	defer immustoreClose(t, immuStore)
 
 	_, err = immuStore.CommitWith(nil, false)
@@ -1494,7 +1670,7 @@ func TestImmudbStoreCommitWith(t *testing.T) {
 		return nil, nil, nil
 	}
 	_, err = immuStore.CommitWith(callback, false)
-	require.Equal(t, ErrorNoEntriesProvided, err)
+	require.ErrorIs(t, err, ErrorNoEntriesProvided)
 
 	callback = func(txID uint64, index KeyIndex) ([]*EntrySpec, []Precondition, error) {
 		return nil, nil, errors.New("error")
@@ -1531,14 +1707,17 @@ func TestImmudbStoreCommitWith(t *testing.T) {
 }
 
 func TestImmudbStoreHistoricalValues(t *testing.T) {
+	dir, err := ioutil.TempDir("", "data_historical")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
 	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
 	opts.WithIndexOptions(opts.IndexOpts.WithFlushThld(10))
 
-	immuStore, err := Open("data_historical", opts)
+	immuStore, err := Open(dir, opts)
 	require.NoError(t, err)
-	defer os.RemoveAll("data_historical")
-
 	require.NotNil(t, immuStore)
+
 	defer immustoreClose(t, immuStore)
 
 	txCount := 10
@@ -1566,9 +1745,6 @@ func TestImmudbStoreHistoricalValues(t *testing.T) {
 
 	err = immuStore.CompactIndex()
 	require.NoError(t, err)
-
-	err = immuStore.CompactIndex()
-	require.ErrorIs(t, err, tbtree.ErrCompactionThresholdNotReached)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -1637,23 +1813,28 @@ func TestImmudbStoreHistoricalValues(t *testing.T) {
 }
 
 func TestImmudbStoreCompactionFailureForRemoteStorage(t *testing.T) {
+	dir, err := ioutil.TempDir("", "data_compaction_remote_storage")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
 	opts := DefaultOptions().WithCompactionDisabled(true)
-	immuStore, err := Open("data_compaction_remote_storage", opts)
+	immuStore, err := Open(dir, opts)
 	require.NoError(t, err)
 
-	defer os.RemoveAll("data_compaction_remote_storage")
 	defer immustoreClose(t, immuStore)
 
 	err = immuStore.CompactIndex()
-	require.Equal(t, ErrCompactionUnsupported, err)
+	require.ErrorIs(t, err, ErrCompactionUnsupported)
 }
 
 func TestImmudbStoreInclusionProof(t *testing.T) {
-	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, err := Open("data_inclusion_proof", opts)
+	dir, err := ioutil.TempDir("", "data_inclusion_proof")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_inclusion_proof")
+	defer os.RemoveAll(dir)
 
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 	require.NotNil(t, immuStore)
 
 	txCount := 100
@@ -1694,7 +1875,7 @@ func TestImmudbStoreInclusionProof(t *testing.T) {
 	}, false)
 	require.ErrorIs(t, err, ErrAlreadyClosed)
 
-	immuStore, err = Open("data_inclusion_proof", opts)
+	immuStore, err = Open(dir, opts)
 	require.NoError(t, err)
 
 	defer immustoreClose(t, immuStore)
@@ -1759,10 +1940,13 @@ func TestImmudbStoreInclusionProof(t *testing.T) {
 }
 
 func TestLeavesMatchesAHTSync(t *testing.T) {
-	opts := DefaultOptions().WithSynced(false).WithMaxLinearProofLen(0).WithMaxConcurrency(1)
-	immuStore, err := Open("data_leaves_alh", opts)
+	dir, err := ioutil.TempDir("", "data_leaves_alh")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_leaves_alh")
+	defer os.RemoveAll(dir)
+
+	opts := DefaultOptions().WithSynced(false).WithMaxLinearProofLen(0).WithMaxConcurrency(1)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 
 	defer immustoreClose(t, immuStore)
 
@@ -1827,10 +2011,13 @@ func TestLeavesMatchesAHTSync(t *testing.T) {
 }
 
 func TestLeavesMatchesAHTASync(t *testing.T) {
-	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, err := Open("data_leaves_alh_async", opts)
+	dir, err := ioutil.TempDir("", "data_leaves_alh_async")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_leaves_alh_async")
+	defer os.RemoveAll(dir)
+
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 
 	defer immustoreClose(t, immuStore)
 
@@ -1884,10 +2071,13 @@ func TestLeavesMatchesAHTASync(t *testing.T) {
 }
 
 func TestImmudbStoreConsistencyProof(t *testing.T) {
-	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, err := Open("data_consistency_proof", opts)
+	dir, err := ioutil.TempDir("", "data_consistency_proof")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_consistency_proof")
+	defer os.RemoveAll(dir)
+
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 
 	defer immustoreClose(t, immuStore)
 
@@ -1945,10 +2135,13 @@ func TestImmudbStoreConsistencyProof(t *testing.T) {
 }
 
 func TestImmudbStoreConsistencyProofAgainstLatest(t *testing.T) {
-	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, err := Open("data_consistency_proof_latest", opts)
+	dir, err := ioutil.TempDir("", "data_consistency_proof_latest")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_consistency_proof_latest")
+	defer os.RemoveAll(dir)
+
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 
 	defer immustoreClose(t, immuStore)
 
@@ -2010,11 +2203,13 @@ func TestImmudbStoreConsistencyProofAgainstLatest(t *testing.T) {
 }
 
 func TestImmudbStoreConsistencyProofReopened(t *testing.T) {
-	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, err := Open("data_consistency_proof_reopen", opts)
+	dir, err := ioutil.TempDir("", "data_consistency_proof_reopen")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_consistency_proof_reopen")
+	defer os.RemoveAll(dir)
 
+	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
 	require.NotNil(t, immuStore)
 
 	txCount := 16
@@ -2024,7 +2219,7 @@ func TestImmudbStoreConsistencyProofReopened(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = tx.Commit()
-	require.Equal(t, ErrorNoEntriesProvided, err)
+	require.ErrorIs(t, err, ErrorNoEntriesProvided)
 
 	for i := 0; i < txCount; i++ {
 		tx, err := immuStore.NewWriteOnlyTx()
@@ -2056,9 +2251,9 @@ func TestImmudbStoreConsistencyProofReopened(t *testing.T) {
 	err = immuStore.Close()
 	require.NoError(t, err)
 
-	os.RemoveAll("data_consistency_proof_reopen/aht")
+	os.RemoveAll(filepath.Join(dir, "aht"))
 
-	immuStore, err = Open("data_consistency_proof_reopen", opts.WithMaxValueLen(opts.MaxValueLen-1))
+	immuStore, err = Open(dir, opts.WithMaxValueLen(opts.MaxValueLen-1))
 	require.NoError(t, err)
 
 	txholder := tempTxHolder(t, immuStore)
@@ -2110,7 +2305,9 @@ func TestImmudbStoreConsistencyProofReopened(t *testing.T) {
 }
 
 func TestReOpenningImmudbStore(t *testing.T) {
-	defer os.RemoveAll("data_reopenning")
+	dir, err := ioutil.TempDir("", "data_reopenning")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
 
 	itCount := 3
 	txCount := 100
@@ -2118,7 +2315,7 @@ func TestReOpenningImmudbStore(t *testing.T) {
 
 	for it := 0; it < itCount; it++ {
 		opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-		immuStore, err := Open("data_reopenning", opts)
+		immuStore, err := Open(dir, opts)
 		require.NoError(t, err)
 
 		for i := 0; i < txCount; i++ {
@@ -2147,7 +2344,9 @@ func TestReOpenningImmudbStore(t *testing.T) {
 }
 
 func TestReOpenningWithCompressionEnabledImmudbStore(t *testing.T) {
-	defer os.RemoveAll("data_compression")
+	dir, err := ioutil.TempDir("", "data_compression")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
 
 	itCount := 3
 	txCount := 100
@@ -2160,7 +2359,7 @@ func TestReOpenningWithCompressionEnabledImmudbStore(t *testing.T) {
 			WithCompresionLevel(appendable.DefaultCompression).
 			WithMaxConcurrency(1)
 
-		immuStore, err := Open("data_compression", opts)
+		immuStore, err := Open(dir, opts)
 		require.NoError(t, err)
 
 		for i := 0; i < txCount; i++ {
@@ -2189,10 +2388,9 @@ func TestReOpenningWithCompressionEnabledImmudbStore(t *testing.T) {
 }
 
 func TestUncommittedTxOverwriting(t *testing.T) {
-	path := "data_overwriting"
-	err := os.Mkdir(path, 0700)
+	path, err := ioutil.TempDir("", "data_overwriting")
 	require.NoError(t, err)
-	defer os.RemoveAll("data_overwriting")
+	defer os.RemoveAll(path)
 
 	opts := DefaultOptions().WithMaxConcurrency(3)
 
@@ -2204,7 +2402,7 @@ func TestUncommittedTxOverwriting(t *testing.T) {
 
 	appendableOpts := multiapp.DefaultOptions().
 		WithReadOnly(opts.ReadOnly).
-		WithSynced(opts.Synced).
+		WithRetryableSync(opts.Synced).
 		WithFileMode(opts.FileMode).
 		WithMetadata(metadata.Bytes())
 
@@ -2236,7 +2434,7 @@ func TestUncommittedTxOverwriting(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = txReader.Read()
-	require.Equal(t, ErrNoMoreEntries, err)
+	require.ErrorIs(t, err, ErrNoMoreEntries)
 
 	txCount := 100
 	eCount := 64
@@ -2260,7 +2458,7 @@ func TestUncommittedTxOverwriting(t *testing.T) {
 
 		txhdr, err := tx.Commit()
 		if err != nil {
-			require.Equal(t, errEmulatedAppendableError, err)
+			require.ErrorIs(t, err, errEmulatedAppendableError)
 			emulatedFailures++
 		} else {
 			require.Equal(t, uint64(i+1-emulatedFailures), txhdr.ID)
@@ -2306,7 +2504,7 @@ func TestUncommittedTxOverwriting(t *testing.T) {
 	}
 
 	_, err = r.Read()
-	require.Equal(t, ErrNoMoreEntries, err)
+	require.ErrorIs(t, err, ErrNoMoreEntries)
 
 	require.Equal(t, uint64(txCount-emulatedFailures), immuStore.TxCount())
 
@@ -2315,13 +2513,19 @@ func TestUncommittedTxOverwriting(t *testing.T) {
 }
 
 func TestExportAndReplicateTx(t *testing.T) {
-	defer os.RemoveAll("data_master_export_replicate")
-	masterStore, err := Open("data_master_export_replicate", DefaultOptions())
+	masterDir, err := ioutil.TempDir("", "data_master_export_replicate")
+	require.NoError(t, err)
+	defer os.RemoveAll(masterDir)
+
+	masterStore, err := Open(masterDir, DefaultOptions())
 	require.NoError(t, err)
 	defer immustoreClose(t, masterStore)
 
-	defer os.RemoveAll("data_replica_export_replicate")
-	replicaStore, err := Open("data_replica_export_replicate", DefaultOptions())
+	replicaDir, err := ioutil.TempDir("", "data_replica_export_replicate")
+	require.NoError(t, err)
+	defer os.RemoveAll(replicaDir)
+
+	replicaStore, err := Open(replicaDir, DefaultOptions())
 	require.NoError(t, err)
 	defer immustoreClose(t, replicaStore)
 
@@ -2354,13 +2558,19 @@ func TestExportAndReplicateTx(t *testing.T) {
 }
 
 func TestExportAndReplicateTxCornerCases(t *testing.T) {
-	defer os.RemoveAll("data_master_export_replicate")
-	masterStore, err := Open("data_master_export_replicate", DefaultOptions())
+	masterDir, err := ioutil.TempDir("", "data_master_export_replicate")
+	require.NoError(t, err)
+	defer os.RemoveAll(masterDir)
+
+	masterStore, err := Open(masterDir, DefaultOptions())
 	require.NoError(t, err)
 	defer immustoreClose(t, masterStore)
 
-	defer os.RemoveAll("data_replica_export_replicate")
-	replicaStore, err := Open("data_replica_export_replicate", DefaultOptions())
+	replicaDir, err := ioutil.TempDir("", "data_replica_export_replicate")
+	require.NoError(t, err)
+	defer os.RemoveAll(replicaDir)
+
+	replicaStore, err := Open(replicaDir, DefaultOptions())
 	require.NoError(t, err)
 	defer immustoreClose(t, replicaStore)
 
@@ -2409,14 +2619,20 @@ func TestExportAndReplicateTxCornerCases(t *testing.T) {
 }
 
 func TestExportAndReplicateTxSimultaneousWriters(t *testing.T) {
-	defer os.RemoveAll("data_master_export_replicate")
-	masterStore, err := Open("data_master_export_replicate", DefaultOptions())
+	masterDir, err := ioutil.TempDir("", "data_master_export_replicate_writers")
+	require.NoError(t, err)
+	defer os.RemoveAll(masterDir)
+
+	masterStore, err := Open(masterDir, DefaultOptions())
 	require.NoError(t, err)
 	defer immustoreClose(t, masterStore)
 
-	defer os.RemoveAll("data_replica_export_replicate")
+	replicaDir, err := ioutil.TempDir("", "data_replica_export_replicate_writers")
+	require.NoError(t, err)
+	defer os.RemoveAll(replicaDir)
+
 	replicaOpts := DefaultOptions().WithMaxConcurrency(100)
-	replicaStore, err := Open("data_replica_export_replicate", replicaOpts)
+	replicaStore, err := Open(replicaDir, replicaOpts)
 	require.NoError(t, err)
 	defer immustoreClose(t, replicaStore)
 
@@ -2482,11 +2698,14 @@ func (la *FailingAppendable) Append(bs []byte) (off int64, n int, err error) {
 }
 
 func TestImmudbStoreCommitWithPreconditions(t *testing.T) {
-	immuStore, err := Open("preconditions_store", DefaultOptions().WithMaxConcurrency(1))
+	dir, err := ioutil.TempDir("", "preconditions_store")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	immuStore, err := Open(dir, DefaultOptions().WithMaxConcurrency(1))
 	require.NoError(t, err)
 
 	defer immuStore.Close()
-	defer os.RemoveAll("preconditions_store")
 
 	// set initial value
 	otx, err := immuStore.NewTx()
@@ -2793,7 +3012,6 @@ func TestImmudbStoreIncompleteCommitWrite(t *testing.T) {
 
 	err = immuStore.Close()
 	require.NoError(t, err)
-
 }
 
 func TestImmudbStoreTruncatedCommitLog(t *testing.T) {
