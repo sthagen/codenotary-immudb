@@ -12,7 +12,7 @@ spec:
   selector:
     matchLabels:
       {{- include "immudb.selectorLabels" . | nindent 6 }}
-  serviceName: {{ include "immudb.fullname" . }}    
+  serviceName: {{ include "immudb.fullname" . }}
   template:
     metadata:
       {{- with .Values.podAnnotations }}
@@ -32,10 +32,12 @@ spec:
       - name: immudb-storage
         persistentVolumeClaim:
           claimName: {{ include "immudb.fullname" . }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
@@ -64,12 +66,15 @@ spec:
               secretKeyRef:
                 name: {{ include "immudb.fullname" . }}-credentials
                 key: immudb-admin-password
-          {{- end}}      
+          {{- end}}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
           - mountPath: /var/lib/immudb
             name: immudb-storage
+            {{- if $.Values.volumeSubPath.enabled }}
+            subPath: {{ $.Values.volumeSubPath.path | quote }}
+            {{- end}}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
