@@ -17,6 +17,7 @@ limitations under the License.
 package server
 
 import (
+	"crypto/sha256"
 	"testing"
 
 	"github.com/codenotary/immudb/embedded/store"
@@ -127,7 +128,7 @@ func TestDummyClosedDatabase(t *testing.T) {
 	_, err = cdb.DescribeTable("", nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
-	err = cdb.WaitForTx(0, nil)
+	err = cdb.WaitForTx(0, true, nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
 	err = cdb.WaitForIndexingUpto(0, nil)
@@ -136,10 +137,24 @@ func TestDummyClosedDatabase(t *testing.T) {
 	_, err = cdb.TxByID(nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
-	_, err = cdb.ExportTxByID(nil)
+	require.False(t, cdb.IsSyncReplicationEnabled())
+
+	err = cdb.EnableSyncReplication()
+	require.ErrorIs(t, err, store.ErrAlreadyClosed)
+
+	err = cdb.DisableSyncReplication()
+	require.ErrorIs(t, err, store.ErrAlreadyClosed)
+
+	_, _, _, err = cdb.ExportTxByID(nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
 	_, err = cdb.ReplicateTx(nil)
+	require.ErrorIs(t, err, store.ErrAlreadyClosed)
+
+	err = cdb.AllowCommitUpto(1, sha256.Sum256(nil))
+	require.ErrorIs(t, err, store.ErrAlreadyClosed)
+
+	err = cdb.DiscardPrecommittedTxsSince(1)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
 	_, err = cdb.VerifiableTxByID(nil)

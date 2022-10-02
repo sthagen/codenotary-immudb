@@ -23,13 +23,15 @@ const (
 	DefaultReadTxPoolSize = 128
 )
 
-//Options database instance options
+// Options database instance options
 type Options struct {
 	dbRootPath string
 
 	storeOpts *store.Options
 
-	replica bool
+	replica         bool
+	syncReplication bool
+	syncFollowers   int // only if !replica
 
 	corruptionChecker bool
 
@@ -81,6 +83,16 @@ func (o *Options) GetStoreOptions() *store.Options {
 // AsReplica sets if the database is a replica
 func (o *Options) AsReplica(replica bool) *Options {
 	o.replica = replica
+	return o
+}
+
+func (o *Options) WithSyncReplication(syncReplication bool) *Options {
+	o.syncReplication = syncReplication
+	return o
+}
+
+func (o *Options) WithSyncFollowers(syncFollowers int) *Options {
+	o.syncFollowers = syncFollowers
 	return o
 }
 

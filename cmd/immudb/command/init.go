@@ -21,8 +21,10 @@ import (
 
 	c "github.com/codenotary/immudb/cmd/helper"
 	"github.com/codenotary/immudb/pkg/logger"
+	"github.com/codenotary/immudb/pkg/replication"
 	"github.com/codenotary/immudb/pkg/server"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
 
@@ -30,11 +32,18 @@ func (cl *Commandline) setupFlags(cmd *cobra.Command, options *server.Options) {
 	cmd.Flags().String("dir", options.Dir, "data folder")
 	cmd.Flags().IntP("port", "p", options.Port, "port number")
 	cmd.Flags().StringP("address", "a", options.Address, "bind address")
-	cmd.Flags().Bool("replication-enabled", false, "set systemdb and defaultdb as replica")
+	cmd.Flags().Bool("replication-enabled", false, "set systemdb and defaultdb as replica") // deprecated, use replication-is-replica instead
+	cmd.Flags().Bool("replication-is-replica", false, "set systemdb and defaultdb as replica")
+	cmd.Flags().Bool("replication-sync-enabled", false, "enable synchronous replication")
+	cmd.Flags().Int("replication-sync-followers", 0, "set a minimum number of followers for ack replication before transactions can be committed")
 	cmd.Flags().String("replication-master-address", "", "master address (if replica=true)")
 	cmd.Flags().Int("replication-master-port", 3322, "master port (if replica=true)")
 	cmd.Flags().String("replication-follower-username", "", "username used for replication of systemdb and defaultdb")
 	cmd.Flags().String("replication-follower-password", "", "password used for replication of systemdb and defaultdb")
+	cmd.Flags().Int("replication-prefetch-tx-buffer-size", options.ReplicationOptions.PrefetchTxBufferSize, "maximum number of prefeched transactions")
+	cmd.Flags().Int("replication-commit-concurrency", options.ReplicationOptions.ReplicationCommitConcurrency, "number of concurrent replications")
+	cmd.Flags().Bool("replication-allow-tx-discarding", replication.DefaultAllowTxDiscarding, "allow precommitted transactions to be discarded if the follower diverges from the master")
+
 	cmd.PersistentFlags().StringVar(&cl.config.CfgFn, "config", "", "config file (default path are configs or $HOME. Default filename is immudb.toml)")
 	cmd.Flags().String("pidfile", options.Pidfile, "pid path with filename e.g. /var/run/immudb.pid")
 	cmd.Flags().String("logfile", options.Logfile, "log path with filename e.g. /tmp/immudb/immudb.log")
@@ -73,6 +82,13 @@ func (cl *Commandline) setupFlags(cmd *cobra.Command, options *server.Options) {
 	cmd.Flags().Duration("session-timeout", 2*time.Minute, "session timeout is a duration after which an inactive session is forcibly closed by the server")
 	cmd.Flags().Duration("sessions-guard-check-interval", 1*time.Minute, "sessions guard check interval")
 	cmd.Flags().MarkHidden("sessions-guard-check-interval")
+
+	cmd.Flags().SetNormalizeFunc(func(f *pflag.FlagSet, name string) pflag.NormalizedName {
+		if name == "replication-enabled" {
+			name = "replication-is-replica"
+		}
+		return pflag.NormalizedName(name)
+	})
 }
 
 func setupDefaults(options *server.Options) {

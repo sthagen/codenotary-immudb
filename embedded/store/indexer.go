@@ -17,6 +17,7 @@ limitations under the License.
 package store
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"path/filepath"
@@ -37,8 +38,9 @@ type indexer struct {
 
 	index *tbtree.TBtree
 
-	cancellation chan struct{}
-	wHub         *watchers.WatchersHub
+	ctx        context.Context
+	cancelFunc context.CancelFunc
+	wHub       *watchers.WatchersHub
 
 	state     int
 	stateCond *sync.Cond
@@ -260,7 +262,7 @@ func (idx *indexer) FlushIndex(cleanupPercentage float32, synced bool) (err erro
 func (idx *indexer) stop() {
 	idx.stateCond.L.Lock()
 	idx.state = stopped
-	close(idx.cancellation)
+	idx.cancelFunc()
 	idx.stateCond.L.Unlock()
 	idx.stateCond.Signal()
 
@@ -270,8 +272,8 @@ func (idx *indexer) stop() {
 func (idx *indexer) resume() {
 	idx.stateCond.L.Lock()
 	idx.state = running
-	idx.cancellation = make(chan struct{})
-	go idx.doIndexing(idx.cancellation)
+	idx.ctx, idx.cancelFunc = context.WithCancel(context.Background())
+	go idx.doIndexing()
 	idx.stateCond.L.Unlock()
 
 	idx.store.notify(Info, true, "Indexing in progress at '%s'", idx.store.path)
@@ -318,8 +320,8 @@ func (idx *indexer) Pause() {
 	idx.stateCond.L.Unlock()
 }
 
-func (idx *indexer) doIndexing(cancellation <-chan struct{}) {
-	committedTxID := idx.store.lastCommittedTxID()
+func (idx *indexer) doIndexing() {
+	committedTxID := idx.store.LastCommittedTxID()
 	idx.metricsLastCommittedTrx.Set(float64(committedTxID))
 
 	for {
@@ -330,7 +332,7 @@ func (idx *indexer) doIndexing(cancellation <-chan struct{}) {
 			idx.wHub.DoneUpto(lastIndexedTx)
 		}
 
-		err := idx.store.commitWHub.WaitFor(lastIndexedTx+1, cancellation)
+		err := idx.store.commitWHub.WaitFor(lastIndexedTx+1, idx.ctx.Done())
 		if err == watchers.ErrCancellationRequested || err == watchers.ErrAlreadyClosed {
 			return
 		}
@@ -339,7 +341,7 @@ func (idx *indexer) doIndexing(cancellation <-chan struct{}) {
 			time.Sleep(60 * time.Second)
 		}
 
-		committedTxID := idx.store.lastCommittedTxID()
+		committedTxID := idx.store.LastCommittedTxID()
 		idx.metricsLastCommittedTrx.Set(float64(committedTxID))
 
 		txsToIndex := committedTxID - lastIndexedTx
@@ -370,7 +372,7 @@ func (idx *indexer) doIndexing(cancellation <-chan struct{}) {
 }
 
 func (idx *indexer) indexTx(txID uint64) error {
-	err := idx.store.ReadTx(txID, idx.tx)
+	err := idx.store.readTx(txID, false, idx.tx)
 	if err != nil {
 		return err
 	}

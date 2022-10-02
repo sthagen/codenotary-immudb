@@ -19,6 +19,9 @@ package replication
 import "time"
 
 const DefaultChunkSize int = 64 * 1024 // 64 * 1024 64 KiB
+const DefaultPrefetchTxBufferSize int = 100
+const DefaultReplicationCommitConcurrency int = 10
+const DefaultAllowTxDiscarding = false
 
 type Options struct {
 	masterDatabase   string
@@ -28,6 +31,11 @@ type Options struct {
 	followerPassword string
 
 	streamChunkSize int
+
+	prefetchTxBufferSize         int
+	replicationCommitConcurrency int
+
+	allowTxDiscarding bool
 
 	delayer Delayer
 }
@@ -41,14 +49,19 @@ func DefaultOptions() *Options {
 	}
 
 	return &Options{
-		delayer:         delayer,
-		streamChunkSize: DefaultChunkSize,
+		delayer:                      delayer,
+		streamChunkSize:              DefaultChunkSize,
+		prefetchTxBufferSize:         DefaultPrefetchTxBufferSize,
+		replicationCommitConcurrency: DefaultReplicationCommitConcurrency,
+		allowTxDiscarding:            DefaultAllowTxDiscarding,
 	}
 }
 
 func (opts *Options) Valid() bool {
 	return opts != nil &&
 		opts.streamChunkSize > 0 &&
+		opts.prefetchTxBufferSize > 0 &&
+		opts.replicationCommitConcurrency > 0 &&
 		opts.delayer != nil
 }
 
@@ -85,6 +98,24 @@ func (o *Options) WithFollowerPassword(followerPassword string) *Options {
 // WithStreamChunkSize sets streaming chunk size
 func (o *Options) WithStreamChunkSize(streamChunkSize int) *Options {
 	o.streamChunkSize = streamChunkSize
+	return o
+}
+
+// WithPrefetchTxBufferSize sets tx buffer size
+func (o *Options) WithPrefetchTxBufferSize(prefetchTxBufferSize int) *Options {
+	o.prefetchTxBufferSize = prefetchTxBufferSize
+	return o
+}
+
+// WithReplicationCommitConcurrency sets the number of goroutines doing replication
+func (o *Options) WithReplicationCommitConcurrency(replicationCommitConcurrency int) *Options {
+	o.replicationCommitConcurrency = replicationCommitConcurrency
+	return o
+}
+
+// WithAllowTxDiscarding enable auto discarding of precommitted transactions
+func (o *Options) WithAllowTxDiscarding(allowTxDiscarding bool) *Options {
+	o.allowTxDiscarding = allowTxDiscarding
 	return o
 }
 

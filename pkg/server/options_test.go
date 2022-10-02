@@ -25,6 +25,7 @@ import (
 	"github.com/codenotary/immudb/pkg/stream"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOptions(t *testing.T) {
@@ -59,8 +60,45 @@ func TestOptions(t *testing.T) {
 	}
 }
 
+func TestReplicationOptions(t *testing.T) {
+	repOpts := &ReplicationOptions{}
+	repOpts.
+		WithIsReplica(true).
+		WithSyncReplication(false).
+		WithSyncFollowers(0).
+		WithMasterAddress("localhost").
+		WithMasterPort(3322).
+		WithFollowerUsername("follower-user").
+		WithFollowerPassword("follower-pwd").
+		WithPrefetchTxBufferSize(100).
+		WithReplicationCommitConcurrency(5).
+		WithAllowTxDiscarding(true)
+
+	require.True(t, repOpts.IsReplica)
+	require.False(t, repOpts.SyncReplication)
+	require.Zero(t, repOpts.SyncFollowers)
+	require.Equal(t, "localhost", repOpts.MasterAddress)
+	require.Equal(t, 3322, repOpts.MasterPort)
+	require.Equal(t, "follower-user", repOpts.FollowerUsername)
+	require.Equal(t, "follower-pwd", repOpts.FollowerPassword)
+	require.Equal(t, 100, repOpts.PrefetchTxBufferSize)
+	require.Equal(t, 5, repOpts.ReplicationCommitConcurrency)
+	require.True(t, repOpts.AllowTxDiscarding)
+
+	// master-related settings
+	repOpts.
+		WithIsReplica(false).
+		WithSyncReplication(true).
+		WithSyncFollowers(1)
+
+	require.False(t, repOpts.IsReplica)
+	require.True(t, repOpts.SyncReplication)
+	require.Equal(t, 1, repOpts.SyncFollowers)
+}
+
 func TestSetOptions(t *testing.T) {
 	tlsConfig := &tls.Config{Certificates: []tls.Certificate{}}
+
 	op := DefaultOptions().WithDir("immudb_dir").WithNetwork("udp").
 		WithAddress("localhost").WithPort(2048).
 		WithPidfile("immu.pid").WithAuth(false).
@@ -112,6 +150,7 @@ func TestOptionsString(t *testing.T) {
 Data dir         : ./data
 Address          : 0.0.0.0:3322
 Metrics address  : 0.0.0.0:9497/metrics
+Sync replication : false
 Config file      : configs/immudb.toml
 PID file         : immu.pid
 Log file         : immu.log
@@ -134,11 +173,45 @@ Superadmin default credentials
 	assert.Equal(t, expected, op.String())
 }
 
+func TestOptionsWithSyncReplicationString(t *testing.T) {
+	expected := `================ Config ================
+Data dir         : ./data
+Address          : 0.0.0.0:3322
+Metrics address  : 0.0.0.0:9497/metrics
+Sync replication : true
+Sync followers   : 1
+Config file      : configs/immudb.toml
+PID file         : immu.pid
+Log file         : immu.log
+Max recv msg size: 33554432
+Auth enabled     : true
+Dev mode         : false
+Default database : defaultdb
+Maintenance mode : false
+Synced mode      : true
+----------------------------------------
+Superadmin default credentials
+   Username      : immudb
+   Password      : immudb
+========================================`
+
+	op := DefaultOptions().
+		WithPidfile("immu.pid").
+		WithLogfile("immu.log")
+
+	op.ReplicationOptions.
+		WithSyncReplication(true).
+		WithSyncFollowers(1)
+
+	assert.Equal(t, expected, op.String())
+}
+
 func TestOptionsStringWithS3(t *testing.T) {
 	expected := `================ Config ================
 Data dir         : ./data
 Address          : 0.0.0.0:3322
 Metrics address  : 0.0.0.0:9497/metrics
+Sync replication : false
 Config file      : configs/immudb.toml
 PID file         : immu.pid
 Log file         : immu.log
@@ -180,6 +253,7 @@ Data dir         : ./data
 Address          : 0.0.0.0:3322
 Metrics address  : 0.0.0.0:9497/metrics
 pprof enabled    : true
+Sync replication : false
 Config file      : configs/immudb.toml
 PID file         : immu.pid
 Log file         : immu.log

@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"path/filepath"
 	"time"
 
@@ -50,6 +51,18 @@ func (db *closedDB) AsReplica(asReplica bool) {
 
 func (db *closedDB) IsReplica() bool {
 	return false
+}
+
+func (db *closedDB) IsSyncReplicationEnabled() bool {
+	return false
+}
+
+func (db *closedDB) EnableSyncReplication() error {
+	return store.ErrAlreadyClosed
+}
+
+func (db *closedDB) DisableSyncReplication() error {
+	return store.ErrAlreadyClosed
 }
 
 func (db *closedDB) MaxResultSize() int {
@@ -180,7 +193,7 @@ func (db *closedDB) DescribeTable(table string, tx *sql.SQLTx) (*schema.SQLQuery
 	return nil, store.ErrAlreadyClosed
 }
 
-func (db *closedDB) WaitForTx(txID uint64, cancellation <-chan struct{}) error {
+func (db *closedDB) WaitForTx(txID uint64, allowPrecommitted bool, cancellation <-chan struct{}) error {
 	return store.ErrAlreadyClosed
 }
 
@@ -192,12 +205,20 @@ func (db *closedDB) TxByID(req *schema.TxRequest) (*schema.Tx, error) {
 	return nil, store.ErrAlreadyClosed
 }
 
-func (db *closedDB) ExportTxByID(req *schema.ExportTxRequest) ([]byte, error) {
-	return nil, store.ErrAlreadyClosed
+func (db *closedDB) ExportTxByID(req *schema.ExportTxRequest) (txbs []byte, mayCommitUpToTxID uint64, mayCommitUpToAlh [sha256.Size]byte, err error) {
+	return nil, 0, mayCommitUpToAlh, store.ErrAlreadyClosed
 }
 
 func (db *closedDB) ReplicateTx(exportedTx []byte) (*schema.TxHeader, error) {
 	return nil, store.ErrAlreadyClosed
+}
+
+func (db *closedDB) AllowCommitUpto(txID uint64, alh [sha256.Size]byte) error {
+	return store.ErrAlreadyClosed
+}
+
+func (db *closedDB) DiscardPrecommittedTxsSince(txID uint64) error {
+	return store.ErrAlreadyClosed
 }
 
 func (db *closedDB) VerifiableTxByID(req *schema.VerifiableTxRequest) (*schema.VerifiableTx, error) {

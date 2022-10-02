@@ -110,6 +110,12 @@ func (s *ImmuServer) Initialize() error {
 		return logErr(s.Logger, "Unable to create data dir: %v", err)
 	}
 
+	systemDbRootDir := s.OS.Join(dataDir, s.Options.GetDefaultDBName())
+
+	if s.UUID, err = getOrSetUUID(dataDir, systemDbRootDir); err != nil {
+		return logErr(s.Logger, "Unable to get or set uuid: %v", err)
+	}
+
 	s.remoteStorage, err = s.createRemoteStorageInstance()
 	if err != nil {
 		return logErr(s.Logger, "Unable to open remote storage: %v", err)
@@ -174,12 +180,6 @@ func (s *ImmuServer) Initialize() error {
 		if err != nil {
 			return logErr(s.Logger, "Immudb unable to listen: %v", err)
 		}
-	}
-
-	systemDbRootDir := s.OS.Join(dataDir, s.Options.GetDefaultDBName())
-
-	if s.UUID, err = getOrSetUUID(dataDir, systemDbRootDir); err != nil {
-		return logErr(s.Logger, "Unable to get or set uuid: %v", err)
 	}
 
 	if s.remoteStorage != nil {
@@ -420,9 +420,21 @@ func (s *ImmuServer) loadSystemDatabase(dataDir string, remoteStorage remotestor
 
 	//sys admin can have an empty array of databases as it has full access
 	if !s.sysDB.IsReplica() {
+		err = s.sysDB.DisableSyncReplication()
+		if err != nil {
+			return err
+		}
+
 		adminUsername, _, err := s.insertNewUser([]byte(auth.SysAdminUsername), []byte(adminPassword), auth.PermissionSysAdmin, "*", false, "")
 		if err != nil {
 			return logErr(s.Logger, "%v", err)
+		}
+
+		if s.Options.ReplicationOptions.SyncReplication {
+			err = s.sysDB.EnableSyncReplication()
+			if err != nil {
+				return err
+			}
 		}
 
 		s.Logger.Infof("Admin user '%s' successfully created", adminUsername)
@@ -562,6 +574,7 @@ func (s *ImmuServer) replicationInProgressFor(db string) bool {
 
 func (s *ImmuServer) startReplicationFor(db database.DB, dbOpts *dbOptions) error {
 	if !dbOpts.isReplicatorRequired() {
+		s.Logger.Infof("Replication for database '%s' is not required.", db.GetName())
 		return ErrReplicatorNotNeeded
 	}
 
@@ -574,9 +587,12 @@ func (s *ImmuServer) startReplicationFor(db database.DB, dbOpts *dbOptions) erro
 		WithMasterPort(dbOpts.MasterPort).
 		WithFollowerUsername(dbOpts.FollowerUsername).
 		WithFollowerPassword(dbOpts.FollowerPassword).
+		WithPrefetchTxBufferSize(dbOpts.PrefetchTxBufferSize).
+		WithReplicationCommitConcurrency(dbOpts.ReplicationCommitConcurrency).
+		WithAllowTxDiscarding(dbOpts.AllowTxDiscarding).
 		WithStreamChunkSize(s.Options.StreamChunkSize)
 
-	f, err := replication.NewTxReplicator(db, replicatorOpts, s.Logger)
+	f, err := replication.NewTxReplicator(s.UUID, db, replicatorOpts, s.Logger)
 	if err != nil {
 		return err
 	}

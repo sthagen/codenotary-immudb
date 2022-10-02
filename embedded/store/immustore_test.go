@@ -22,6 +22,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"math/rand"
 	"os"
@@ -342,6 +343,9 @@ func TestImmudbStoreEdgeCases(t *testing.T) {
 
 	txLog := &mocked.MockedAppendable{
 		CloseFn: func() error { return nil },
+		ReadAtFn: func(bs []byte, off int64) (int, error) {
+			return 0, io.EOF
+		},
 	}
 
 	cLog := &mocked.MockedAppendable{
@@ -574,6 +578,10 @@ func TestImmudbStoreEdgeCases(t *testing.T) {
 		dir, err := ioutil.TempDir("", "edge_cases")
 		require.NoError(t, err)
 		defer os.RemoveAll(dir)
+
+		txLog.ReadAtFn = func(bs []byte, off int64) (int, error) {
+			return 0, io.EOF
+		}
 
 		cLog.SizeFn = func() (int64, error) {
 			return 0, nil
@@ -1009,7 +1017,7 @@ func TestImmudbStoreIndexing(t *testing.T) {
 	for f := 0; f < 1; f++ {
 		go func() {
 			for {
-				txID, _ := immuStore.Alh()
+				txID, _ := immuStore.CommittedAlh()
 
 				snap, err := immuStore.SnapshotSince(txID)
 				if err != nil {
@@ -1975,7 +1983,7 @@ func TestLeavesMatchesAHTSync(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, uint64(i+1), txhdr.ID)
 
-		err = immuStore.WaitForTx(txhdr.ID, nil)
+		err = immuStore.WaitForTx(txhdr.ID, false, nil)
 		require.NoError(t, err)
 
 		err = immuStore.WaitForIndexingUpto(txhdr.ID, nil)
@@ -2241,7 +2249,7 @@ func TestImmudbStoreConsistencyProofReopened(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, uint64(i+1), txhdr.ID)
 
-		currentID, currentAlh := immuStore.Alh()
+		currentID, currentAlh := immuStore.CommittedAlh()
 		require.Equal(t, txhdr.ID, currentID)
 		require.Equal(t, txhdr.Alh(), currentAlh)
 	}
@@ -2544,7 +2552,7 @@ func TestExportAndReplicateTx(t *testing.T) {
 
 	txholder := tempTxHolder(t, masterStore)
 
-	etx, err := masterStore.ExportTx(1, txholder)
+	etx, err := masterStore.ExportTx(1, false, txholder)
 	require.NoError(t, err)
 
 	rhdr, err := replicaStore.ReplicateTx(etx, false)
@@ -2571,7 +2579,7 @@ func TestExportAndReplicateTxCornerCases(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(replicaDir)
 
-	replicaStore, err := Open(replicaDir, DefaultOptions())
+	replicaStore, err := Open(replicaDir, DefaultOptions().WithMaxActiveTransactions(1))
 	require.NoError(t, err)
 	defer immustoreClose(t, replicaStore)
 
@@ -2590,7 +2598,7 @@ func TestExportAndReplicateTxCornerCases(t *testing.T) {
 	txholder := tempTxHolder(t, masterStore)
 
 	t.Run("prevent replicating broken data", func(t *testing.T) {
-		etx, err := masterStore.ExportTx(1, txholder)
+		etx, err := masterStore.ExportTx(1, false, txholder)
 		require.NoError(t, err)
 
 		for i := range etx {
@@ -2610,6 +2618,7 @@ func TestExportAndReplicateTxCornerCases(t *testing.T) {
 				require.Error(t, err)
 
 				if !errors.Is(err, ErrIllegalArguments) &&
+					!errors.Is(err, ErrMaxActiveTransactionsLimitExceeded) &&
 					!errors.Is(err, ErrCorruptedData) &&
 					!errors.Is(err, ErrNewerVersionOrCorruptedData) {
 					require.Failf(t, "Incorrect error", "Incorrect error received from validation: %v", err)
@@ -2654,7 +2663,7 @@ func TestExportAndReplicateTxSimultaneousWriters(t *testing.T) {
 			require.NotNil(t, hdr)
 
 			txholder := tempTxHolder(t, replicaStore)
-			etx, err := masterStore.ExportTx(hdr.ID, txholder)
+			etx, err := masterStore.ExportTx(hdr.ID, false, txholder)
 			require.NoError(t, err)
 
 			// Replicate the same transactions concurrently, only one must succeed
@@ -2681,6 +2690,78 @@ func TestExportAndReplicateTxSimultaneousWriters(t *testing.T) {
 			require.EqualValues(t, i+1, replicaStore.TxCount())
 		})
 	}
+}
+
+func TestExportAndReplicateTxDisorderedReplication(t *testing.T) {
+	masterDir, err := ioutil.TempDir("", "data_master_export_replicate_disordered_replication")
+	require.NoError(t, err)
+	defer os.RemoveAll(masterDir)
+
+	masterStore, err := Open(masterDir, DefaultOptions())
+	require.NoError(t, err)
+	defer immustoreClose(t, masterStore)
+
+	replicaDir, err := ioutil.TempDir("", "data_master_export_replicate_disordered_replication")
+	require.NoError(t, err)
+	defer os.RemoveAll(replicaDir)
+
+	replicaOpts := DefaultOptions().WithMaxConcurrency(100)
+	replicaStore, err := Open(replicaDir, replicaOpts)
+	require.NoError(t, err)
+	defer immustoreClose(t, replicaStore)
+
+	const txCount = 15
+
+	etxs := make(chan []byte, txCount)
+
+	txholder := tempTxHolder(t, replicaStore)
+
+	for i := 0; i < txCount; i++ {
+		tx, err := masterStore.NewWriteOnlyTx()
+		require.NoError(t, err)
+
+		tx.WithMetadata(NewTxMetadata())
+
+		err = tx.Set([]byte(fmt.Sprintf("key%d", i)), nil, []byte(fmt.Sprintf("value%d", i)))
+		require.NoError(t, err)
+
+		hdr, err := tx.Commit()
+		require.NoError(t, err)
+		require.NotNil(t, hdr)
+
+		etx, err := masterStore.ExportTx(hdr.ID, false, txholder)
+		require.NoError(t, err)
+
+		etxs <- etx
+	}
+
+	close(etxs)
+
+	const replicatorsCount = 3
+
+	var wg sync.WaitGroup
+	wg.Add(replicatorsCount)
+
+	rand.Seed(time.Now().UnixNano())
+
+	for r := 0; r < replicatorsCount; r++ {
+		go func(replicatorID int) {
+			for etx := range etxs {
+				time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+
+				_, err = replicaStore.ReplicateTx(etx, false)
+				require.NoError(t, err)
+			}
+
+			wg.Done()
+		}(r)
+	}
+
+	// it's needed to avoid getting 'already closed' error if the store is closed fast enough
+	wg.Wait()
+
+	err = replicaStore.WaitForTx(uint64(txCount), false, nil)
+	require.NoError(t, err)
 }
 
 var errEmulatedAppendableError = errors.New("emulated appendable error")
@@ -2861,10 +2942,130 @@ func BenchmarkSyncedAppend(b *testing.B) {
 		WithSynced(true).
 		WithAHTOptions(DefaultAHTOptions().WithSyncThld(1_000)).
 		WithSyncFrequency(20 * time.Millisecond).
-		WithMaxActiveTransactions(1000)
+		WithMaxActiveTransactions(100)
 
 	immuStore, _ := Open("data_synced_bench", opts)
 	defer os.RemoveAll("data_synced_bench")
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		workerCount := 100
+
+		var wg sync.WaitGroup
+		wg.Add(workerCount)
+
+		for w := 0; w < workerCount; w++ {
+			go func() {
+				txCount := 100
+				eCount := 1
+
+				committed := 0
+
+				for committed < txCount {
+					tx, err := immuStore.NewWriteOnlyTx()
+					if err != nil {
+						panic(err)
+					}
+
+					for j := 0; j < eCount; j++ {
+						k := make([]byte, 8)
+						binary.BigEndian.PutUint64(k, uint64(i<<4+j))
+
+						v := make([]byte, 8)
+						binary.BigEndian.PutUint64(v, uint64(i<<4+(eCount-j)))
+
+						err = tx.Set(k, nil, v)
+						if err != nil {
+							panic(err)
+						}
+					}
+
+					_, err = tx.AsyncCommit()
+					if err == ErrMaxConcurrencyLimitExceeded || err == ErrMaxActiveTransactionsLimitExceeded {
+						time.Sleep(1 * time.Nanosecond)
+						continue
+					}
+					if err != nil {
+						panic(err)
+					}
+
+					committed++
+				}
+
+				wg.Done()
+			}()
+		}
+
+		wg.Wait()
+	}
+}
+
+func BenchmarkAsyncAppend(b *testing.B) {
+	opts := DefaultOptions().
+		WithSynced(false).
+		WithMaxConcurrency(1).
+		WithMaxActiveTransactions(100)
+
+	immuStore, _ := Open("data_async_bench", opts)
+	defer os.RemoveAll("data_async_bench")
+
+	for i := 0; i < b.N; i++ {
+		txCount := 1000
+		eCount := 1000
+
+		for i := 0; i < txCount; i++ {
+			tx, err := immuStore.NewWriteOnlyTx()
+			if err != nil {
+				panic(err)
+			}
+
+			for j := 0; j < eCount; j++ {
+				k := make([]byte, 8)
+				binary.BigEndian.PutUint64(k, uint64(i<<4+j))
+
+				v := make([]byte, 8)
+				binary.BigEndian.PutUint64(v, uint64(i<<4+(eCount-j)))
+
+				err = tx.Set(k, nil, v)
+				if err != nil {
+					panic(err)
+				}
+			}
+
+			_, err = tx.Commit()
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
+}
+
+func BenchmarkSyncedAppendWithExtCommitAllowance(b *testing.B) {
+	opts := DefaultOptions().
+		WithMaxConcurrency(100).
+		WithSynced(true).
+		WithAHTOptions(DefaultAHTOptions().WithSyncThld(1_000)).
+		WithSyncFrequency(20 * time.Millisecond).
+		WithMaxActiveTransactions(1000).
+		WithExternalCommitAllowance(true)
+
+	immuStore, _ := Open("data_synced_bench", opts)
+	defer os.RemoveAll("data_synced_bench")
+
+	go func() {
+		for {
+			err := immuStore.AllowCommitUpto(immuStore.lastPrecommittedTxID())
+			if err == ErrAlreadyClosed {
+				return
+			}
+			if err != nil {
+				panic(err)
+			}
+
+			time.Sleep(time.Duration(5) * time.Millisecond)
+		}
+	}()
 
 	b.ResetTimer()
 
@@ -2901,7 +3102,7 @@ func BenchmarkSyncedAppend(b *testing.B) {
 					}
 
 					_, err = tx.AsyncCommit()
-					if err == ErrMaxConcurrencyLimitExceeded {
+					if err == ErrMaxConcurrencyLimitExceeded || err == ErrMaxActiveTransactionsLimitExceeded {
 						time.Sleep(1 * time.Nanosecond)
 						continue
 					}
@@ -2920,10 +3121,29 @@ func BenchmarkSyncedAppend(b *testing.B) {
 	}
 }
 
-func BenchmarkAppend(b *testing.B) {
-	opts := DefaultOptions().WithSynced(false).WithMaxConcurrency(1)
-	immuStore, _ := Open("data_async_bench", opts)
-	defer os.RemoveAll("data_async_bench")
+func BenchmarkAsyncAppendWithExtCommitAllowance(b *testing.B) {
+	opts := DefaultOptions().
+		WithSynced(false).
+		WithMaxConcurrency(1).
+		WithMaxActiveTransactions(1000).
+		WithExternalCommitAllowance(true)
+
+	immuStore, _ := Open("data_async_ext_commit_ack_bench", opts)
+	defer os.RemoveAll("data_async_ext_commit_ack_bench")
+
+	go func() {
+		for {
+			err := immuStore.AllowCommitUpto(immuStore.lastPrecommittedTxID())
+			if err == ErrAlreadyClosed {
+				return
+			}
+			if err != nil {
+				panic(err)
+			}
+
+			time.Sleep(time.Duration(5) * time.Millisecond)
+		}
+	}()
 
 	for i := 0; i < b.N; i++ {
 		txCount := 1000
@@ -3047,16 +3267,23 @@ func TestImmudbStoreTruncatedCommitLog(t *testing.T) {
 	err = immuStore.Close()
 	require.NoError(t, err)
 
-	// Truncate the commit log - it must discard the last transaction but other than
+	// Truncate the commit and tx logs - it must discard the last transaction but other than
 	// that the immudb should work correctly
 	// Note: This may change once the truthly appendable interface is implemented
 	//       (https://github.com/codenotary/immudb/issues/858)
 
-	txFile := filepath.Join(dir, "commit/00000000.txi")
-	stat, err := os.Stat(txFile)
+	cLogFile := filepath.Join(dir, "commit/00000000.txi")
+	stat, err := os.Stat(cLogFile)
 	require.NoError(t, err)
 
-	err = os.Truncate(txFile, stat.Size()-1)
+	err = os.Truncate(cLogFile, stat.Size()-1)
+	require.NoError(t, err)
+
+	txLogFile := filepath.Join(dir, "tx/00000000.tx")
+	stat, err = os.Stat(txLogFile)
+	require.NoError(t, err)
+
+	err = os.Truncate(txLogFile, stat.Size()-1)
 	require.NoError(t, err)
 
 	// Remove the index, it does not support truncation of commits now
@@ -3066,7 +3293,7 @@ func TestImmudbStoreTruncatedCommitLog(t *testing.T) {
 	immuStore, err = Open(dir, DefaultOptions())
 	require.NoError(t, err)
 
-	err = immuStore.WaitForIndexingUpto(hdr1.ID, make(<-chan struct{}))
+	err = immuStore.WaitForIndexingUpto(hdr1.ID, nil)
 	require.NoError(t, err)
 
 	valRef, err := immuStore.Get([]byte("key1"))
@@ -3327,14 +3554,14 @@ func TestBlTXOrdering(t *testing.T) {
 	})
 
 	t.Run("verify dual proofs for sequences of transactions", func(t *testing.T) {
-		maxTxID, _ := immuStore.Alh()
+		maxTxID, _ := immuStore.CommittedAlh()
 
 		for i := uint64(1); i < maxTxID; i++ {
 
-			srcTxHeader, err := immuStore.ReadTxHeader(i)
+			srcTxHeader, err := immuStore.ReadTxHeader(i, false)
 			require.NoError(t, err)
 
-			dstTxHeader, err := immuStore.ReadTxHeader(i + 1)
+			dstTxHeader, err := immuStore.ReadTxHeader(i+1, false)
 			require.NoError(t, err)
 
 			require.LessOrEqual(t, srcTxHeader.BlTxID, dstTxHeader.BlTxID)
@@ -3348,4 +3575,208 @@ func TestBlTXOrdering(t *testing.T) {
 		}
 
 	})
+}
+
+func TestImmudbStoreExternalCommitAllowance(t *testing.T) {
+	dir, err := ioutil.TempDir("", "data_ext_commit_allowance")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	opts := DefaultOptions().
+		WithSynced(false).
+		WithExternalCommitAllowance(true)
+
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
+
+	defer immustoreClose(t, immuStore)
+
+	txCount := 10
+	eCount := 10
+
+	var wg sync.WaitGroup
+	wg.Add(txCount)
+
+	for i := 0; i < txCount; i++ {
+		go func() {
+			tx, err := immuStore.NewWriteOnlyTx()
+			require.NoError(t, err)
+
+			for i := 0; i < eCount; i++ {
+				k := make([]byte, 8)
+				binary.BigEndian.PutUint64(k, uint64(i))
+
+				v := make([]byte, 8)
+				binary.BigEndian.PutUint64(v, uint64(i))
+
+				err = tx.Set(k, nil, v)
+				require.NoError(t, err)
+			}
+
+			_, err = tx.Commit()
+			require.NoError(t, err)
+
+			wg.Done()
+		}()
+	}
+
+	err = immuStore.WaitForTx(uint64(txCount), true, nil)
+	require.NoError(t, err)
+
+	go func() {
+		for i := 0; i < txCount; i++ {
+			require.Less(t, immuStore.LastCommittedTxID(), uint64(i+1))
+
+			err = immuStore.AllowCommitUpto(uint64(i + 1))
+			require.NoError(t, err)
+
+			time.Sleep(time.Duration(10) * time.Millisecond)
+		}
+	}()
+
+	wg.Wait()
+
+	require.Equal(t, uint64(txCount), immuStore.LastCommittedTxID())
+}
+
+func TestImmudbStorePrecommittedTxLoading(t *testing.T) {
+	dir, err := ioutil.TempDir("", "data_precommitted_tx_loading")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	opts := DefaultOptions().
+		WithSynced(false).
+		WithExternalCommitAllowance(true)
+
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
+
+	txCount := 10
+	eCount := 10
+
+	var wg sync.WaitGroup
+	wg.Add(txCount)
+
+	for i := 0; i < txCount; i++ {
+		go func() {
+			tx, err := immuStore.NewWriteOnlyTx()
+			require.NoError(t, err)
+
+			for i := 0; i < eCount; i++ {
+				k := make([]byte, 8)
+				binary.BigEndian.PutUint64(k, uint64(i))
+
+				v := make([]byte, 8)
+				binary.BigEndian.PutUint64(v, uint64(i))
+
+				err = tx.Set(k, nil, v)
+				require.NoError(t, err)
+			}
+
+			wg.Done()
+
+			_, err = tx.Commit()
+			require.ErrorIs(t, err, ErrAlreadyClosed)
+		}()
+	}
+
+	err = immuStore.WaitForTx(uint64(txCount), true, nil)
+	require.NoError(t, err)
+
+	err = immuStore.Close()
+	require.NoError(t, err)
+
+	immuStore, err = Open(dir, opts)
+	require.NoError(t, err)
+
+	err = immuStore.AllowCommitUpto(uint64(txCount))
+	require.NoError(t, err)
+
+	err = immuStore.WaitForTx(uint64(txCount), false, nil)
+	require.NoError(t, err)
+
+	err = immuStore.Close()
+	require.NoError(t, err)
+}
+
+func TestImmudbStorePrecommittedTxDiscarding(t *testing.T) {
+	dir, err := ioutil.TempDir("", "data_precommitted_tx_discarding")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	opts := DefaultOptions().
+		WithSynced(false).
+		WithExternalCommitAllowance(true)
+
+	immuStore, err := Open(dir, opts)
+	require.NoError(t, err)
+
+	txCount := 10
+	eCount := 10
+
+	var wg sync.WaitGroup
+	wg.Add(txCount)
+
+	for i := 0; i < txCount; i++ {
+		go func() {
+			tx, err := immuStore.NewWriteOnlyTx()
+			require.NoError(t, err)
+
+			for i := 0; i < eCount; i++ {
+				k := make([]byte, 8)
+				binary.BigEndian.PutUint64(k, uint64(i))
+
+				v := make([]byte, 8)
+				binary.BigEndian.PutUint64(v, uint64(i))
+
+				err = tx.Set(k, nil, v)
+				require.NoError(t, err)
+			}
+
+			wg.Done()
+
+			_, err = tx.Commit()
+			require.ErrorIs(t, err, ErrAlreadyClosed)
+		}()
+	}
+
+	err = immuStore.WaitForTx(uint64(txCount), true, nil)
+	require.NoError(t, err)
+
+	err = immuStore.Close()
+	require.NoError(t, err)
+
+	immuStore, err = Open(dir, opts)
+	require.NoError(t, err)
+
+	n, err := immuStore.DiscardPrecommittedTxsSince(0)
+	require.ErrorIs(t, err, ErrIllegalArguments)
+	require.Zero(t, n)
+
+	err = immuStore.AllowCommitUpto(uint64(txCount / 2))
+	require.NoError(t, err)
+
+	n, err = immuStore.DiscardPrecommittedTxsSince(1)
+	require.ErrorIs(t, err, ErrIllegalArguments)
+	require.Zero(t, n)
+
+	err = immuStore.WaitForTx(uint64(txCount/2), false, nil)
+	require.NoError(t, err)
+
+	// discard all expect one precommitted tx
+	n, err = immuStore.DiscardPrecommittedTxsSince(uint64(txCount/2 + 2))
+	require.NoError(t, err)
+	require.Equal(t, txCount/2-1, n)
+
+	require.Equal(t, uint64(txCount/2+1), immuStore.lastPrecommittedTxID())
+
+	// discard latest precommitted one
+	n, err = immuStore.DiscardPrecommittedTxsSince(uint64(txCount/2 + 1))
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	require.Equal(t, uint64(txCount/2), immuStore.lastPrecommittedTxID())
+
+	err = immuStore.Close()
+	require.NoError(t, err)
 }

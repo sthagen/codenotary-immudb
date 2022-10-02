@@ -25,6 +25,7 @@ import (
 	"github.com/codenotary/immudb/embedded/store"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/database"
+	"github.com/codenotary/immudb/pkg/replication"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -33,18 +34,31 @@ import (
 func addDbUpdateFlags(c *cobra.Command) {
 	c.Flags().Bool("exclude-commit-time", false,
 		"do not include server-side timestamps in commit checksums, useful when reproducibility is a desired feature")
-	c.Flags().Bool("replication-enabled", false, "set database as a replica")
+	c.Flags().Bool("replication-enabled", false, "set database as a replica") // deprecated, use replication-is-replica instead
+	c.Flags().Bool("replication-is-replica", false, "set database as a replica")
+	c.Flags().Bool("replication-sync-enabled", false, "enable synchronous replication")
+	c.Flags().Uint32("replication-sync-followers", 0, "set a minimum number of followers for ack replication before transactions can be committed")
 	c.Flags().String("replication-master-database", "", "set master database to be replicated")
 	c.Flags().String("replication-master-address", "", "set master address")
 	c.Flags().Uint32("replication-master-port", 0, "set master port")
 	c.Flags().String("replication-follower-username", "", "set username used for replication")
 	c.Flags().String("replication-follower-password", "", "set password used for replication")
+	c.Flags().Uint32("replication-prefetch-tx-buffer-size", uint32(replication.DefaultPrefetchTxBufferSize), "maximum number of prefeched transactions")
+	c.Flags().Uint32("replication-commit-concurrency", uint32(replication.DefaultReplicationCommitConcurrency), "number of concurrent replications")
+	c.Flags().Bool("replication-allow-tx-discarding", replication.DefaultAllowTxDiscarding, "allow precommitted transactions to be discarded if the follower diverges from the master")
 	c.Flags().Uint32("write-tx-header-version", 1, "set write tx header version (use 0 for compatibility with immudb 1.1, 1 for immudb 1.2+)")
 	c.Flags().Uint32("max-commit-concurrency", store.DefaultMaxConcurrency, "set the maximum commit concurrency")
 	c.Flags().Duration("sync-frequency", store.DefaultSyncFrequency, "set the fsync frequency during commit process")
 	c.Flags().Uint32("write-buffer-size", store.DefaultWriteBufferSize, "set the size of in-memory buffers for file abstractions")
 	c.Flags().Uint32("read-tx-pool-size", database.DefaultReadTxPoolSize, "set transaction read pool size (used for reading transaction objects)")
 	c.Flags().Bool("autoload", true, "enable database autoloading")
+
+	c.Flags().SetNormalizeFunc(func(f *pflag.FlagSet, name string) pflag.NormalizedName {
+		if name == "replication-enabled" {
+			name = "replication-is-replica"
+		}
+		return pflag.NormalizedName(name)
+	})
 }
 
 func (cl *commandline) database(cmd *cobra.Command) {
@@ -361,7 +375,17 @@ func prepareDatabaseNullableSettings(flags *pflag.FlagSet) (*schema.DatabaseNull
 		return nil, err
 	}
 
-	ret.ReplicationSettings.Replica, err = condBool("replication-enabled")
+	ret.ReplicationSettings.Replica, err = condBool("replication-is-replica")
+	if err != nil {
+		return nil, err
+	}
+
+	ret.ReplicationSettings.SyncReplication, err = condBool("replication-sync-enabled")
+	if err != nil {
+		return nil, err
+	}
+
+	ret.ReplicationSettings.SyncFollowers, err = condUInt32("replication-sync-followers")
 	if err != nil {
 		return nil, err
 	}
@@ -387,6 +411,21 @@ func prepareDatabaseNullableSettings(flags *pflag.FlagSet) (*schema.DatabaseNull
 	}
 
 	ret.ReplicationSettings.FollowerPassword, err = condString("replication-follower-password")
+	if err != nil {
+		return nil, err
+	}
+
+	ret.ReplicationSettings.PrefetchTxBufferSize, err = condUInt32("replication-prefetch-tx-buffer-size")
+	if err != nil {
+		return nil, err
+	}
+
+	ret.ReplicationSettings.ReplicationCommitConcurrency, err = condUInt32("replication-commit-concurrency")
+	if err != nil {
+		return nil, err
+	}
+
+	ret.ReplicationSettings.AllowTxDiscarding, err = condBool("replication-allow-tx-discarding")
 	if err != nil {
 		return nil, err
 	}

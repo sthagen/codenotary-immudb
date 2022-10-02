@@ -83,10 +83,16 @@ type RemoteStorageOptions struct {
 }
 
 type ReplicationOptions struct {
-	MasterAddress    string
-	MasterPort       int
-	FollowerUsername string
-	FollowerPassword string
+	IsReplica                    bool
+	SyncReplication              bool
+	SyncFollowers                int    // only if !IsReplica && SyncReplication
+	MasterAddress                string // only if IsReplica
+	MasterPort                   int    // only if IsReplica
+	FollowerUsername             string // only if IsReplica
+	FollowerPassword             string // only if IsReplica
+	PrefetchTxBufferSize         int    // only if IsReplica
+	ReplicationCommitConcurrency int    // only if IsReplica
+	AllowTxDiscarding            bool   // only if IsReplica
 }
 
 // DefaultOptions returns default server options
@@ -120,6 +126,7 @@ func DefaultOptions() *Options {
 		TokenExpiryTimeMin:   1440,
 		PgsqlServer:          false,
 		PgsqlServerPort:      5432,
+		ReplicationOptions:   &ReplicationOptions{IsReplica: false, SyncFollowers: 0},
 		SessionsOptions:      sessions.DefaultOptions(),
 		PProf:                false,
 	}
@@ -249,18 +256,27 @@ func (o *Options) String() string {
 	opts = append(opts, rightPad("Data dir", o.Dir))
 	opts = append(opts, rightPad("Address", fmt.Sprintf("%s:%d", o.Address, o.Port)))
 
-	repOpts := o.ReplicationOptions
-
-	if o.ReplicationOptions != nil {
-		opts = append(opts, rightPad("Replica of", fmt.Sprintf("%s:%d", repOpts.MasterAddress, repOpts.MasterPort)))
-	}
-
 	if o.MetricsServer {
 		opts = append(opts, rightPad("Metrics address", fmt.Sprintf("%s:%d/metrics", o.Address, o.MetricsServerPort)))
 		if o.PProf {
 			opts = append(opts, rightPad("pprof enabled", "true"))
 		}
 	}
+
+	repOpts := o.ReplicationOptions
+	syncReplication := repOpts != nil && repOpts.SyncReplication
+	isReplica := repOpts != nil && repOpts.IsReplica
+
+	opts = append(opts, rightPad("Sync replication", syncReplication))
+
+	if syncReplication && !isReplica {
+		opts = append(opts, rightPad("Sync followers", repOpts.SyncFollowers))
+	}
+
+	if isReplica {
+		opts = append(opts, rightPad("Replica of", fmt.Sprintf("%s:%d", repOpts.MasterAddress, repOpts.MasterPort)))
+	}
+
 	if o.Config != "" {
 		opts = append(opts, rightPad("Config file", o.Config))
 	}
@@ -337,12 +353,12 @@ func (o *Options) WithAdminPassword(adminPassword string) *Options {
 	return o
 }
 
-//GetSystemAdminDBName returns the System database name
+// GetSystemAdminDBName returns the System database name
 func (o *Options) GetSystemAdminDBName() string {
 	return o.systemAdminDBName
 }
 
-//GetDefaultDBName returns the default database name
+// GetDefaultDBName returns the default database name
 func (o *Options) GetDefaultDBName() string {
 	return o.defaultDBName
 }
@@ -465,6 +481,21 @@ func (opts *RemoteStorageOptions) WithS3PathPrefix(s3PathPrefix string) *RemoteS
 
 // ReplicationOptions
 
+func (opts *ReplicationOptions) WithIsReplica(isReplica bool) *ReplicationOptions {
+	opts.IsReplica = isReplica
+	return opts
+}
+
+func (opts *ReplicationOptions) WithSyncReplication(syncReplication bool) *ReplicationOptions {
+	opts.SyncReplication = syncReplication
+	return opts
+}
+
+func (opts *ReplicationOptions) WithSyncFollowers(syncFollowers int) *ReplicationOptions {
+	opts.SyncFollowers = syncFollowers
+	return opts
+}
+
 func (opts *ReplicationOptions) WithMasterAddress(masterAddress string) *ReplicationOptions {
 	opts.MasterAddress = masterAddress
 	return opts
@@ -482,5 +513,20 @@ func (opts *ReplicationOptions) WithFollowerUsername(followerUsername string) *R
 
 func (opts *ReplicationOptions) WithFollowerPassword(followerPassword string) *ReplicationOptions {
 	opts.FollowerPassword = followerPassword
+	return opts
+}
+
+func (opts *ReplicationOptions) WithPrefetchTxBufferSize(prefetchTxBufferSize int) *ReplicationOptions {
+	opts.PrefetchTxBufferSize = prefetchTxBufferSize
+	return opts
+}
+
+func (opts *ReplicationOptions) WithReplicationCommitConcurrency(replicationCommitConcurrency int) *ReplicationOptions {
+	opts.ReplicationCommitConcurrency = replicationCommitConcurrency
+	return opts
+}
+
+func (opts *ReplicationOptions) WithAllowTxDiscarding(allowTxDiscarding bool) *ReplicationOptions {
+	opts.AllowTxDiscarding = allowTxDiscarding
 	return opts
 }

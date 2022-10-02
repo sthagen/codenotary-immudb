@@ -28,16 +28,24 @@ func parseOptions() (options *server.Options, err error) {
 	address := viper.GetString("address")
 	port := viper.GetInt("port")
 
-	replicationEnabled := viper.GetBool("replication-enabled")
+	replicationOptions := &server.ReplicationOptions{}
 
-	var replicationOptions *server.ReplicationOptions
+	replicationOptions.
+		WithIsReplica(viper.GetBool("replication-is-replica")).
+		WithSyncReplication(viper.GetBool("replication-sync-enabled"))
 
-	if replicationEnabled {
-		replicationOptions = (&server.ReplicationOptions{}).
+	if replicationOptions.IsReplica {
+		replicationOptions.
 			WithMasterAddress(viper.GetString("replication-master-address")).
 			WithMasterPort(viper.GetInt("replication-master-port")).
 			WithFollowerUsername(viper.GetString("replication-follower-username")).
-			WithFollowerPassword(viper.GetString("replication-follower-password"))
+			WithFollowerPassword(viper.GetString("replication-follower-password")).
+			WithPrefetchTxBufferSize(viper.GetInt("replication-prefetch-tx-buffer-size")).
+			WithReplicationCommitConcurrency(viper.GetInt("replication-commit-concurrency")).
+			WithAllowTxDiscarding(viper.GetBool("replication-allow-tx-discarding"))
+	} else {
+		replicationOptions.
+			WithSyncFollowers(viper.GetInt("replication-sync-followers"))
 	}
 
 	pidfile := viper.GetString("pidfile")

@@ -42,6 +42,7 @@
     - [ExportTxRequest](#immudb.schema.ExportTxRequest)
     - [FlushIndexRequest](#immudb.schema.FlushIndexRequest)
     - [FlushIndexResponse](#immudb.schema.FlushIndexResponse)
+    - [FollowerState](#immudb.schema.FollowerState)
     - [HealthResponse](#immudb.schema.HealthResponse)
     - [HistoryRequest](#immudb.schema.HistoryRequest)
     - [ImmutableState](#immudb.schema.ImmutableState)
@@ -742,6 +743,8 @@ DualProof contains inclusion and consistency proofs for dual Merkle-Tree &#43; L
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | tx | [uint64](#uint64) |  | Id of transaction to export |
+| allowPreCommitted | [bool](#bool) |  | If set to true, non-committed transactions can be exported |
+| followerState | [FollowerState](#immudb.schema.FollowerState) |  | Used on synchronous replication to notify the master about follower state |
 
 
 
@@ -773,6 +776,25 @@ DualProof contains inclusion and consistency proofs for dual Merkle-Tree &#43; L
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | database | [string](#string) |  | Database name |
+
+
+
+
+
+
+<a name="immudb.schema.FollowerState"></a>
+
+### FollowerState
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| UUID | [string](#string) |  |  |
+| committedTxID | [uint64](#uint64) |  |  |
+| committedAlh | [bytes](#bytes) |  |  |
+| precommittedTxID | [uint64](#uint64) |  |  |
+| precommittedAlh | [bytes](#bytes) |  |  |
 
 
 
@@ -826,6 +848,8 @@ DualProof contains inclusion and consistency proofs for dual Merkle-Tree &#43; L
 | txId | [uint64](#uint64) |  | Id of the most recent transaction |
 | txHash | [bytes](#bytes) |  | State of the most recent transaction |
 | signature | [Signature](#immudb.schema.Signature) |  | Signature of the hash |
+| precommittedTxId | [uint64](#uint64) |  | Id of the most recent precommitted transaction |
+| precommittedTxHash | [bytes](#bytes) |  | State of the most recent precommitted transaction |
 
 
 
@@ -1389,6 +1413,11 @@ Only succeed if given key was not modified after given transaction
 | masterPort | [NullableUint32](#immudb.schema.NullableUint32) |  | Port of the immudb instance with database to replicate |
 | followerUsername | [NullableString](#immudb.schema.NullableString) |  | Username of the user with read access of the database to replicate |
 | followerPassword | [NullableString](#immudb.schema.NullableString) |  | Password of the user with read access of the database to replicate |
+| syncReplication | [NullableBool](#immudb.schema.NullableBool) |  | Enable synchronous replication |
+| syncFollowers | [NullableUint32](#immudb.schema.NullableUint32) |  | Number of fully synchronized followers |
+| prefetchTxBufferSize | [NullableUint32](#immudb.schema.NullableUint32) |  | Maximun number of prefeched transactions |
+| replicationCommitConcurrency | [NullableUint32](#immudb.schema.NullableUint32) |  | Number of concurrent replications |
+| AllowTxDiscarding | [NullableBool](#immudb.schema.NullableBool) |  | Allow precommitted transactions to be discarded if the follower diverges from the master |
 
 
 

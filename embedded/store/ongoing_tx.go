@@ -22,8 +22,8 @@ import (
 	"time"
 )
 
-//OngoingTx (no-thread safe) represents an interactive or incremental transaction with support of RYOW.
-//The snapshot may be locally modified but isolated from other transactions
+// OngoingTx (no-thread safe) represents an interactive or incremental transaction with support of RYOW.
+// The snapshot may be locally modified but isolated from other transactions
 type OngoingTx struct {
 	st   *ImmuStore
 	snap *Snapshot
@@ -61,7 +61,7 @@ func newReadWriteTx(s *ImmuStore) (*OngoingTx, error) {
 		ts:           time.Now(),
 	}
 
-	precommittedTxID := s.lastPreCommittedTxID()
+	precommittedTxID := s.lastPrecommittedTxID()
 
 	err := s.WaitForIndexingUpto(precommittedTxID, nil)
 	if err != nil {
@@ -328,5 +328,27 @@ func (tx *OngoingTx) checkPreconditions(idx KeyIndex) error {
 			return fmt.Errorf("%w: %s", ErrPreconditionFailed, c)
 		}
 	}
+	return nil
+}
+
+func (tx *OngoingTx) validateAgainst(hdr *TxHeader) error {
+	if hdr == nil {
+		return nil
+	}
+
+	if len(tx.entries) != hdr.NEntries {
+		return fmt.Errorf("%w: number of entries differs", ErrIllegalArguments)
+	}
+
+	if tx.metadata != nil {
+		if !tx.metadata.Equal(hdr.Metadata) {
+			return fmt.Errorf("%w: metadata differs", ErrIllegalArguments)
+		}
+	} else if hdr.Metadata != nil {
+		if !hdr.Metadata.Equal(tx.metadata) {
+			return fmt.Errorf("%w: metadata differs", ErrIllegalArguments)
+		}
+	}
+
 	return nil
 }
