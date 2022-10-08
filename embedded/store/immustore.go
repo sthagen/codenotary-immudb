@@ -842,10 +842,15 @@ func (s *ImmuStore) PrecommittedAlh() (uint64, [sha256.Size]byte) {
 
 	durablePrecommittedTxID, _, _ := s.durablePrecommitWHub.Status()
 
-	if s.inmemPrecommittedTxID == durablePrecommittedTxID {
+	if durablePrecommittedTxID == s.committedTxID {
+		return s.committedTxID, s.committedAlh
+	}
+
+	if durablePrecommittedTxID == s.inmemPrecommittedTxID {
 		return s.inmemPrecommittedTxID, s.inmemPrecommittedAlh
 	}
 
+	// fetch latest precommitted (durable) transaction from s.cLogBuf
 	txID, alh, _, _, _ := s.cLogBuf.readAhead(int(durablePrecommittedTxID - s.committedTxID - 1))
 
 	return txID, alh
@@ -1537,37 +1542,15 @@ func (s *ImmuStore) performPrecommit(tx *Tx, ts int64, blTxID uint64) error {
 	return nil
 }
 
-func (s *ImmuStore) EnableExternalCommitAllowance() error {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	if s.closed {
-		return ErrAlreadyClosed
-	}
-
+func (s *ImmuStore) SetExternalCommitAllowance(enabled bool) {
 	s.commitStateRWMutex.Lock()
 	defer s.commitStateRWMutex.Unlock()
 
-	s.useExternalCommitAllowance = true
-	s.commitAllowedUpToTxID = s.committedTxID
+	s.useExternalCommitAllowance = enabled
 
-	return nil
-}
-
-func (s *ImmuStore) DisableExternalCommitAllowance() error {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	if s.closed {
-		return ErrAlreadyClosed
+	if enabled {
+		s.commitAllowedUpToTxID = s.committedTxID
 	}
-
-	s.commitStateRWMutex.Lock()
-	defer s.commitStateRWMutex.Unlock()
-
-	s.useExternalCommitAllowance = false
-
-	return nil
 }
 
 // DiscardPrecommittedTxsSince discard precommitted txs
@@ -1599,8 +1582,13 @@ func (s *ImmuStore) DiscardPrecommittedTxsSince(txID uint64) (int, error) {
 
 	txsToDiscard := int(s.inmemPrecommittedTxID + 1 - txID)
 
+	err := s.aht.ResetSize(s.aht.Size() - uint64(txsToDiscard))
+	if err != nil {
+		return 0, err
+	}
+
 	// s.cLogBuf inludes all precommitted transactions (even durable ones)
-	err := s.cLogBuf.recedeWriter(txsToDiscard)
+	err = s.cLogBuf.recedeWriter(txsToDiscard)
 	if err != nil {
 		return 0, err
 	}

@@ -13,22 +13,23 @@ import (
 	"github.com/stretchr/testify/suite"
 )
 
-type SyncTestSuite struct {
+type SyncTestSuiteMasterToAllFollowers struct {
 	baseReplicationTestSuite
 }
 
-func TestSyncTestSuite(t *testing.T) {
-	suite.Run(t, &SyncTestSuite{})
+func TestSyncTestSuiteMasterToAllFollowers(t *testing.T) {
+	suite.Run(t, &SyncTestSuiteMasterToAllFollowers{})
 }
 
 // this function executes before the test suite begins execution
-func (suite *SyncTestSuite) SetupSuite() {
-	suite.baseReplicationTestSuite.SetupSuite()
-	suite.SetupCluster(2, 2)
+func (suite *SyncTestSuiteMasterToAllFollowers) SetupTest() {
+	suite.baseReplicationTestSuite.SetupTest()
+	suite.SetupCluster(2, 2, 0)
+	suite.ValidateClusterSetup()
 }
 
-func (suite *SyncTestSuite) TestSyncFromMasterToAllFollowers() {
-	ctx, client, cleanup := suite.ClientForMaser()
+func (suite *SyncTestSuiteMasterToAllFollowers) TestSyncFromMasterToAllFollowers() {
+	ctx, client, cleanup := suite.ClientForMaster()
 	defer cleanup()
 
 	tx1, err := client.Set(ctx, []byte("key1"), []byte("value1"))
@@ -45,7 +46,7 @@ func (suite *SyncTestSuite) TestSyncFromMasterToAllFollowers() {
 			// Tests are flaky because it takes time to commit the
 			// precommitted TX, so this function just ensures the state
 			// is in sync between master and follower
-			suite.WaitForCommittedTx(ctx, client, tx2.Id, time.Second)
+			suite.WaitForCommittedTx(ctx, client, tx2.Id, time.Duration(3)*time.Second)
 
 			val, err := client.GetAt(ctx, []byte("key1"), tx1.Id)
 			require.NoError(suite.T(), err)
@@ -58,11 +59,26 @@ func (suite *SyncTestSuite) TestSyncFromMasterToAllFollowers() {
 	}
 }
 
-func (suite *SyncTestSuite) TestMasterRestart() {
+type SyncTestSuiteMasterRestart struct {
+	baseReplicationTestSuite
+}
+
+func TestSyncTestSuiteMasterRestart(t *testing.T) {
+	suite.Run(t, &SyncTestSuiteMasterRestart{})
+}
+
+// this function executes before the test suite begins execution
+func (suite *SyncTestSuiteMasterRestart) SetupTest() {
+	suite.baseReplicationTestSuite.SetupTest()
+	suite.SetupCluster(2, 2, 0)
+	suite.ValidateClusterSetup()
+}
+
+func (suite *SyncTestSuiteMasterRestart) TestMasterRestart() {
 	var txBeforeRestart *schema.TxHeader
 	suite.Run("commit before restarting primary", func() {
 
-		ctx, client, cleanup := suite.ClientForMaser()
+		ctx, client, cleanup := suite.ClientForMaster()
 		defer cleanup()
 
 		tx, err := client.Set(ctx, []byte("key-before-restart"), []byte("value-before-restart"))
@@ -74,7 +90,7 @@ func (suite *SyncTestSuite) TestMasterRestart() {
 	suite.RestartMaster()
 
 	suite.Run("commit after restarting master", func() {
-		ctx, client, cleanup := suite.ClientForMaser()
+		ctx, client, cleanup := suite.ClientForMaster()
 		defer cleanup()
 
 		tx, err := client.Set(ctx, []byte("key3"), []byte("value3"))
@@ -102,16 +118,31 @@ func (suite *SyncTestSuite) TestMasterRestart() {
 	})
 }
 
+type SyncTestSuitePrecommitStateSync struct {
+	baseReplicationTestSuite
+}
+
+func TestSyncTestSuitePrecommitStateSync(t *testing.T) {
+	suite.Run(t, &SyncTestSuitePrecommitStateSync{})
+}
+
+// this function executes before the test suite begins execution
+func (suite *SyncTestSuitePrecommitStateSync) SetupTest() {
+	suite.baseReplicationTestSuite.SetupTest()
+	suite.SetupCluster(2, 2, 0)
+	suite.ValidateClusterSetup()
+}
+
 // TestPrecommitStateSync checks if the precommit state at master
 // and its followers are in sync during synchronous replication
-func (suite *SyncTestSuite) TestPrecommitStateSync() {
+func (suite *SyncTestSuitePrecommitStateSync) TestPrecommitStateSync() {
 	var (
 		masterState *schema.ImmutableState
 		err         error
 		startCh     = make(chan bool)
 	)
 
-	ctx, client, cleanup := suite.ClientForMaser()
+	ctx, client, cleanup := suite.ClientForMaster()
 	defer cleanup()
 
 	// Create goroutines for client waiting to query the state
@@ -125,18 +156,15 @@ func (suite *SyncTestSuite) TestPrecommitStateSync() {
 			defer wg.Done()
 			ctx, client, cleanup := suite.ClientForReplica(followerID)
 			defer cleanup()
-			for {
-				select {
-				case <-startCh:
-					suite.Run(fmt.Sprintf("test replica sync state %d", followerID), func() {
-						state, err := client.CurrentState(ctx)
-						require.NoError(suite.T(), err)
-						suite.Require().Equal(state.PrecommittedTxId, masterState.TxId)
-						suite.Require().Equal(state.PrecommittedTxHash, masterState.TxHash)
-					})
-					return
-				}
-			}
+
+			<-startCh
+
+			suite.Run(fmt.Sprintf("test replica sync state %d", followerID), func() {
+				state, err := client.CurrentState(ctx)
+				require.NoError(suite.T(), err)
+				suite.Require().Equal(state.PrecommittedTxId, masterState.TxId)
+				suite.Require().Equal(state.PrecommittedTxHash, masterState.TxHash)
+			})
 		}(i)
 	}
 
@@ -154,6 +182,7 @@ func (suite *SyncTestSuite) TestPrecommitStateSync() {
 
 	// close will unblock all goroutines
 	close(startCh)
+
 	wg.Wait()
 }
 
@@ -166,16 +195,17 @@ func TestSyncTestMinimumFollowersSuite(t *testing.T) {
 }
 
 // this function executes before the test suite begins execution
-func (suite *SyncTestMinimumFollowersSuite) SetupSuite() {
-	suite.baseReplicationTestSuite.SetupSuite()
-	suite.SetupCluster(4, 2)
+func (suite *SyncTestMinimumFollowersSuite) SetupTest() {
+	suite.baseReplicationTestSuite.SetupTest()
+	suite.SetupCluster(4, 2, 0)
+	suite.ValidateClusterSetup()
 }
 
 // TestMinimumFollowers ensures the primary can operate as long as the minimum
 // number of replicas send their confirmations
 func (suite *SyncTestMinimumFollowersSuite) TestMinimumFollowers() {
 
-	ctx, client, cleanup := suite.ClientForMaser()
+	ctx, client, cleanup := suite.ClientForMaster()
 	defer cleanup()
 
 	suite.Run("should commit successfully without one replica", func() {
@@ -263,9 +293,10 @@ func TestSyncTestRecoverySpeedSuite(t *testing.T) {
 	suite.Run(t, &SyncTestRecoverySpeedSuite{})
 }
 
-func (suite *SyncTestRecoverySpeedSuite) SetupSuite() {
-	suite.baseReplicationTestSuite.SetupSuite()
-	suite.SetupCluster(2, 1)
+func (suite *SyncTestRecoverySpeedSuite) SetupTest() {
+	suite.baseReplicationTestSuite.SetupTest()
+	suite.SetupCluster(2, 1, 0)
+	suite.ValidateClusterSetup()
 }
 
 func (suite *SyncTestRecoverySpeedSuite) TestReplicaRecoverySpeed() {
@@ -292,7 +323,7 @@ func (suite *SyncTestRecoverySpeedSuite) TestReplicaRecoverySpeed() {
 			go func(i int) {
 				defer wgFinish.Done()
 
-				ctx, client, cleanup := suite.ClientForMaser()
+				ctx, client, cleanup := suite.ClientForMaster()
 				defer cleanup()
 
 				// Wait for the start signal
@@ -337,19 +368,19 @@ func (suite *SyncTestRecoverySpeedSuite) TestReplicaRecoverySpeed() {
 		// Stop the second follower, now the DB is locked
 		suite.StopFollower(1)
 
-		ctx, client, cleanup := suite.ClientForMaser()
+		ctx, client, cleanup := suite.ClientForMaster()
 		defer cleanup()
 
 		state, err := client.CurrentState(ctx)
 		suite.Require().NoError(err)
 		suite.Require().Greater(state.TxId, txWritten, "Ensure enough TXs were written")
 
-		// Check if we can recover the cluster and perform write within the same amount of time
+		// Check if we can recover the cluster and perform write within the double the amount of time
 		// that was needed for initial sampling. The replica that was initially stopped and now
 		// started has the same amount of transaction to grab from master as the other one
 		// which should take the same amount of time as the initial write period or less
 		// (since the primary is not persisting data this time).
-		ctxTimeout, cancel := context.WithTimeout(ctx, samplingTime)
+		ctxTimeout, cancel := context.WithTimeout(ctx, samplingTime*2)
 		defer cancel()
 
 		suite.StartFollower(0) // 1 down
@@ -362,7 +393,7 @@ func (suite *SyncTestRecoverySpeedSuite) TestReplicaRecoverySpeed() {
 		suite.StartFollower(1)
 
 		suite.Run("primary", func() {
-			ctx, client, cleanup := suite.ClientForMaser()
+			ctx, client, cleanup := suite.ClientForMaster()
 			defer cleanup()
 
 			val, err := client.GetAt(ctx, []byte("key-after-recovery"), tx.Id)
@@ -384,4 +415,158 @@ func (suite *SyncTestRecoverySpeedSuite) TestReplicaRecoverySpeed() {
 		}
 	})
 
+}
+
+type SyncTestWithAsyncFollowersSuite struct {
+	baseReplicationTestSuite
+}
+
+func TestSyncTestWithAsyncFollowersSuite(t *testing.T) {
+	suite.Run(t, &SyncTestWithAsyncFollowersSuite{})
+}
+
+func (suite *SyncTestWithAsyncFollowersSuite) SetupTest() {
+	suite.baseReplicationTestSuite.SetupTest()
+	suite.SetupCluster(2, 1, 1)
+	suite.ValidateClusterSetup()
+}
+
+func (suite *SyncTestWithAsyncFollowersSuite) TestSyncReplicationAlongWithAsyncFollowers() {
+	const parallelWriters = 30
+	const samplingTime = time.Second * 5
+
+	var txWritten uint64
+
+	suite.Run("Write transactions for 5 seconds at maximum speed", func() {
+		start := make(chan bool)
+		stop := make(chan bool)
+		wgStart := sync.WaitGroup{}
+		wgFinish := sync.WaitGroup{}
+
+		// Run multiple clients in parallel - let's try to hammer the DB as much as possible
+		for i := 0; i < parallelWriters; i++ {
+			wgStart.Add(1)
+			wgFinish.Add(1)
+			go func(i int) {
+				defer wgFinish.Done()
+
+				ctx, client, cleanup := suite.ClientForMaster()
+				defer cleanup()
+
+				// Wait for the start signal
+				wgStart.Done()
+				<-start
+
+				for j := 0; ; j++ {
+					select {
+					case <-stop:
+						atomic.AddUint64(&txWritten, uint64(j))
+						return
+					default:
+					}
+
+					_, err := client.Set(ctx,
+						[]byte(fmt.Sprintf("client-%d-%d", i, j)),
+						[]byte(fmt.Sprintf("value-%d-%d", i, j)),
+					)
+					suite.Require().NoError(err)
+				}
+			}(i)
+		}
+
+		// Ready, steady...
+		wgStart.Wait()
+
+		// Go...
+		close(start)
+		time.Sleep(samplingTime)
+		close(stop)
+
+		wgFinish.Wait()
+
+		fmt.Println("Total TX written:", txWritten)
+	})
+
+	suite.Run("Ensure the data is available in all the replicas", func() {
+		ctx, client, cleanup := suite.ClientForMaster()
+		defer cleanup()
+
+		state, err := client.CurrentState(ctx)
+		suite.Require().NoError(err)
+		suite.Require().Greater(state.TxId, txWritten, "Ensure enough TXs were written")
+
+		for i := 0; i < suite.GetFollowersCount(); i++ {
+			suite.Run(fmt.Sprintf("replica %d", i), func() {
+				ctx, client, cleanup := suite.ClientForReplica(i)
+				defer cleanup()
+
+				suite.WaitForCommittedTx(ctx, client, state.TxId, 5*time.Second)
+			})
+		}
+	})
+
+}
+
+type SyncTestChangingMasterSuite struct {
+	baseReplicationTestSuite
+}
+
+func TestSyncTestChangingMasterSuite(t *testing.T) {
+	suite.Run(t, &SyncTestChangingMasterSuite{})
+}
+
+func (suite *SyncTestChangingMasterSuite) SetupTest() {
+	suite.baseReplicationTestSuite.SetupTest()
+	suite.SetupCluster(2, 2, 0)
+	suite.ValidateClusterSetup()
+}
+
+func (suite *SyncTestChangingMasterSuite) TestSyncTestChangingMasterSuite() {
+	var txBeforeChangingMaster *schema.TxHeader
+	suite.Run("commit before changing primary", func() {
+
+		ctx, client, cleanup := suite.ClientForMaster()
+		defer cleanup()
+
+		tx, err := client.Set(ctx, []byte("key-before-master-change"), []byte("value-before-master-change"))
+		require.NoError(suite.T(), err)
+
+		txBeforeChangingMaster = tx
+	})
+
+	// it's possible to promote any replica as new master because ack from all replicas is required by master
+	// ensure the replica to be promoted is up to date with master's commit state
+	ctx, client, cleanup := suite.ClientForReplica(1)
+	suite.WaitForCommittedTx(ctx, client, txBeforeChangingMaster.Id, 1*time.Second)
+	cleanup()
+
+	suite.PromoteFollower(1, 1)
+
+	suite.Run("commit after changing master", func() {
+		ctx, client, cleanup := suite.ClientForMaster()
+		defer cleanup()
+
+		tx, err := client.Set(ctx, []byte("key-after-master-change"), []byte("value-after-master-change"))
+		require.NoError(suite.T(), err)
+
+		for i := 0; i < suite.GetFollowersCount(); i++ {
+			suite.Run(fmt.Sprintf("check follower %d", i), func() {
+				ctx, client, cleanup := suite.ClientForReplica(i)
+				defer cleanup()
+
+				// Tests are flaky because it takes time to commit the
+				// precommitted TX, so this function just ensures the state
+				// is in sync between master and follower
+				suite.WaitForCommittedTx(ctx, client, tx.Id, 30*time.Second) // Longer time since replica must reestablish connection to the primary
+
+				val, err := client.GetAt(ctx, []byte("key-before-master-change"), txBeforeChangingMaster.Id)
+				require.NoError(suite.T(), err)
+				require.Equal(suite.T(), []byte("value-before-master-change"), val.Value)
+
+				val, err = client.GetAt(ctx, []byte("key-after-master-change"), tx.Id)
+				require.NoError(suite.T(), err)
+				require.Equal(suite.T(), []byte("value-after-master-change"), val.Value)
+			})
+		}
+	})
 }
