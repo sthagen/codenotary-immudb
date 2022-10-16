@@ -39,6 +39,13 @@ var ErrIllegalArguments = errors.New("illegal arguments")
 var ErrAlreadyRunning = errors.New("already running")
 var ErrAlreadyStopped = errors.New("already stopped")
 var ErrFollowerDivergedFromMaster = errors.New("follower diverged from master")
+var ErrNoSynchronousReplicationOnMaster = errors.New("master is not running with synchronous replication")
+var ErrInvalidReplicationMetadata = errors.New("invalid replication metadata retrieved")
+
+type prefetchTxEntry struct {
+	data    []byte
+	addedAt time.Time
+}
 
 type TxReplicator struct {
 	uuid xid.ID
@@ -59,7 +66,7 @@ type TxReplicator struct {
 
 	lastTx uint64
 
-	prefetchTxBuffer       chan []byte // buffered channel of exported txs
+	prefetchTxBuffer       chan prefetchTxEntry // buffered channel of exported txs
 	replicationConcurrency int
 
 	allowTxDiscarding bool
@@ -70,6 +77,8 @@ type TxReplicator struct {
 	running bool
 
 	mutex sync.Mutex
+
+	metrics metrics
 }
 
 func NewTxReplicator(uuid xid.ID, db database.DB, opts *Options, logger logger.Logger) (*TxReplicator, error) {
@@ -84,10 +93,11 @@ func NewTxReplicator(uuid xid.ID, db database.DB, opts *Options, logger logger.L
 		logger:                 logger,
 		_masterDB:              fullAddress(opts.masterDatabase, opts.masterAddress, opts.masterPort),
 		streamSrvFactory:       stream.NewStreamServiceFactory(opts.streamChunkSize),
-		prefetchTxBuffer:       make(chan []byte, opts.prefetchTxBufferSize),
+		prefetchTxBuffer:       make(chan prefetchTxEntry, opts.prefetchTxBufferSize),
 		replicationConcurrency: opts.replicationCommitConcurrency,
 		allowTxDiscarding:      opts.allowTxDiscarding,
 		delayer:                opts.delayer,
+		metrics:                metricsForDb(db.GetName()),
 	}, nil
 }
 
@@ -162,44 +172,75 @@ func (txr *TxReplicator) Start() error {
 		}
 	}()
 
+	txr.metrics.reset()
+
 	for i := 0; i < txr.replicationConcurrency; i++ {
 		go func() {
+			txr.metrics.replicators.Inc()
+			defer txr.metrics.replicators.Dec()
+
 			for etx := range txr.prefetchTxBuffer {
-				consecutiveFailures := 0
+				txr.metrics.txWaitQueueHistogram.Observe(time.Since(etx.addedAt).Seconds())
 
-				// replication must be retried as many times as necessary
-				for {
-					_, err := txr.db.ReplicateTx(etx)
-					if err == nil {
-						break // transaction successfully replicated
-					}
-					if errors.Is(err, ErrAlreadyStopped) {
-						return
-					}
-
-					if strings.Contains(err.Error(), "tx already committed") {
-						break // transaction successfully replicated
-					}
-
-					txr.logger.Infof("Failed to replicate transaction from '%s' to '%s'. Reason: %s", txr._masterDB, txr.db.GetName(), err.Error())
-
-					consecutiveFailures++
-
-					timer := time.NewTimer(txr.delayer.DelayAfter(consecutiveFailures))
-					select {
-					case <-txr.context.Done():
-						timer.Stop()
-						return
-					case <-timer.C:
-					}
+				if !txr.replicateSingleTx(etx.data) {
+					break
 				}
 			}
 		}()
 	}
 
-	txr.logger.Infof("Replication from '%s' to '%s' succesfully initialized", txr._masterDB, txr.db.GetName())
+	txr.logger.Infof("Replication from '%s' to '%s' successfully initialized", txr._masterDB, txr.db.GetName())
 
 	return nil
+}
+
+func (txr *TxReplicator) replicateSingleTx(data []byte) bool {
+	txr.metrics.replicatorsActive.Inc()
+	defer txr.metrics.replicatorsActive.Dec()
+	defer txr.metrics.replicationTimeHistogramTimer().ObserveDuration()
+
+	consecutiveFailures := 0
+
+	// replication must be retried as many times as necessary
+	for {
+		_, err := txr.db.ReplicateTx(data)
+		if err == nil {
+			break // transaction successfully replicated
+		}
+		if errors.Is(err, ErrAlreadyStopped) {
+			return false
+		}
+
+		if strings.Contains(err.Error(), "tx already committed") {
+			break // transaction successfully replicated
+		}
+
+		txr.logger.Infof("Failed to replicate transaction from '%s' to '%s'. Reason: %s", txr._masterDB, txr.db.GetName(), err.Error())
+
+		consecutiveFailures++
+
+		if !txr.replicationFailureDelay(consecutiveFailures) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (txr *TxReplicator) replicationFailureDelay(consecutiveFailures int) bool {
+	txr.metrics.replicationRetries.Inc()
+
+	txr.metrics.replicatorsInRetryDelay.Inc()
+	defer txr.metrics.replicatorsInRetryDelay.Dec()
+
+	timer := time.NewTimer(txr.delayer.DelayAfter(consecutiveFailures))
+	select {
+	case <-txr.context.Done():
+		timer.Stop()
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func fullAddress(db, address string, port int) string {
@@ -328,14 +369,26 @@ func (txr *TxReplicator) fetchNextTx() error {
 	if syncReplicationEnabled {
 		md := exportTxStream.Trailer()
 
-		if len(md.Get("may-commit-up-to-txid-bin")) == 0 || len(md.Get("may-commit-up-to-alh-bin")) == 0 {
-			return fmt.Errorf("master is not running with synchronous replication")
+		if len(md.Get("may-commit-up-to-txid-bin")) == 0 ||
+			len(md.Get("may-commit-up-to-alh-bin")) == 0 ||
+			len(md.Get("committed-txid-bin")) == 0 {
+			return ErrNoSynchronousReplicationOnMaster
+		}
+
+		if len(md.Get("may-commit-up-to-txid-bin")[0]) != 8 ||
+			len(md.Get("may-commit-up-to-alh-bin")[0]) != sha256.Size ||
+			len(md.Get("committed-txid-bin")[0]) != 8 {
+			return ErrInvalidReplicationMetadata
 		}
 
 		mayCommitUpToTxID := binary.BigEndian.Uint64([]byte(md.Get("may-commit-up-to-txid-bin")[0]))
+		committedTxID := binary.BigEndian.Uint64([]byte(md.Get("committed-txid-bin")[0]))
 
 		var mayCommitUpToAlh [sha256.Size]byte
 		copy(mayCommitUpToAlh[:], []byte(md.Get("may-commit-up-to-alh-bin")[0]))
+
+		txr.metrics.primaryCommittedTxID.Set(float64(committedTxID))
+		txr.metrics.allowCommitUpToTxID.Set(float64(mayCommitUpToTxID))
 
 		if mayCommitUpToTxID > commitState.TxId {
 			err = txr.db.AllowCommitUpto(mayCommitUpToTxID, mayCommitUpToAlh)
@@ -352,7 +405,10 @@ func (txr *TxReplicator) fetchNextTx() error {
 
 	if len(etx) > 0 {
 		// in some cases the transaction is not provided but only the master commit state
-		txr.prefetchTxBuffer <- etx
+		txr.prefetchTxBuffer <- prefetchTxEntry{
+			data:    etx,
+			addedAt: time.Now(),
+		}
 		txr.lastTx++
 	}
 
