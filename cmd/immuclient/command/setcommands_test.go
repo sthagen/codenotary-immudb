@@ -65,16 +65,10 @@ Connect(bs.Dialer)
 
 	err := cmd.Execute()
 
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	msg, err := ioutil.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(msg), "hash") {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(msg), "hash")
 }
 
 func TestSet(t *testing.T) {
@@ -109,16 +103,10 @@ Connect(bs.Dialer)
 
 	err := cmd.Execute()
 
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	msg, err := ioutil.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(msg), "hash") {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(msg), "hash")
 }
 
 func TestSafeset(t *testing.T) {
@@ -153,16 +141,10 @@ Connect(bs.Dialer)
 
 	err := cmd.Execute()
 
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	msg, err := ioutil.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(msg), "hash") {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(msg), "hash")
 }
 
 func TestZAdd(t *testing.T) {
@@ -200,9 +182,7 @@ Connect(bs.Dialer)
 
 	err := cmd.Execute()
 
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	cmd.SetArgs([]string{"zadd", "name", "1", "key"})
 
@@ -212,16 +192,10 @@ Connect(bs.Dialer)
 	innercmd.PersistentPreRunE = nil
 
 	err = cmd.Execute()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	msg, err := ioutil.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(msg), "score") {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(msg), "score")
 }
 
 func TestSafeZAdd(t *testing.T) {
@@ -260,9 +234,7 @@ Connect(bs.Dialer)
 
 	err := cmd.Execute()
 
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	cmd.SetArgs([]string{"safezadd", "name", "1", "key"})
 
@@ -272,15 +244,9 @@ Connect(bs.Dialer)
 	innercmd.PersistentPreRunE = nil
 
 	err = cmd.Execute()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	msg, err := ioutil.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(msg), "score") {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(msg), "score")
 }
 */

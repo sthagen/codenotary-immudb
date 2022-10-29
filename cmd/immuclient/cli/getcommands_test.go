@@ -35,7 +35,7 @@ defer bs.Stop()
 	ts := tokenservice.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
 	ic := test.NewClientTest(&test.PasswordReader{
 		Pass: []string{"immudb"},
-	}, ts)
+	}, ts, client.DefaultOptions().WithDir(t.TempDir()))
 ic.
 Connect(bs.Dialer)
 	ic.Login("immudb")
@@ -45,12 +45,8 @@ Connect(bs.Dialer)
 
 	_, _ = cli.safeset([]string{"key", "val"})
 	msg, err := cli.getByIndex([]string{"0"})
-	if err != nil {
-		t.Fatal("GetByIndex fail", err)
-	}
-	if !strings.Contains(msg, "hash") {
-		t.Fatalf("GetByIndex failed: %s", msg)
-	}
+	require.NoError(t, err, "GetByIndex fail")
+	require.Contains(t, msg, "hash", "GetByIndex failed")
 }
 
 func TestGetKey(t *testing.T) {
@@ -61,7 +57,7 @@ defer bs.Stop()
 	ts := tokenservice.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
 	ic := test.NewClientTest(&test.PasswordReader{
 		Pass: []string{"immudb"},
-	}, ts)
+	}, ts, client.DefaultOptions().WithDir(t.TempDir()))
 ic.
 Connect(bs.Dialer)
 	ic.Login("immudb")
@@ -71,12 +67,8 @@ Connect(bs.Dialer)
 
 	_, _ = cli.set([]string{"key", "val"})
 	msg, err := cli.getKey([]string{"key"})
-	if err != nil {
-		t.Fatal("GetKey fail", err)
-	}
-	if !strings.Contains(msg, "hash") {
-		t.Fatalf("GetKey failed: %s", msg)
-	}
+	require.NoError(t, err, "GetKey fail")
+	require.Contains(t, msg, "hash", "GetKey failed")
 }
 func TestRawSafeGetKey(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true).WithInMemoryStore(true)
@@ -86,7 +78,7 @@ defer bs.Stop()
 	ts := tokenservice.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
 	ic := test.NewClientTest(&test.PasswordReader{
 		Pass: []string{"immudb"},
-	}, ts)
+	}, ts, client.DefaultOptions().WithDir(t.TempDir()))
 ic.
 Connect(bs.Dialer)
 	ic.Login("immudb")
@@ -96,12 +88,8 @@ Connect(bs.Dialer)
 
 	_, _ = cli.set([]string{"key", "val"})
 	msg, err := cli.rawSafeGetKey([]string{"key"})
-	if err != nil {
-		t.Fatal("RawSafeGetKey fail", err)
-	}
-	if !strings.Contains(msg, "hash") {
-		t.Fatalf("RawSafeGetKey failed: %s", msg)
-	}
+	require.NoError(t, err, "RawSafeGetKey fail")
+	require.Contains(t, msg, "hash", "RawSafeGetKey failed")
 }
 func TestSafeGetKey(t *testing.T) {
 	options := server.DefaultOptions().WithAuth(true).WithInMemoryStore(true)
@@ -111,7 +99,7 @@ defer bs.Stop()
 	ts := tokenservice.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
 	ic := test.NewClientTest(&test.PasswordReader{
 		Pass: []string{"immudb"},
-	}, ts)
+	}, ts, client.DefaultOptions().WithDir(t.TempDir()))
 ic.
 Connect(bs.Dialer)
 	ic.Login("immudb")
@@ -121,12 +109,8 @@ Connect(bs.Dialer)
 
 	_, _ = cli.set([]string{"key", "val"})
 	msg, err := cli.safeGetKey([]string{"key"})
-	if err != nil {
-		t.Fatal("SafeGetKey fail", err)
-	}
-	if !strings.Contains(msg, "hash") {
-		t.Fatalf("SafeGetKey failed: %s", msg)
-	}
+	require.NoError(t, err, "SafeGetKey fail")
+	require.Contains(t, msg, "hash", "SafeGetKey failed")
 }
 
 func TestGetRawBySafeIndex(t *testing.T) {
@@ -137,7 +121,7 @@ defer bs.Stop()
 	ts := tokenservice.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
 	ic := test.NewClientTest(&test.PasswordReader{
 		Pass: []string{"immudb"},
-	}, ts)
+	}, ts, client.DefaultOptions().WithDir(t.TempDir()))
 ic.
 Connect(bs.Dialer)
 	ic.Login("immudb")
@@ -147,11 +131,7 @@ Connect(bs.Dialer)
 
 	_, _ = cli.set([]string{"key", "val"})
 	msg, err := cli.getRawBySafeIndex([]string{"0"})
-	if err != nil {
-		t.Fatal("GetRawBySafeIndex fail", err)
-	}
-	if !strings.Contains(msg, "hash") {
-		t.Fatalf("GetRawBySafeIndex failed: %s", msg)
-	}
+	require.NoError(t, err, "GetRawBySafeIndex fail")
+	require.Contains(t, msg, "hash", "GetRawBySafeIndex failed")
 }
 */

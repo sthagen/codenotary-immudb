@@ -67,16 +67,10 @@ Connect(bs.Dialer)
 
 	err := cmd.Execute()
 
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	msg, err := ioutil.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(msg), "hash") {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(msg), "hash")
 }
 func TestStatus(t *testing.T) {
 	defer os.Remove(".root-")
@@ -113,16 +107,10 @@ Connect(bs.Dialer)
 
 	err := cmd.Execute()
 
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	msg, err := ioutil.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(msg), "Health check OK") {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(msg), "Health check OK")
 }
 
 func TestUseDatabase(t *testing.T) {
@@ -144,9 +132,7 @@ Connect(bs.Dialer)
 		immucl: ic.Imc,
 	}
 	_, err := ic.Imc.CreateDatabase([]string{"mynewdb"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	cmd, _ := cmdl.NewCmd()
 	cmdl.use(cmd)
 	b := bytes.NewBufferString("")
@@ -160,15 +146,9 @@ Connect(bs.Dialer)
 	innercmd.PersistentPreRunE = nil
 
 	err = cmd.Execute()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	msg, err := ioutil.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(msg), "mynewdb") {
-		t.Fatal(string(msg))
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(msg), "mynewdb")
 }
 */

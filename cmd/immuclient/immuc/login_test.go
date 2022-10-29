@@ -17,132 +17,81 @@ limitations under the License.
 package immuc_test
 
 import (
-	"os"
-	"strings"
 	"testing"
 
-	"github.com/codenotary/immudb/cmd/cmdtest"
-	"github.com/codenotary/immudb/pkg/client/tokenservice"
-
 	. "github.com/codenotary/immudb/cmd/immuclient/immuc"
-	"github.com/codenotary/immudb/cmd/immuclient/immuclienttest"
 	test "github.com/codenotary/immudb/cmd/immuclient/immuclienttest"
-	"github.com/codenotary/immudb/pkg/client"
+	"github.com/codenotary/immudb/pkg/client/tokenservice"
 	"github.com/codenotary/immudb/pkg/server"
 	"github.com/codenotary/immudb/pkg/server/servertest"
-	"github.com/spf13/viper"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 )
 
 func TestLogin(t *testing.T) {
-	viper.Set("tokenfile", "token")
-	options := server.DefaultOptions().WithAuth(true)
+	options := server.DefaultOptions().WithDir(t.TempDir())
 	bs := servertest.NewBufconnServer(options)
 
 	bs.Start()
 	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
 
 	opts := OptionsFromEnv()
 	opts.GetImmudbClientOptions().
 		WithDialOptions([]grpc.DialOption{
 			grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 		}).
-		WithPasswordReader(&immuclienttest.PasswordReader{
+		WithPasswordReader(&test.PasswordReader{
 			Pass: []string{"immudb"},
-		})
+		}).
+		WithDir(t.TempDir())
 
 	imc, err := Init(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	err = imc.Connect([]string{""})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	imc.WithFileTokenService(tokenservice.NewInmemoryTokenService())
 
 	msg, err := imc.Login([]string{"immudb"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(msg, "Successfully logged in") {
-		t.Fatal("Login error")
-	}
+	require.NoError(t, err)
+	require.Contains(t, msg, "Successfully logged in", "Login error")
 }
+
 func TestLogout(t *testing.T) {
-	viper.Set("tokenfile", client.DefaultOptions().TokenFileName)
-	options := server.DefaultOptions().WithAuth(true)
+	options := server.DefaultOptions().WithDir(t.TempDir())
 	bs := servertest.NewBufconnServer(options)
 
 	bs.Start()
 	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
 
 	opts := OptionsFromEnv()
 	opts.GetImmudbClientOptions().
 		WithDialOptions([]grpc.DialOption{
 			grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 		}).
-		WithPasswordReader(&immuclienttest.PasswordReader{
+		WithPasswordReader(&test.PasswordReader{
 			Pass: []string{"immudb"},
-		})
+		}).
+		WithDir(t.TempDir())
 
 	imc, err := Init(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	err = imc.Connect([]string{""})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	imc.WithFileTokenService(tokenservice.NewInmemoryTokenService())
+
 	_, err = imc.Logout([]string{""})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 }
 
 func TestUserList(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
-
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.Connect(bs.Dialer)
-	ic.Login("immudb")
+	ic := setupTest(t)
 
 	_, err := ic.Imc.UserList([]string{""})
-	if err != nil {
-		t.Fatal("Userlist fail", err)
-	}
+	require.NoError(t, err, "Userlist fail")
 }
+
 func TestUserCreate(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
-
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.Connect(bs.Dialer)
-	ic.Login("immudb")
+	icMain := setupTest(t)
 
 	var userCreateTests = []struct {
 		name     string
@@ -159,16 +108,12 @@ func TestUserCreate(t *testing.T) {
 			func(t *testing.T, password string, args []string, exp string) {
 				ic := test.NewClientTest(&test.PasswordReader{
 					Pass: []string{password, password},
-				}, ic.Ts)
-				ic.Connect(bs.Dialer)
+				}, icMain.Ts, icMain.Options.GetImmudbClientOptions())
+				ic.Connect(icMain.Dialer)
 
 				msg, err := ic.Imc.UserCreate(args)
-				if err != nil {
-					t.Fatal("TestUserCreate fail", err)
-				}
-				if !strings.Contains(msg, exp) {
-					t.Fatalf("TestUserCreate failed to create user: %s", msg)
-				}
+				require.NoError(t, err, "TestUserCreate fail")
+				require.Contains(t, msg, exp, "TestUserCreate failed to create user")
 			},
 		},
 		{
@@ -179,16 +124,12 @@ func TestUserCreate(t *testing.T) {
 			func(t *testing.T, password string, args []string, exp string) {
 				ic := test.NewClientTest(&test.PasswordReader{
 					Pass: []string{password, password},
-				}, ic.Ts)
-				ic.Connect(bs.Dialer)
+				}, icMain.Ts, icMain.Options.GetImmudbClientOptions())
+				ic.Connect(icMain.Dialer)
 
 				msg, err := ic.Imc.UserCreate(args)
-				if err != nil {
-					t.Fatal("TestUserCreate fail", err)
-				}
-				if !strings.Contains(msg, exp) {
-					t.Fatalf("TestUserCreate failed to create user: %s", msg)
-				}
+				require.NoError(t, err, "TestUserCreate fail")
+				require.Contains(t, msg, exp, "TestUserCreate failed to create user")
 			},
 		},
 		{
@@ -199,16 +140,12 @@ func TestUserCreate(t *testing.T) {
 			func(t *testing.T, password string, args []string, exp string) {
 				ic := test.NewClientTest(&test.PasswordReader{
 					Pass: []string{password, password},
-				}, ic.Ts)
-				ic.Connect(bs.Dialer)
+				}, icMain.Ts, icMain.Options.GetImmudbClientOptions())
+				ic.Connect(icMain.Dialer)
 
 				msg, err := ic.Imc.UserCreate(args)
-				if err != nil {
-					t.Fatal("TestUserCreate fail", err)
-				}
-				if !strings.Contains(msg, exp) {
-					t.Fatalf("TestUserCreate failed to create user: %s", msg)
-				}
+				require.NoError(t, err, "TestUserCreate fail")
+				require.Contains(t, msg, exp, "TestUserCreate failed to create user")
 			},
 		},
 		{
@@ -219,16 +156,12 @@ func TestUserCreate(t *testing.T) {
 			func(t *testing.T, password string, args []string, exp string) {
 				ic := test.NewClientTest(&test.PasswordReader{
 					Pass: []string{password, password},
-				}, ic.Ts)
-				ic.Connect(bs.Dialer)
+				}, icMain.Ts, icMain.Options.GetImmudbClientOptions())
+				ic.Connect(icMain.Dialer)
 
 				msg, err := ic.Imc.UserCreate(args)
-				if err != nil {
-					t.Fatal("TestUserCreate fail", err)
-				}
-				if !strings.Contains(msg, exp) {
-					t.Fatalf("TestUserCreate failed to create user: %s", msg)
-				}
+				require.NoError(t, err, "TestUserCreate fail")
+				require.Contains(t, msg, exp, "TestUserCreate failed to create user")
 			},
 		},
 		{
@@ -239,19 +172,12 @@ func TestUserCreate(t *testing.T) {
 			func(t *testing.T, password string, args []string, exp string) {
 				ic := test.NewClientTest(&test.PasswordReader{
 					Pass: []string{password, password},
-				}, ic.Ts)
-				ic.Connect(bs.Dialer)
+				}, icMain.Ts, icMain.Options.GetImmudbClientOptions())
+				ic.Connect(icMain.Dialer)
 
 				msg, err := ic.Imc.UserCreate(args)
-				if err == nil {
-					t.Fatal("TestUserCreate fail", err)
-				}
-				if !strings.Contains(err.Error(), exp) {
-					t.Fatalf("TestUserCreate failed to create user: %s", err)
-				}
-				if msg != "" {
-					t.Fatalf("TestUserCreate %s", msg)
-				}
+				require.ErrorContains(t, err, exp, "TestUserCreate fail")
+				require.Empty(t, msg)
 			},
 		},
 	}
@@ -263,23 +189,7 @@ func TestUserCreate(t *testing.T) {
 }
 
 func TestUserChangePassword(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
-
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.
-		Connect(bs.Dialer)
-	ic.Login("immudb")
+	ic := setupTest(t)
 
 	var userCreateTests = []struct {
 		name     string
@@ -297,14 +207,10 @@ func TestUserChangePassword(t *testing.T) {
 				ic.Pr = &test.PasswordReader{
 					Pass: []string{"immudb", password, password},
 				}
-				ic.Connect(bs.Dialer)
+				ic.Connect(ic.Dialer)
 				msg, err := ic.Imc.ChangeUserPassword(args)
-				if err != nil {
-					t.Fatal("TestUserChangePassword fail", err)
-				}
-				if !strings.Contains(msg, exp) {
-					t.Fatalf("TestUserChangePassword failed to change password: %s", msg)
-				}
+				require.NoError(t, err, "TestUserChangePassword fail")
+				require.Contains(t, msg, exp, "TestUserChangePassword failed to change password")
 			},
 		},
 		{
@@ -316,20 +222,15 @@ func TestUserChangePassword(t *testing.T) {
 				ic.Pr = &test.PasswordReader{
 					Pass: []string{password},
 				}
-				ic.Connect(bs.Dialer)
+				ic.Connect(ic.Dialer)
 				ic.Login("immudb")
 
 				ic.Pr = &test.PasswordReader{
 					Pass: []string{"pass", password, password},
 				}
-				ic.Connect(bs.Dialer)
+				ic.Connect(ic.Dialer)
 				msg, err := ic.Imc.ChangeUserPassword(args)
-				if err == nil {
-					t.Fatal("TestUserChangePassword fail", err)
-				}
-				if !strings.Contains(err.Error(), exp) {
-					t.Fatalf("TestUserChangePassword failed to change password: %s", msg)
-				}
+				require.ErrorContainsf(t, err, exp, "TestUserChangePassword failed to change password: %s", msg)
 			},
 		},
 	}
@@ -341,33 +242,15 @@ func TestUserChangePassword(t *testing.T) {
 }
 
 func TestUserSetActive(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
-
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.
-		Connect(bs.Dialer)
-	ic.Login("immudb")
+	ic := setupTest(t)
 
 	ic.Pr = &test.PasswordReader{
 		Pass: []string{"MyUser@9", "MyUser@9"},
 	}
-	ic.Connect(bs.Dialer)
+	ic.Connect(ic.Dialer)
 
 	_, err := ic.Imc.UserCreate([]string{"myuser", "readwrite", "defaultdb"})
-	if err != nil {
-		t.Fatal("TestUserCreate fail", err)
-	}
+	require.NoError(t, err, "TestUserCreate fail")
 	var userCreateTests = []struct {
 		name     string
 		args     []string
@@ -382,12 +265,8 @@ func TestUserSetActive(t *testing.T) {
 			"user status changed successfully",
 			func(t *testing.T, password string, args []string, exp string) {
 				msg, err := ic.Imc.SetActiveUser(args, true)
-				if err != nil {
-					t.Fatal("SetActiveUser fail", err)
-				}
-				if !strings.Contains(msg, exp) {
-					t.Fatalf("SetActiveUser failed to change status: %s", msg)
-				}
+				require.NoError(t, err, "SetActiveUser fail")
+				require.Contains(t, msg, exp, "SetActiveUser failed to change status")
 			},
 		},
 		{
@@ -397,12 +276,8 @@ func TestUserSetActive(t *testing.T) {
 			"user status changed successfully",
 			func(t *testing.T, password string, args []string, exp string) {
 				msg, err := ic.Imc.SetActiveUser(args, false)
-				if err != nil {
-					t.Fatal("Deactivate fail", err)
-				}
-				if !strings.Contains(msg, exp) {
-					t.Fatalf("Deactivate failed to change status: %s", msg)
-				}
+				require.NoError(t, err, "Deactivate fail")
+				require.Contains(t, msg, exp, "Deactivate failed to change status")
 			},
 		},
 	}
@@ -414,31 +289,14 @@ func TestUserSetActive(t *testing.T) {
 }
 
 func TestSetUserPermission(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
-
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.Connect(bs.Dialer)
-	ic.Login("immudb")
+	ic := setupTest(t)
 
 	ic.Pr = &test.PasswordReader{
 		Pass: []string{"MyUser@9", "MyUser@9"},
 	}
-	ic.Connect(bs.Dialer)
+	ic.Connect(ic.Dialer)
 	_, err := ic.Imc.UserCreate([]string{"myuser", "readwrite", "defaultdb"})
-	if err != nil {
-		t.Fatal("TestUserCreate fail", err)
-	}
+	require.NoError(t, err, "TestUserCreate fail")
 	var userCreateTests = []struct {
 		name     string
 		args     []string
@@ -453,12 +311,8 @@ func TestSetUserPermission(t *testing.T) {
 			"permission changed successfully",
 			func(t *testing.T, password string, args []string, exp string) {
 				msg, err := ic.Imc.SetUserPermission(args)
-				if err != nil {
-					t.Fatal("SetUserPermission fail", err)
-				}
-				if !strings.Contains(msg, exp) {
-					t.Fatalf("SetUserPermission failed to set user permission: %s", msg)
-				}
+				require.NoError(t, err, "SetUserPermission fail")
+				require.Contains(t, msg, exp, "SetUserPermission failed to set user permission")
 			},
 		},
 		{
@@ -468,12 +322,8 @@ func TestSetUserPermission(t *testing.T) {
 			"permission changed successfully",
 			func(t *testing.T, password string, args []string, exp string) {
 				msg, err := ic.Imc.SetUserPermission(args)
-				if err != nil {
-					t.Fatal("SetUserPermission fail", err)
-				}
-				if !strings.Contains(msg, exp) {
-					t.Fatalf("SetUserPermission failed to set user permission: %s", msg)
-				}
+				require.NoError(t, err, "SetUserPermission fail")
+				require.Contains(t, msg, exp, "SetUserPermission failed to set user permission")
 			},
 		},
 		{
@@ -483,12 +333,8 @@ func TestSetUserPermission(t *testing.T) {
 			"permission changed successfully",
 			func(t *testing.T, password string, args []string, exp string) {
 				msg, err := ic.Imc.SetUserPermission(args)
-				if err != nil {
-					t.Fatal("SetUserPermission fail", err)
-				}
-				if !strings.Contains(msg, exp) {
-					t.Fatalf("SetUserPermission failed to set user permission: %s", msg)
-				}
+				require.NoError(t, err, "SetUserPermission fail")
+				require.Contains(t, msg, exp, "SetUserPermission failed to set user permission")
 			},
 		},
 		{
@@ -498,12 +344,8 @@ func TestSetUserPermission(t *testing.T) {
 			"permission changed successfully",
 			func(t *testing.T, password string, args []string, exp string) {
 				msg, err := ic.Imc.SetUserPermission(args)
-				if err != nil {
-					t.Fatal("SetUserPermission fail", err)
-				}
-				if !strings.Contains(msg, exp) {
-					t.Fatalf("SetUserPermission failed to set user permission: %s", msg)
-				}
+				require.NoError(t, err, "SetUserPermission fail")
+				require.Contains(t, msg, exp, "SetUserPermission failed to set user permission")
 			},
 		},
 	}

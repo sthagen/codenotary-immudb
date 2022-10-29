@@ -17,53 +17,21 @@ limitations under the License.
 package immuc_test
 
 import (
-	"os"
-	"strings"
 	"testing"
 
-	"github.com/codenotary/immudb/cmd/cmdtest"
-	"github.com/codenotary/immudb/pkg/client/tokenservice"
-
-	test "github.com/codenotary/immudb/cmd/immuclient/immuclienttest"
-	"github.com/codenotary/immudb/pkg/server"
-	"github.com/codenotary/immudb/pkg/server/servertest"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHistory(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
-
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.
-		Connect(bs.Dialer)
-	ic.Login("immudb")
+	ic := setupTest(t)
 
 	msg, err := ic.Imc.History([]string{"key"})
-	if err != nil {
-		t.Fatal("History fail", err)
-	}
-	if !strings.Contains(msg, "key not found") {
-		t.Fatalf("History fail %s", msg)
-	}
+	require.NoError(t, err, "History fail")
+	require.Contains(t, msg, "key not found", "History fail")
 
 	_, err = ic.Imc.Set([]string{"key", "value"})
-	if err != nil {
-		t.Fatal("History fail", err)
-	}
+	require.NoError(t, err, "History fail")
 	msg, err = ic.Imc.History([]string{"key"})
-	if err != nil {
-		t.Fatal("History fail", err)
-	}
-	if !strings.Contains(msg, "value") {
-		t.Fatalf("History fail %s", msg)
-	}
+	require.NoError(t, err, "History fail")
+	require.Contains(t, msg, "value", "History fail")
 }

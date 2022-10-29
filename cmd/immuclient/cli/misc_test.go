@@ -17,114 +17,38 @@ limitations under the License.
 package cli
 
 import (
-	"os"
-	"strings"
 	"testing"
 
-	"github.com/codenotary/immudb/cmd/cmdtest"
-	"github.com/codenotary/immudb/pkg/client/tokenservice"
-
-	test "github.com/codenotary/immudb/cmd/immuclient/immuclienttest"
-	"github.com/codenotary/immudb/pkg/server"
-	"github.com/codenotary/immudb/pkg/server/servertest"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHealthCheck(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
+	cli := setupTest(t)
 
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.Connect(bs.Dialer)
-	ic.Login("immudb")
-
-	cli := new(cli)
-	cli.immucl = ic.Imc
 	msg, err := cli.healthCheck([]string{})
-	if err != nil {
-		t.Fatal("HealthCheck fail", err)
-	}
-	if !strings.Contains(msg, "Health check OK") {
-		t.Fatal("HealthCheck fail")
-	}
+	require.NoError(t, err, "HealthCheck fail")
+	require.Contains(t, msg, "Health check OK", "HealthCheck fail")
 }
 
 func TestHistory(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
+	cli := setupTest(t)
 
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.Connect(bs.Dialer)
-	ic.Login("immudb")
-
-	cli := new(cli)
-
-	cli.immucl = ic.Imc
 	msg, err := cli.history([]string{"key"})
-	if err != nil {
-		t.Fatal("History fail", err)
-	}
-	if !strings.Contains(msg, "key not found") {
-		t.Fatalf("History fail %s", msg)
-	}
+	require.NoError(t, err, "History fail")
+	require.Contains(t, msg, "key not found", "History fail")
 
 	_, err = cli.set([]string{"key", "value"})
-	if err != nil {
-		t.Fatal("History fail", err)
-	}
+	require.NoError(t, err, "History fail")
 
 	msg, err = cli.history([]string{"key"})
-	if err != nil {
-		t.Fatal("History fail", err)
-	}
-	if !strings.Contains(msg, "value") {
-		t.Fatalf("History fail %s", msg)
-	}
+	require.NoError(t, err, "History fail")
+	require.Contains(t, msg, "value", "History fail")
 }
+
 func TestVersion(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
+	cli := setupTest(t)
 
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.Connect(bs.Dialer)
-	ic.Login("immudb")
-
-	cli := new(cli)
-	cli.immucl = ic.Imc
 	msg, err := cli.version([]string{"key"})
-	if err != nil {
-		t.Fatal("version fail", err)
-	}
-	if !strings.Contains(msg, "no version info available") {
-		t.Fatalf("version fail %s", msg)
-	}
+	require.NoError(t, err, "version fail")
+	require.Contains(t, msg, "no version info available", "version fail")
 }

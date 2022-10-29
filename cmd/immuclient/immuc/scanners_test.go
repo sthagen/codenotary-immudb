@@ -17,141 +17,52 @@ limitations under the License.
 package immuc_test
 
 import (
-	"os"
-	"strings"
 	"testing"
 
-	"github.com/codenotary/immudb/cmd/cmdtest"
-	"github.com/codenotary/immudb/pkg/client/tokenservice"
-
-	test "github.com/codenotary/immudb/cmd/immuclient/immuclienttest"
-	"github.com/codenotary/immudb/pkg/server"
-	"github.com/codenotary/immudb/pkg/server/servertest"
+	"github.com/stretchr/testify/require"
 )
 
 func TestZScan(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
-
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.Connect(bs.Dialer)
-	ic.Login("immudb")
+	ic := setupTest(t)
 
 	_, err := ic.Imc.Set([]string{"key", "val"})
-	if err != nil {
-		t.Fatal("Set fail", err)
-	}
+	require.NoError(t, err, "Set fail")
 
 	_, err = ic.Imc.ZAdd([]string{"set", "10.5", "key"})
-	if err != nil {
-		t.Fatal("ZAdd fail", err)
-	}
+	require.NoError(t, err, "ZAdd fail")
 
 	msg, err := ic.Imc.ZScan([]string{"set"})
-	if err != nil {
-		t.Fatal("ZScan fail", err)
-	}
-	if !strings.Contains(msg, "value") {
-		t.Fatalf("ZScan failed: %s", msg)
-	}
+	require.NoError(t, err, "ZScan fail")
+	require.Contains(t, msg, "value", "ZScan failed")
 }
 
 func TestIScan(t *testing.T) {
-	defer os.Remove(".state-")
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
+	ic := setupTest(t)
 
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.
-		Connect(bs.Dialer)
-	ic.Login("immudb")
 	_, err := ic.Imc.VerifiedSet([]string{"key", "val"})
-	if err != nil {
-		t.Fatal("Set fail", err)
-	}
+	require.NoError(t, err, "Set fail")
 }
 
 func TestScan(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
+	ic := setupTest(t)
 
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.
-		Connect(bs.Dialer)
-	ic.Login("immudb")
 	_, err := ic.Imc.Set([]string{"key", "val"})
-	if err != nil {
-		t.Fatal("Set fail", err)
-	}
+	require.NoError(t, err, "Set fail")
 
 	msg, err := ic.Imc.Scan([]string{"k"})
-	if err != nil {
-		t.Fatal("Scan fail", err)
-	}
-	if !strings.Contains(msg, "value") {
-		t.Fatalf("Scan failed: %s", msg)
-	}
+	require.NoError(t, err, "Scan fail")
+	require.Contains(t, msg, "value", "Scan failed")
 }
 
-func _TestCount(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
+func TestCount(t *testing.T) {
+	t.SkipNow()
 
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.
-		Connect(bs.Dialer)
-	ic.Login("immudb")
+	ic := setupTest(t)
 
 	_, err := ic.Imc.Set([]string{"key", "val"})
-	if err != nil {
-		t.Fatal("Set fail", err)
-	}
+	require.NoError(t, err, "Set fail")
 
 	msg, err := ic.Imc.Count([]string{"key"})
-	if err != nil {
-		t.Fatal("Count fail", err)
-	}
-	if !strings.Contains(msg, "1") {
-		t.Fatalf("Count failed: %s", msg)
-	}
+	require.NoError(t, err, "Count fail")
+	require.Contains(t, msg, "1", "Count failed")
 }

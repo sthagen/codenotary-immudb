@@ -26,7 +26,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,30 +55,27 @@ var kvs = []*schema.KeyValue{
 	},
 }
 
-func makeDb() (*db, func()) {
-	rootPath := "data_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+func makeDb(t *testing.T) *db {
+	rootPath := t.TempDir()
 
 	options := DefaultOption().WithDBRootPath(rootPath).WithCorruptionChecker(false)
 	options.storeOpts.WithIndexOptions(options.storeOpts.IndexOpts.WithCompactionThld(2))
 
-	return makeDbWith("db", options)
+	return makeDbWith(t, "db", options)
 }
 
-func makeDbWith(dbName string, opts *Options) (*db, func()) {
+func makeDbWith(t *testing.T, dbName string, opts *Options) *db {
 	d, err := NewDB(dbName, &dummyMultidbHandler{}, opts, logger.NewSimpleLogger("immudb ", os.Stderr))
-	if err != nil {
-		log.Fatalf("Error creating Db instance %s", err)
-	}
+	require.NoError(t, err)
 
-	return d.(*db), func() {
-		if err := d.Close(); err != nil {
-			log.Fatal(err)
+	t.Cleanup(func() {
+		err := d.Close()
+		if !t.Failed() {
+			require.NoError(t, err)
 		}
+	})
 
-		if err := os.RemoveAll(d.GetOptions().dbRootPath); err != nil {
-			log.Fatal(err)
-		}
-	}
+	return d.(*db)
 }
 
 type dummyMultidbHandler struct {
@@ -102,19 +98,13 @@ func (h *dummyMultidbHandler) ExecPreparedStmts(ctx context.Context, stmts []sql
 }
 
 func TestDefaultDbCreation(t *testing.T) {
-	options := DefaultOption()
+	options := DefaultOption().WithDBRootPath(t.TempDir())
 	db, err := NewDB("mydb", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
-	if err != nil {
-		t.Fatalf("Error creating Db instance %s", err)
-	}
+	require.NoError(t, err)
 
 	require.Equal(t, options, db.GetOptions())
 
-	defer func() {
-		db.Close()
-		time.Sleep(1 * time.Second)
-		os.RemoveAll(options.GetDBRootPath())
-	}()
+	defer db.Close()
 
 	n, err := db.Size()
 	require.NoError(t, err)
@@ -127,107 +117,74 @@ func TestDefaultDbCreation(t *testing.T) {
 	require.Error(t, err)
 
 	dbPath := path.Join(options.GetDBRootPath(), db.GetName())
-	if _, err = os.Stat(dbPath); os.IsNotExist(err) {
-		t.Fatalf("Db dir not created")
-	}
-
-	_, err = os.Stat(path.Join(options.GetDBRootPath()))
-	if os.IsNotExist(err) {
-		t.Fatalf("Data dir not created")
-	}
+	require.DirExists(t, dbPath)
 }
 
 func TestDbCreationInAlreadyExistentDirectories(t *testing.T) {
-	options := DefaultOption().WithDBRootPath("Paris")
-	defer os.RemoveAll(options.GetDBRootPath())
+	options := DefaultOption().WithDBRootPath(filepath.Join(t.TempDir(), "Paris"))
 
-	err := os.MkdirAll(options.GetDBRootPath(), os.ModePerm)
-	require.NoError(t, err)
-
-	err = os.MkdirAll(filepath.Join(options.GetDBRootPath(), "EdithPiaf"), os.ModePerm)
+	err := os.MkdirAll(filepath.Join(options.GetDBRootPath(), "EdithPiaf"), os.ModePerm)
 	require.NoError(t, err)
 
 	_, err = NewDB("EdithPiaf", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
-	require.Error(t, err)
+	require.ErrorContains(t, err, "already exist")
 }
 
 func TestDbCreationInInvalidDirectory(t *testing.T) {
 	options := DefaultOption().WithDBRootPath("/?")
-	defer os.RemoveAll(options.GetDBRootPath())
 
 	_, err := NewDB("EdithPiaf", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.Error(t, err)
 }
 
 func TestDbCreation(t *testing.T) {
-	options := DefaultOption().WithDBRootPath("Paris")
+	options := DefaultOption().WithDBRootPath(filepath.Join(t.TempDir(), "Paris"))
 	db, err := NewDB("EdithPiaf", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
-	if err != nil {
-		t.Fatalf("Error creating Db instance %s", err)
-	}
+	require.NoError(t, err)
 
-	defer func() {
-		db.Close()
-		time.Sleep(1 * time.Second)
-		os.RemoveAll(options.GetDBRootPath())
-	}()
+	defer db.Close()
 
 	dbPath := path.Join(options.GetDBRootPath(), db.GetName())
-	if _, err = os.Stat(dbPath); os.IsNotExist(err) {
-		t.Fatalf("Db dir not created")
-	}
-
-	_, err = os.Stat(options.GetDBRootPath())
-	if os.IsNotExist(err) {
-		t.Fatalf("Data dir not created")
-	}
+	require.DirExists(t, dbPath)
 }
 
 func TestOpenWithMissingDBDirectories(t *testing.T) {
-	options := DefaultOption().WithDBRootPath("Paris")
+	options := DefaultOption().WithDBRootPath(filepath.Join(t.TempDir(), "Paris"))
 	_, err := OpenDB("EdithPiaf", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.Error(t, err)
 }
 
 func TestOpenWithIllegalDBName(t *testing.T) {
-	options := DefaultOption().WithDBRootPath("Paris")
+	options := DefaultOption().WithDBRootPath(filepath.Join(t.TempDir(), "Paris"))
 	_, err := OpenDB("", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.ErrorIs(t, err, ErrIllegalArguments)
 }
 
 func TestOpenDB(t *testing.T) {
-	options := DefaultOption().WithDBRootPath("Paris")
+	options := DefaultOption().WithDBRootPath(filepath.Join(t.TempDir(), "Paris"))
 	db, err := NewDB("EdithPiaf", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
-	if err != nil {
-		t.Fatalf("Error creating Db instance %s", err)
-	}
+	require.NoError(t, err)
 
 	err = db.Close()
-	if err != nil {
-		t.Fatalf("Error closing store %s", err)
-	}
+	require.NoError(t, err)
 
 	db, err = OpenDB("EdithPiaf", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
-	if err != nil {
-		t.Fatalf("Error opening database %s", err)
-	}
+	require.NoError(t, err)
 
-	db.Close()
-	time.Sleep(1 * time.Second)
-	os.RemoveAll(options.GetDBRootPath())
+	err = db.Close()
+	require.NoError(t, err)
 }
 
 func TestOpenV1_0_1_DB(t *testing.T) {
 	copier := fs.NewStandardCopier()
-	require.NoError(t, copier.CopyDir("../../test/data_v1.1.0", "data_v1.1.0"))
+	dir := filepath.Join(t.TempDir(), "db")
+	require.NoError(t, copier.CopyDir("../../test/data_v1.1.0", dir))
 
-	defer os.RemoveAll("data_v1.1.0")
-
-	sysOpts := DefaultOption().WithDBRootPath("./data_v1.1.0")
+	sysOpts := DefaultOption().WithDBRootPath(dir)
 	sysDB, err := OpenDB("systemdb", nil, sysOpts, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.NoError(t, err)
 
-	dbOpts := DefaultOption().WithDBRootPath("./data_v1.1.0")
+	dbOpts := DefaultOption().WithDBRootPath(dir)
 	db, err := OpenDB("defaultdb", nil, dbOpts, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.NoError(t, err)
 
@@ -239,8 +196,7 @@ func TestOpenV1_0_1_DB(t *testing.T) {
 }
 
 func TestDbSynchronousSet(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	for _, kv := range kvs {
 		_, err := db.Set(&schema.SetRequest{KVs: []*schema.KeyValue{kv}})
@@ -254,8 +210,7 @@ func TestDbSynchronousSet(t *testing.T) {
 }
 
 func TestDbSetGet(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	var trustedAlh [sha256.Size]byte
 	var trustedIndex uint64
@@ -347,8 +302,7 @@ func TestDbSetGet(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	_, err := db.Delete(nil)
 	require.ErrorIs(t, err, ErrIllegalArguments)
@@ -422,8 +376,7 @@ func TestDelete(t *testing.T) {
 }
 
 func TestCurrentState(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	for ind, val := range kvs {
 		txhdr, err := db.Set(&schema.SetRequest{KVs: []*schema.KeyValue{{Key: val.Key, Value: val.Value}}})
@@ -439,8 +392,7 @@ func TestCurrentState(t *testing.T) {
 }
 
 func TestSafeSetGet(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	state, err := db.CurrentState()
 	require.NoError(t, err)
@@ -514,8 +466,7 @@ func TestSafeSetGet(t *testing.T) {
 }
 
 func TestSetGetAll(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	kvs := []*schema.KeyValue{
 		{
@@ -555,8 +506,7 @@ func TestSetGetAll(t *testing.T) {
 }
 
 func TestTxByID(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	_, err := db.TxByID(nil)
 	require.Error(t, ErrIllegalArguments, err)
@@ -868,8 +818,7 @@ func TestTxByID(t *testing.T) {
 }
 
 func TestVerifiableTxByID(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	_, err := db.VerifiableTxByID(nil)
 	require.Error(t, ErrIllegalArguments, err)
@@ -912,8 +861,7 @@ func TestVerifiableTxByID(t *testing.T) {
 }
 
 func TestTxScan(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	db.maxResultSize = len(kvs)
 
@@ -997,8 +945,7 @@ func TestTxScan(t *testing.T) {
 }
 
 func TestHistory(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	db.maxResultSize = 2
 
@@ -1082,8 +1029,7 @@ func TestHistory(t *testing.T) {
 }
 
 func TestPreconditionedSet(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	_, err := db.Set(&schema.SetRequest{
 		KVs: []*schema.KeyValue{{
@@ -1280,8 +1226,7 @@ func TestPreconditionedSet(t *testing.T) {
 }
 
 func TestPreconditionedSetParallel(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	const parallelism = 10
 
@@ -1665,8 +1610,7 @@ func TestCheckInvalidKeyRequest(t *testing.T) {
 }
 
 func TestGetAtRevision(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	const histCount = 10
 
@@ -1788,8 +1732,7 @@ func TestGetAtRevision(t *testing.T) {
 }
 
 func TestRevisionGetConsistency(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+	db := makeDb(t)
 
 	var keyTxId uint64
 
@@ -1870,8 +1813,7 @@ func TestRevisionGetConsistency(t *testing.T) {
 
 /*
 func TestReference(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+db := makeDb(t)
 	_, err := db.Set(kvs[0])
 	if err != nil {
 		t.Fatalf("Reference error %s", err)
@@ -1880,9 +1822,7 @@ func TestReference(t *testing.T) {
 		Reference: []byte(`tag`),
 		Key:       kvs[0].Key,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if ref.Index != 1 {
 		t.Fatalf("Reference, expected %v, got %v", 1, ref.Index)
 	}
@@ -1903,8 +1843,7 @@ func TestReference(t *testing.T) {
 }
 
 func TestGetReference(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+db := makeDb(t)
 	_, err := db.Set(kvs[0])
 	if err != nil {
 		t.Fatalf("Reference error %s", err)
@@ -1913,9 +1852,7 @@ func TestGetReference(t *testing.T) {
 		Reference: []byte(`tag`),
 		Key:       kvs[0].Key,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if ref.Index != 1 {
 		t.Fatalf("Reference, expected %v, got %v", 1, ref.Index)
 	}
@@ -1936,8 +1873,7 @@ func TestGetReference(t *testing.T) {
 }
 
 func TestZAdd(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+db := makeDb(t)
 	_, _ = db.Set(&schema.KeyValue{
 		Key:   []byte(`key`),
 		Value: []byte(`val`),
@@ -1948,9 +1884,7 @@ func TestZAdd(t *testing.T) {
 		Score: &schema.Score{Score: float64(1)},
 		Set:   []byte(`mySet`),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	if ref.Index != 1 {
 		t.Fatalf("Reference, expected %v, got %v", 1, ref.Index)
@@ -1971,8 +1905,7 @@ func TestZAdd(t *testing.T) {
 
 /*
 func TestScan(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+db := makeDb(t)
 
 	_, err := db.Set(kv[0])
 	if err != nil {
@@ -2039,13 +1972,10 @@ func TestScan(t *testing.T) {
 /*
 
 func TestCount(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+db := makeDb(t)
 
 	root, err := db.CurrentRoot()
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 
 	kv := []*schema.SafeSetOptions{
 		{
@@ -2107,12 +2037,9 @@ func TestCount(t *testing.T) {
 
 /*
 func TestSafeReference(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+db := makeDb(t)
 	root, err := db.CurrentRoot()
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	kv := []*schema.SafeSetOptions{
 		{
 			Kv: &schema.KeyValue{
@@ -2156,13 +2083,10 @@ func TestSafeReference(t *testing.T) {
 
 
 func TestDump(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+db := makeDb(t)
 
 	root, err := db.CurrentRoot()
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 
 	kvs := []*schema.SafeSetOptions{
 		{
@@ -2221,8 +2145,7 @@ func (_m *mockImmuService_DumpServer) Send(kvs *pb.KVList) error {
 
 /*
 func TestDb_SetBatchAtomicOperations(t *testing.T) {
-	db, closer := makeDb()
-	defer closer()
+db := makeDb(t)
 
 	aOps := &schema.Ops{
 		Operations: []*schema.Op{

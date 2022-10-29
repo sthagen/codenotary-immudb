@@ -17,123 +17,45 @@ limitations under the License.
 package immuc_test
 
 import (
-	"os"
-	"strings"
 	"testing"
 
-	"github.com/codenotary/immudb/cmd/cmdtest"
-	test "github.com/codenotary/immudb/cmd/immuclient/immuclienttest"
-	"github.com/codenotary/immudb/pkg/client/tokenservice"
-	"github.com/codenotary/immudb/pkg/server"
-	"github.com/codenotary/immudb/pkg/server/servertest"
 	"github.com/stretchr/testify/require"
 )
 
 func TestGetTxByID(t *testing.T) {
+	ic := setupTest(t)
 
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
-
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.Connect(bs.Dialer)
-	ic.Login("immudb")
-
-	_, _ = ic.Imc.VerifiedSet([]string{"key", "val"})
+	_, err := ic.Imc.VerifiedSet([]string{"key", "val"})
+	require.NoError(t, err)
 
 	msg, err := ic.Imc.GetTxByID([]string{"1"})
-	if err != nil {
-		t.Fatal("GetByIndex fail", err)
-	}
-	if !strings.Contains(msg, "hash") {
-		t.Fatalf("GetByIndex failed: %s", msg)
-	}
+	require.NoError(t, err, "GetByIndex fail")
+	require.Contains(t, msg, "hash", "GetByIndex failed")
 }
 func TestGet(t *testing.T) {
-	defer os.Remove(".state")
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
+	ic := setupTest(t)
 
-	bs.Start()
-	defer bs.Stop()
+	_, err := ic.Imc.Set([]string{"key", "val"})
+	require.NoError(t, err)
 
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.Connect(bs.Dialer)
-	ic.Login("immudb")
-
-	_, _ = ic.Imc.Set([]string{"key", "val"})
 	msg, err := ic.Imc.Get([]string{"key"})
-	if err != nil {
-		t.Fatal("GetKey fail", err)
-	}
-	if !strings.Contains(msg, "value") {
-		t.Fatalf("GetKey failed: %s", msg)
-	}
+	require.NoError(t, err, "GetKey fail")
+	require.Contains(t, msg, "value", "GetKey failed")
 }
 
 func TestVerifiedGet(t *testing.T) {
-	defer os.Remove(".state-")
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
+	ic := setupTest(t)
 
-	bs.Start()
-	defer bs.Stop()
+	_, err := ic.Imc.Set([]string{"key", "val"})
+	require.NoError(t, err)
 
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.Connect(bs.Dialer)
-	ic.Login("immudb")
-
-	_, _ = ic.Imc.Set([]string{"key", "val"})
 	msg, err := ic.Imc.VerifiedGet([]string{"key"})
-	if err != nil {
-		t.Fatal("VerifiedGet fail", err)
-	}
-	if !strings.Contains(msg, "value") {
-		t.Fatalf("VerifiedGet failed: %s", msg)
-	}
+	require.NoError(t, err, "VerifiedGet fail")
+	require.Contains(t, msg, "value", "VerifiedGet failed")
 }
 
 func TestGetByRevision(t *testing.T) {
-
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
-
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.Connect(bs.Dialer)
-	ic.Login("immudb")
+	ic := setupTest(t)
 
 	_, err := ic.Imc.Set([]string{"key", "value1"})
 	require.NoError(t, err)
@@ -172,6 +94,6 @@ func TestGetByRevision(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, msg, "value1")
 
-	msg, err = ic.Imc.Get([]string{"key@notarevision"})
+	_, err = ic.Imc.Get([]string{"key@notarevision"})
 	require.Error(t, err)
 }

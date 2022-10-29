@@ -17,174 +17,64 @@ limitations under the License.
 package immuc_test
 
 import (
-	"os"
-	"strings"
 	"testing"
 
-	"github.com/codenotary/immudb/cmd/cmdtest"
-	"github.com/codenotary/immudb/pkg/client/tokenservice"
-
-	test "github.com/codenotary/immudb/cmd/immuclient/immuclienttest"
-	"github.com/codenotary/immudb/pkg/server"
-	"github.com/codenotary/immudb/pkg/server/servertest"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSet(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
-
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.
-		Connect(bs.Dialer)
-	ic.Login("immudb")
+	ic := setupTest(t)
 
 	msg, err := ic.Imc.Set([]string{"key", "val"})
 
-	if err != nil {
-		t.Fatal("Set fail", err)
-	}
-	if !strings.Contains(msg, "value") {
-		t.Fatalf("Set failed: %s", msg)
-	}
+	require.NoError(t, err, "Set fail")
+	require.Contains(t, msg, "value", "Set failed")
 }
+
 func TestVerifiedSet(t *testing.T) {
-	defer os.Remove(".state-")
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
-
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.
-		Connect(bs.Dialer)
-	ic.Login("immudb")
+	ic := setupTest(t)
 
 	msg, err := ic.Imc.VerifiedSet([]string{"key", "val"})
 
-	if err != nil {
-		t.Fatal("VerifiedSet fail", err)
-	}
-	if !strings.Contains(msg, "value") {
-		t.Fatalf("VerifiedSet failed: %s", msg)
-	}
+	require.NoError(t, err, "VerifiedSet fail")
+	require.Contains(t, msg, "value", "VerifiedSet failed")
 }
+
 func TestZAdd(t *testing.T) {
-	defer os.Remove(".state-")
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
+	ic := setupTest(t)
 
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.
-		Connect(bs.Dialer)
-	ic.Login("immudb")
-
-	_, _ = ic.Imc.VerifiedSet([]string{"key", "val"})
+	_, err := ic.Imc.VerifiedSet([]string{"key", "val"})
+	require.NoError(t, err)
 
 	msg, err := ic.Imc.ZAdd([]string{"val", "1", "key"})
 
-	if err != nil {
-		t.Fatal("ZAdd fail", err)
-	}
-	if !strings.Contains(msg, "hash") {
-		t.Fatalf("ZAdd failed: %s", msg)
-	}
+	require.NoError(t, err, "ZAdd fail")
+	require.Contains(t, msg, "hash", "ZAdd failed")
 }
+
 func _TestVerifiedZAdd(t *testing.T) {
-	defer os.Remove(".state-")
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
+	ic := setupTest(t)
 
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.
-		Connect(bs.Dialer)
-	ic.Login("immudb")
-
-	_, _ = ic.Imc.VerifiedSet([]string{"key", "val"})
+	_, err := ic.Imc.VerifiedSet([]string{"key", "val"})
+	require.NoError(t, err)
 
 	msg, err := ic.Imc.VerifiedZAdd([]string{"val", "1", "key"})
 
-	if err != nil {
-		t.Fatal("VerifiedZAdd fail", err)
-	}
-	if !strings.Contains(msg, "hash") {
-		t.Fatalf("VerifiedZAdd failed: %s", msg)
-	}
+	require.NoError(t, err, "VerifiedZAdd fail")
+	require.Contains(t, msg, "hash", "VerifiedZAdd failed")
 }
+
 func TestCreateDatabase(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
-	bs := servertest.NewBufconnServer(options)
-
-	bs.Start()
-	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
-	tkf := cmdtest.RandString()
-	ts := tokenservice.NewFileTokenService().WithTokenFileName(tkf)
-	ic := test.NewClientTest(&test.PasswordReader{
-		Pass: []string{"immudb"},
-	}, ts)
-	ic.
-		Connect(bs.Dialer)
-	ic.Login("immudb")
+	ic := setupTest(t)
 
 	msg, err := ic.Imc.CreateDatabase([]string{"newdb"})
-	if err != nil {
-		t.Fatal("CreateDatabase fail", err)
-	}
-	if !strings.Contains(msg, "database successfully created") {
-		t.Fatalf("CreateDatabase failed: %s", msg)
-	}
+	require.NoError(t, err, "CreateDatabase fail")
+	require.Contains(t, msg, "database successfully created", "CreateDatabase failed")
 
 	_, err = ic.Imc.DatabaseList([]string{})
-	if err != nil {
-		t.Fatal("DatabaseList fail", err)
-	}
+	require.NoError(t, err, "DatabaseList fail")
 
 	msg, err = ic.Imc.UseDatabase([]string{"newdb"})
-	if err != nil {
-		t.Fatal("UseDatabase fail", err)
-	}
-	if !strings.Contains(msg, "newdb") {
-		t.Fatalf("UseDatabase failed: %s", msg)
-	}
+	require.NoError(t, err, "UseDatabase fail")
+	require.Contains(t, msg, "newdb", "UseDatabase failed")
 }

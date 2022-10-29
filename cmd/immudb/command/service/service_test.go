@@ -43,7 +43,7 @@ func TestCommandLine_ServiceImmudbInstall(t *testing.T) {
 	cmd.SetOut(b)
 	cmd.SetArgs([]string{"service", "install"})
 	err := cmd.Execute()
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 }
 
 func TestCommandLine_ServiceImmudbUninstallAbortUnintall(t *testing.T) {
@@ -55,7 +55,7 @@ func TestCommandLine_ServiceImmudbUninstallAbortUnintall(t *testing.T) {
 	cld.Service(cmd)
 	cmd.SetArgs([]string{"service", "uninstall"})
 	err := cmd.Execute()
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 }
 
 func TestCommandLine_ServiceImmudbUninstallRemovingData(t *testing.T) {
@@ -69,11 +69,9 @@ func TestCommandLine_ServiceImmudbUninstallRemovingData(t *testing.T) {
 	cmd.SetOut(b)
 	cmd.SetArgs([]string{"service", "uninstall"})
 	err := cmd.Execute()
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	out, err := ioutil.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	assert.Contains(t, string(out), "uninstall")
 }
 
@@ -88,11 +86,9 @@ func TestCommandLine_ServiceImmudbUninstallWithoutRemoveData(t *testing.T) {
 	cmd.SetOut(b)
 	cmd.SetArgs([]string{"service", "uninstall"})
 	err := cmd.Execute()
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	out, err := ioutil.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	assert.Contains(t, string(out), "uninstall")
 }
 
@@ -103,7 +99,7 @@ func TestCommandLine_ServiceImmudbStop(t *testing.T) {
 	cld.Service(cmd)
 	cmd.SetArgs([]string{"service", "stop"})
 	err := cmd.Execute()
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 }
 
 func TestCommandLine_ServiceImmudbStart(t *testing.T) {
@@ -113,7 +109,7 @@ func TestCommandLine_ServiceImmudbStart(t *testing.T) {
 	cld.Service(cmd)
 	cmd.SetArgs([]string{"service", "start"})
 	err := cmd.Execute()
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 }
 
 func TestCommandLine_ServiceImmudbDelayed(t *testing.T) {
@@ -139,7 +135,7 @@ func TestCommandLine_ServiceImmudbDelayedInner(t *testing.T) {
 	os.Args = []string{"--delayed", "1"}
 	cmd.SetArgs([]string{"service", "stop", "--delayed", "1"})
 	err := cmd.Execute()
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 }
 
 func TestCommandLine_ServiceImmudbExtraArgs(t *testing.T) {
@@ -162,7 +158,7 @@ func TestCommandLine_ServiceImmudbRestart(t *testing.T) {
 	cld.Service(cmd)
 	cmd.SetArgs([]string{"service", "restart"})
 	err := cmd.Execute()
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 }
 
 func TestCommandLine_ServiceImmudbStatus(t *testing.T) {
@@ -172,7 +168,7 @@ func TestCommandLine_ServiceImmudbStatus(t *testing.T) {
 	cld.Service(cmd)
 	cmd.SetArgs([]string{"service", "status"})
 	err := cmd.Execute()
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 }
 
 func TestCommandline_ServiceNewDaemonError(t *testing.T) {
@@ -287,7 +283,7 @@ func TestCommandline_ServiceUninstallIsRunning(t *testing.T) {
 	cld.Service(cmd)
 	cmd.SetArgs([]string{"service", "uninstall"})
 	err := cmd.Execute()
-	require.Nil(t, err)
+	require.NoError(t, err)
 }
 
 func TestCommandline_ServiceUninstallEraseDataError(t *testing.T) {
@@ -317,7 +313,7 @@ func TestCommandline_ServiceUninstallNotWanted(t *testing.T) {
 	cld.Service(cmd)
 	cmd.SetArgs([]string{"service", "uninstall"})
 	err := cmd.Execute()
-	require.Nil(t, err)
+	require.NoError(t, err)
 }
 func TestCommandline_ServiceUninstallTerminalError(t *testing.T) {
 	cmd := &cobra.Command{}

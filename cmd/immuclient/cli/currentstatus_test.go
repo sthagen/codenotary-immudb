@@ -36,7 +36,7 @@ defer bs.Stop()
 	ts := tokenservice.NewTokenService().WithTokenFileName("testTokenFile").WithHds(&test.HomedirServiceMock{})
 	ic := test.NewClientTest(&test.PasswordReader{
 		Pass: []string{"immudb"},
-	}, ts)
+	}, ts, client.DefaultOptions().WithDir(t.TempDir()))
 ic.
 Connect(bs.Dialer)
 	ic.Login("immudb")
@@ -48,11 +48,7 @@ Connect(bs.Dialer)
 	assert.NoError(t, err)
 	msg, err := cli.currentRoot([]string{""})
 
-	if err != nil {
-		t.Fatal("CurrentRoot fail", err)
-	}
-	if !strings.Contains(msg, "hash") {
-		t.Fatalf("CurrentRoot failed: %s", msg)
-	}
+	require.NoError(t, err, "CurrentRoot fail")
+	require.Contains(t, msg, "hash", "CurrentRoot failed")
 }
 */

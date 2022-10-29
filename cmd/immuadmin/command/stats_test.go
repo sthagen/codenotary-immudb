@@ -22,10 +22,10 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 
 	"github.com/codenotary/immudb/cmd/cmdtest"
@@ -38,19 +38,17 @@ import (
 )
 
 func TestStats_Status(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
+
+	options := server.DefaultOptions().WithAuth(true).WithDir(t.TempDir())
 	bs := servertest.NewBufconnServer(options)
 
 	bs.Start()
 	defer bs.Stop()
 
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
-
 	dialOptions := []grpc.DialOption{
 		grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 	}
-	cliopt := Options()
+	cliopt := Options().WithDir(t.TempDir())
 	cliopt.DialOptions = dialOptions
 	clientb, _ := client.NewImmuClient(cliopt)
 	tkf := cmdtest.RandString()
@@ -76,21 +74,16 @@ func TestStats_Status(t *testing.T) {
 
 	cmd.Execute()
 	out, err := ioutil.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	assert.Contains(t, string(out), "OK - server is reachable and responding to queries")
 }
 
 func TestStats_StatsText(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
+	options := server.DefaultOptions().WithAuth(true).WithDir(t.TempDir())
 	bs := servertest.NewBufconnServer(options)
 
 	bs.Start()
 	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
 
 	handler := http.NewServeMux()
 	handler.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +98,7 @@ func TestStats_StatsText(t *testing.T) {
 	dialOptions := []grpc.DialOption{
 		grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 	}
-	cliopt := Options()
+	cliopt := Options().WithDir(t.TempDir())
 	cliopt.DialOptions = dialOptions
 	cliopt.Address = "127.0.0.1"
 	clientb, _ := client.NewImmuClient(cliopt)
@@ -132,21 +125,16 @@ func TestStats_StatsText(t *testing.T) {
 
 	cmd.Execute()
 	out, err := ioutil.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	assert.Contains(t, string(out), "Database")
 }
 
 func TestStats_StatsRaw(t *testing.T) {
-	options := server.DefaultOptions().WithAuth(true)
+	options := server.DefaultOptions().WithAuth(true).WithDir(t.TempDir())
 	bs := servertest.NewBufconnServer(options)
 
 	bs.Start()
 	defer bs.Stop()
-
-	defer os.RemoveAll(options.Dir)
-	defer os.Remove(".state-")
 
 	handler := http.NewServeMux()
 	handler.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +148,7 @@ func TestStats_StatsRaw(t *testing.T) {
 	dialOptions := []grpc.DialOption{
 		grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure(),
 	}
-	cliopt := Options()
+	cliopt := Options().WithDir(t.TempDir())
 	cliopt.DialOptions = dialOptions
 	cliopt.Address = "127.0.0.1"
 	clientb, _ := client.NewImmuClient(cliopt)
@@ -186,8 +174,6 @@ func TestStats_StatsRaw(t *testing.T) {
 
 	cmd.Execute()
 	out, err := ioutil.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	assert.Contains(t, string(out), "go_gc_duration_seconds")
 }
