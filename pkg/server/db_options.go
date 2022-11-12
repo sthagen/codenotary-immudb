@@ -37,14 +37,14 @@ type dbOptions struct {
 	synced        bool         // currently a global immudb instance option
 	SyncFrequency Milliseconds `json:"syncFrequency"` // ms
 
-	// replication options
+	// replication options (field names must be kept for backwards compatibility)
 	Replica                      bool   `json:"replica"`
 	SyncReplication              bool   `json:"syncReplication"`
-	MasterDatabase               string `json:"masterDatabase"`
-	MasterAddress                string `json:"masterAddress"`
-	MasterPort                   int    `json:"masterPort"`
-	FollowerUsername             string `json:"followerUsername"`
-	FollowerPassword             string `json:"followerPassword"`
+	PrimaryDatabase              string `json:"masterDatabase"`
+	PrimaryHost                  string `json:"masterAddress"`
+	PrimaryPort                  int    `json:"masterPort"`
+	PrimaryUsername              string `json:"followerUsername"`
+	PrimaryPassword              string `json:"followerPassword"`
 	SyncAcks                     int    `json:"syncAcks"`
 	PrefetchTxBufferSize         int    `json:"prefetchTxBufferSize"`
 	ReplicationCommitConcurrency int    `json:"replicationCommitConcurrency"`
@@ -160,11 +160,11 @@ func (s *ImmuServer) defaultDBOptions(dbName string) *dbOptions {
 		dbOpts.SyncReplication = repOpts.SyncReplication
 
 		if dbOpts.Replica {
-			dbOpts.MasterDatabase = dbOpts.Database // replica of systemdb and defaultdb must have the same name as in master
-			dbOpts.MasterAddress = repOpts.MasterAddress
-			dbOpts.MasterPort = repOpts.MasterPort
-			dbOpts.FollowerUsername = repOpts.FollowerUsername
-			dbOpts.FollowerPassword = repOpts.FollowerPassword
+			dbOpts.PrimaryDatabase = dbOpts.Database // replica of systemdb and defaultdb must have the same name as in primary
+			dbOpts.PrimaryHost = repOpts.PrimaryHost
+			dbOpts.PrimaryPort = repOpts.PrimaryPort
+			dbOpts.PrimaryUsername = repOpts.PrimaryUsername
+			dbOpts.PrimaryPassword = repOpts.PrimaryPassword
 			dbOpts.PrefetchTxBufferSize = repOpts.PrefetchTxBufferSize
 			dbOpts.ReplicationCommitConcurrency = repOpts.ReplicationCommitConcurrency
 			dbOpts.AllowTxDiscarding = repOpts.AllowTxDiscarding
@@ -271,11 +271,11 @@ func (opts *dbOptions) databaseNullableSettings() *schema.DatabaseNullableSettin
 		ReplicationSettings: &schema.ReplicationNullableSettings{
 			Replica:                      &schema.NullableBool{Value: opts.Replica},
 			SyncReplication:              &schema.NullableBool{Value: opts.SyncReplication},
-			MasterDatabase:               &schema.NullableString{Value: opts.MasterDatabase},
-			MasterAddress:                &schema.NullableString{Value: opts.MasterAddress},
-			MasterPort:                   &schema.NullableUint32{Value: uint32(opts.MasterPort)},
-			FollowerUsername:             &schema.NullableString{Value: opts.FollowerUsername},
-			FollowerPassword:             &schema.NullableString{Value: opts.FollowerPassword},
+			PrimaryDatabase:              &schema.NullableString{Value: opts.PrimaryDatabase},
+			PrimaryHost:                  &schema.NullableString{Value: opts.PrimaryHost},
+			PrimaryPort:                  &schema.NullableUint32{Value: uint32(opts.PrimaryPort)},
+			PrimaryUsername:              &schema.NullableString{Value: opts.PrimaryUsername},
+			PrimaryPassword:              &schema.NullableString{Value: opts.PrimaryPassword},
 			SyncAcks:                     &schema.NullableUint32{Value: uint32(opts.SyncAcks)},
 			PrefetchTxBufferSize:         &schema.NullableUint32{Value: uint32(opts.PrefetchTxBufferSize)},
 			ReplicationCommitConcurrency: &schema.NullableUint32{Value: uint32(opts.ReplicationCommitConcurrency)},
@@ -346,12 +346,12 @@ func dbSettingsToDBNullableSettings(settings *schema.DatabaseSettings) *schema.D
 	}
 
 	repSettings := &schema.ReplicationNullableSettings{
-		Replica:          &schema.NullableBool{Value: settings.Replica},
-		MasterDatabase:   &schema.NullableString{Value: settings.MasterDatabase},
-		MasterAddress:    &schema.NullableString{Value: settings.MasterAddress},
-		MasterPort:       &schema.NullableUint32{Value: settings.MasterPort},
-		FollowerUsername: &schema.NullableString{Value: settings.FollowerUsername},
-		FollowerPassword: &schema.NullableString{Value: settings.FollowerPassword},
+		Replica:         &schema.NullableBool{Value: settings.Replica},
+		PrimaryDatabase: &schema.NullableString{Value: settings.PrimaryDatabase},
+		PrimaryHost:     &schema.NullableString{Value: settings.PrimaryHost},
+		PrimaryPort:     &schema.NullableUint32{Value: settings.PrimaryPort},
+		PrimaryUsername: &schema.NullableString{Value: settings.PrimaryUsername},
+		PrimaryPassword: &schema.NullableString{Value: settings.PrimaryPassword},
 	}
 
 	if !settings.Replica {
@@ -422,30 +422,30 @@ func (s *ImmuServer) overwriteWith(opts *dbOptions, settings *schema.DatabaseNul
 		} else if opts.Replica {
 			opts.SyncAcks = 0
 		}
-		if rs.MasterDatabase != nil {
-			opts.MasterDatabase = rs.MasterDatabase.Value
+		if rs.PrimaryDatabase != nil {
+			opts.PrimaryDatabase = rs.PrimaryDatabase.Value
 		} else if !opts.Replica {
-			opts.MasterDatabase = ""
+			opts.PrimaryDatabase = ""
 		}
-		if rs.MasterAddress != nil {
-			opts.MasterAddress = rs.MasterAddress.Value
+		if rs.PrimaryHost != nil {
+			opts.PrimaryHost = rs.PrimaryHost.Value
 		} else if !opts.Replica {
-			opts.MasterAddress = ""
+			opts.PrimaryHost = ""
 		}
-		if rs.MasterPort != nil {
-			opts.MasterPort = int(rs.MasterPort.Value)
+		if rs.PrimaryPort != nil {
+			opts.PrimaryPort = int(rs.PrimaryPort.Value)
 		} else if !opts.Replica {
-			opts.MasterPort = 0
+			opts.PrimaryPort = 0
 		}
-		if rs.FollowerUsername != nil {
-			opts.FollowerUsername = rs.FollowerUsername.Value
+		if rs.PrimaryUsername != nil {
+			opts.PrimaryUsername = rs.PrimaryUsername.Value
 		} else if !opts.Replica {
-			opts.FollowerUsername = ""
+			opts.PrimaryUsername = ""
 		}
-		if rs.FollowerPassword != nil {
-			opts.FollowerPassword = rs.FollowerPassword.Value
+		if rs.PrimaryPassword != nil {
+			opts.PrimaryPassword = rs.PrimaryPassword.Value
 		} else if !opts.Replica {
-			opts.FollowerPassword = ""
+			opts.PrimaryPassword = ""
 		}
 		if rs.PrefetchTxBufferSize != nil {
 			opts.PrefetchTxBufferSize = int(rs.PrefetchTxBufferSize.Value)
@@ -623,67 +623,67 @@ func (opts *dbOptions) Validate() error {
 	} else {
 		if opts.SyncAcks < 0 {
 			return fmt.Errorf(
-				"%w: invalid value for replication option SyncAcks on master database '%s'",
+				"%w: invalid value for replication option SyncAcks on primary database '%s'",
 				ErrIllegalArguments, opts.Database)
 		}
 
-		if opts.MasterDatabase != "" {
+		if opts.PrimaryDatabase != "" {
 			return fmt.Errorf(
-				"%w: invalid value for replication option MasterDatabase on master database '%s'",
+				"%w: invalid value for replication option PrimaryDatabase on primary database '%s'",
 				ErrIllegalArguments, opts.Database)
 		}
 
-		if opts.MasterAddress != "" {
+		if opts.PrimaryHost != "" {
 			return fmt.Errorf(
-				"%w: invalid value for replication option MasterAddress on master database '%s'",
+				"%w: invalid value for replication option PrimaryHost on primary database '%s'",
 				ErrIllegalArguments, opts.Database)
 		}
 
-		if opts.MasterPort > 0 {
+		if opts.PrimaryPort > 0 {
 			return fmt.Errorf(
-				"%w: invalid value for replication option MasterPort on master database '%s'",
+				"%w: invalid value for replication option PrimaryPort on primary database '%s'",
 				ErrIllegalArguments, opts.Database)
 		}
 
-		if opts.FollowerUsername != "" {
+		if opts.PrimaryUsername != "" {
 			return fmt.Errorf(
-				"%w: invalid value for replication option FollowerUsername on master database '%s'",
+				"%w: invalid value for replication option PrimaryUsername on primary database '%s'",
 				ErrIllegalArguments, opts.Database)
 		}
 
-		if opts.FollowerPassword != "" {
+		if opts.PrimaryPassword != "" {
 			return fmt.Errorf(
-				"%w: invalid value for replication option FollowerPassword on master database '%s'",
+				"%w: invalid value for replication option PrimaryPassword on primary database '%s'",
 				ErrIllegalArguments, opts.Database)
 		}
 
 		if opts.PrefetchTxBufferSize > 0 {
 			return fmt.Errorf(
-				"%w: invalid value for replication option PrefetchTxBufferSize on master database '%s'",
+				"%w: invalid value for replication option PrefetchTxBufferSize on primary database '%s'",
 				ErrIllegalArguments, opts.Database)
 		}
 
 		if opts.ReplicationCommitConcurrency > 0 {
 			return fmt.Errorf(
-				"%w: invalid value for replication option ReplicationCommitConcurrency on master database '%s'",
+				"%w: invalid value for replication option ReplicationCommitConcurrency on primary database '%s'",
 				ErrIllegalArguments, opts.Database)
 		}
 
 		if opts.AllowTxDiscarding {
 			return fmt.Errorf(
-				"%w: invalid value for replication option AllowTxDiscarding on master database '%s'",
+				"%w: invalid value for replication option AllowTxDiscarding on primary database '%s'",
 				ErrIllegalArguments, opts.Database)
 		}
 
 		if opts.SyncReplication && opts.SyncAcks == 0 {
 			return fmt.Errorf(
-				"%w: invalid replication options for master database '%s'. It is necessary to have at least one sync follower",
+				"%w: invalid replication options for primary database '%s'. It is necessary to have at least one sync replica",
 				ErrIllegalArguments, opts.Database)
 		}
 
 		if !opts.SyncReplication && opts.SyncAcks > 0 {
 			return fmt.Errorf(
-				"%w: invalid replication options for master database '%s'. SyncAcks should be set to 0",
+				"%w: invalid replication options for primary database '%s'. SyncAcks should be set to 0",
 				ErrIllegalArguments, opts.Database)
 		}
 	}
@@ -700,9 +700,9 @@ func (opts *dbOptions) Validate() error {
 
 func (opts *dbOptions) isReplicatorRequired() bool {
 	return opts.Replica &&
-		opts.MasterDatabase != "" &&
-		opts.MasterAddress != "" &&
-		opts.MasterPort > 0
+		opts.PrimaryDatabase != "" &&
+		opts.PrimaryHost != "" &&
+		opts.PrimaryPort > 0
 }
 
 func (s *ImmuServer) saveDBOptions(options *dbOptions) error {

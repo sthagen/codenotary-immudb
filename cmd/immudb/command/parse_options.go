@@ -36,10 +36,10 @@ func parseOptions() (options *server.Options, err error) {
 
 	if replicationOptions.IsReplica {
 		replicationOptions.
-			WithMasterAddress(viper.GetString("replication-master-address")).
-			WithMasterPort(viper.GetInt("replication-master-port")).
-			WithFollowerUsername(viper.GetString("replication-follower-username")).
-			WithFollowerPassword(viper.GetString("replication-follower-password")).
+			WithPrimaryHost(viper.GetString("replication-primary-host")).
+			WithPrimaryPort(viper.GetInt("replication-primary-port")).
+			WithPrimaryUsername(viper.GetString("replication-primary-username")).
+			WithPrimaryPassword(viper.GetString("replication-primary-password")).
 			WithPrefetchTxBufferSize(viper.GetInt("replication-prefetch-tx-buffer-size")).
 			WithReplicationCommitConcurrency(viper.GetInt("replication-commit-concurrency")).
 			WithAllowTxDiscarding(viper.GetBool("replication-allow-tx-discarding"))
@@ -63,6 +63,7 @@ func parseOptions() (options *server.Options, err error) {
 
 	devMode := viper.GetBool("devmode")
 	adminPassword := viper.GetString("admin-password")
+	forceAdminPassword := viper.GetBool("force-admin-password")
 	maintenance := viper.GetBool("maintenance")
 	signingKey := viper.GetString("signingKey")
 	synced := viper.GetBool("synced")
@@ -123,6 +124,7 @@ func parseOptions() (options *server.Options, err error) {
 		WithDetached(detached).
 		WithDevMode(devMode).
 		WithAdminPassword(adminPassword).
+		WithForceAdminPassword(forceAdminPassword).
 		WithMaintenance(maintenance).
 		WithSigningKey(signingKey).
 		WithSynced(synced).

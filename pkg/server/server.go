@@ -126,7 +126,7 @@ func (s *ImmuServer) Initialize() error {
 		return logErr(s.Logger, "Unable to initialize remote storage: %v", err)
 	}
 
-	if err = s.loadSystemDatabase(dataDir, s.remoteStorage, adminPassword); err != nil {
+	if err = s.loadSystemDatabase(dataDir, s.remoteStorage, adminPassword, s.Options.ForceAdminPassword); err != nil {
 		return logErr(s.Logger, "Unable to load system database: %v", err)
 	}
 
@@ -379,7 +379,42 @@ func (s *ImmuServer) printUsageCallToAction() {
 	}
 }
 
-func (s *ImmuServer) loadSystemDatabase(dataDir string, remoteStorage remotestorage.Storage, adminPassword string) error {
+func (s *ImmuServer) resetAdminPassword(adminPassword string) error {
+	if s.sysDB.IsReplica() {
+		return errors.New("database is running as a replica")
+	}
+
+	adminUser, err := s.getUser([]byte(auth.SysAdminUsername))
+	if err != nil {
+		return fmt.Errorf("could not read sysadmin user data: %v", err)
+	}
+
+	err = adminUser.ComparePasswords([]byte(adminPassword))
+	if err == nil {
+		// Password is as expected, do not overwrite it to avoid unnecessary
+		// transactions in systemdb
+		return nil
+	}
+
+	_, err = adminUser.SetPassword([]byte(adminPassword))
+	if err != nil {
+		return err
+	}
+
+	err = s.saveUser(adminUser)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *ImmuServer) loadSystemDatabase(
+	dataDir string,
+	remoteStorage remotestorage.Storage,
+	adminPassword string,
+	forceAdminPasswordReset bool,
+) error {
 	if s.dbList.Length() != 0 {
 		panic("loadSystemDatabase should be called before any other database loading")
 	}
@@ -397,6 +432,28 @@ func (s *ImmuServer) loadSystemDatabase(dataDir string, remoteStorage remotestor
 			s.Logger.Errorf("Database '%s' was not correctly initialized.\n"+
 				"Use replication to recover from external source or start without data folder.", dbOpts.Database)
 			return err
+		}
+
+		if forceAdminPasswordReset {
+			err := s.resetAdminPassword(adminPassword)
+			if err != nil {
+				s.Logger.Errorf("Can not reset admin password, %v", err)
+				return ErrCantUpdateAdminPassword
+			}
+		} else if adminPassword != auth.SysAdminPassword {
+			// Add warning that the password is not changed even though manually specified
+			user, err := s.getUser([]byte(auth.SysAdminUsername))
+			if err != nil {
+				s.Logger.Errorf("Can not validate admin user: %v", err)
+				return err
+			}
+			err = user.ComparePasswords([]byte(adminPassword))
+			if err != nil {
+				s.Logger.Warningf(
+					"Admin password was not updated, " +
+						"use the force-admin-password option to forcibly reset it",
+				)
+			}
 		}
 
 		if dbOpts.isReplicatorRequired() {
@@ -576,11 +633,11 @@ func (s *ImmuServer) startReplicationFor(db database.DB, dbOpts *dbOptions) erro
 	defer s.replicationMutex.Unlock()
 
 	replicatorOpts := replication.DefaultOptions().
-		WithMasterDatabase(dbOpts.MasterDatabase).
-		WithMasterAddress(dbOpts.MasterAddress).
-		WithMasterPort(dbOpts.MasterPort).
-		WithFollowerUsername(dbOpts.FollowerUsername).
-		WithFollowerPassword(dbOpts.FollowerPassword).
+		WithPrimaryDatabase(dbOpts.PrimaryDatabase).
+		WithPrimaryHost(dbOpts.PrimaryHost).
+		WithPrimaryPort(dbOpts.PrimaryPort).
+		WithPrimaryUsername(dbOpts.PrimaryUsername).
+		WithPrimaryPassword(dbOpts.PrimaryPassword).
 		WithPrefetchTxBufferSize(dbOpts.PrefetchTxBufferSize).
 		WithReplicationCommitConcurrency(dbOpts.ReplicationCommitConcurrency).
 		WithAllowTxDiscarding(dbOpts.AllowTxDiscarding).
@@ -1196,20 +1253,20 @@ func (s *ImmuServer) GetDatabaseSettings(ctx context.Context, _ *empty.Empty) (*
 		if res.Settings.ReplicationSettings.Replica != nil {
 			ret.Replica = res.Settings.ReplicationSettings.Replica.Value
 		}
-		if res.Settings.ReplicationSettings.MasterDatabase != nil {
-			ret.MasterDatabase = res.Settings.ReplicationSettings.MasterDatabase.Value
+		if res.Settings.ReplicationSettings.PrimaryDatabase != nil {
+			ret.PrimaryDatabase = res.Settings.ReplicationSettings.PrimaryDatabase.Value
 		}
-		if res.Settings.ReplicationSettings.MasterAddress != nil {
-			ret.MasterAddress = res.Settings.ReplicationSettings.MasterAddress.Value
+		if res.Settings.ReplicationSettings.PrimaryHost != nil {
+			ret.PrimaryHost = res.Settings.ReplicationSettings.PrimaryHost.Value
 		}
-		if res.Settings.ReplicationSettings.MasterPort != nil {
-			ret.MasterPort = res.Settings.ReplicationSettings.MasterPort.Value
+		if res.Settings.ReplicationSettings.PrimaryPort != nil {
+			ret.PrimaryPort = res.Settings.ReplicationSettings.PrimaryPort.Value
 		}
-		if res.Settings.ReplicationSettings.FollowerUsername != nil {
-			ret.FollowerUsername = res.Settings.ReplicationSettings.FollowerUsername.Value
+		if res.Settings.ReplicationSettings.PrimaryUsername != nil {
+			ret.PrimaryUsername = res.Settings.ReplicationSettings.PrimaryUsername.Value
 		}
-		if res.Settings.ReplicationSettings.FollowerPassword != nil {
-			ret.FollowerPassword = res.Settings.ReplicationSettings.FollowerPassword.Value
+		if res.Settings.ReplicationSettings.PrimaryPassword != nil {
+			ret.PrimaryPassword = res.Settings.ReplicationSettings.PrimaryPassword.Value
 		}
 	}
 

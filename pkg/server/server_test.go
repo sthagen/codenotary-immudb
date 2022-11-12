@@ -72,6 +72,7 @@ var kvs = []*schema.KeyValue{
 func testServer(opts *Options) (*ImmuServer, func()) {
 	s := DefaultServer().WithOptions(opts).(*ImmuServer)
 	return s, func() {
+		s.CloseDatabases()
 		if s.Listener != nil {
 			s.Listener.Close()
 		}
@@ -110,7 +111,7 @@ func TestServerReOpen(t *testing.T) {
 	s, closer := testServer(serverOptions)
 	defer closer()
 
-	err := s.loadSystemDatabase(dbRootpath, nil, s.Options.AdminPassword)
+	err := s.loadSystemDatabase(dbRootpath, nil, s.Options.AdminPassword, false)
 	require.NoError(t, err)
 
 	err = s.loadDefaultDatabase(dbRootpath, nil)
@@ -121,7 +122,7 @@ func TestServerReOpen(t *testing.T) {
 	s, closer = testServer(serverOptions)
 	defer closer()
 
-	err = s.loadSystemDatabase(dbRootpath, nil, s.Options.AdminPassword)
+	err = s.loadSystemDatabase(dbRootpath, nil, s.Options.AdminPassword, false)
 	require.NoError(t, err)
 
 	err = s.loadDefaultDatabase(dbRootpath, nil)
@@ -138,13 +139,184 @@ func TestServerSystemDatabaseLoad(t *testing.T) {
 	s, closer := testServer(serverOptions)
 	defer closer()
 
-	err := s.loadSystemDatabase(dbRootpath, nil, s.Options.AdminPassword)
+	err := s.loadSystemDatabase(dbRootpath, nil, s.Options.AdminPassword, false)
 	require.NoError(t, err)
 
 	err = s.loadDefaultDatabase(dbRootpath, nil)
 	require.NoError(t, err)
 
 	require.DirExists(t, path.Join(options.GetDBRootPath(), DefaultOptions().GetSystemAdminDBName()))
+}
+
+func TestServerResetAdminPassword(t *testing.T) {
+	serverOptions := DefaultOptions().WithDir(t.TempDir())
+	options := database.DefaultOption().WithDBRootPath(serverOptions.Dir)
+	dbRootpath := options.GetDBRootPath()
+
+	var txID uint64
+
+	t.Run("Create new database", func(t *testing.T) {
+		s, closer := testServer(serverOptions)
+		defer closer()
+
+		err := s.loadSystemDatabase(dbRootpath, nil, "password1", false)
+		require.NoError(t, err)
+
+		_, err = s.getValidatedUser([]byte(auth.SysAdminUsername), []byte("password1"))
+		require.NoError(t, err)
+
+		_, err = s.getValidatedUser([]byte(auth.SysAdminUsername), []byte("password2"))
+		require.ErrorContains(t, err, "password")
+
+		txID, err = s.sysDB.Size()
+		require.NoError(t, err)
+	})
+
+	t.Run("Run db without resetting password", func(t *testing.T) {
+		s, closer := testServer(serverOptions)
+		defer closer()
+
+		err := s.loadSystemDatabase(dbRootpath, nil, "password2", false)
+		require.NoError(t, err)
+
+		currTxID, err := s.sysDB.Size()
+		require.NoError(t, err)
+		require.Equal(t, txID, currTxID)
+
+		_, err = s.getValidatedUser([]byte(auth.SysAdminUsername), []byte("password1"))
+		require.NoError(t, err)
+
+		_, err = s.getValidatedUser([]byte(auth.SysAdminUsername), []byte("password2"))
+		require.ErrorContains(t, err, "password")
+	})
+
+	t.Run("Run db with password reset", func(t *testing.T) {
+		s, closer := testServer(serverOptions)
+		defer closer()
+
+		err := s.loadSystemDatabase(dbRootpath, nil, "password2", true)
+		require.NoError(t, err)
+
+		// There should be new TX with updated password
+		currTxID, err := s.sysDB.Size()
+		require.NoError(t, err)
+		require.Equal(t, txID+1, currTxID)
+
+		_, err = s.getValidatedUser([]byte(auth.SysAdminUsername), []byte("password1"))
+		require.ErrorContains(t, err, "password")
+
+		_, err = s.getValidatedUser([]byte(auth.SysAdminUsername), []byte("password2"))
+		require.NoError(t, err)
+	})
+
+	t.Run("Run db with password reset but no new tx", func(t *testing.T) {
+		s, closer := testServer(serverOptions)
+		defer closer()
+
+		err := s.loadSystemDatabase(dbRootpath, nil, "password2", true)
+		require.NoError(t, err)
+
+		// No ne TX is needed
+		currTxID, err := s.sysDB.Size()
+		require.NoError(t, err)
+		require.Equal(t, txID+1, currTxID)
+
+		_, err = s.getValidatedUser([]byte(auth.SysAdminUsername), []byte("password1"))
+		require.ErrorContains(t, err, "password")
+
+		_, err = s.getValidatedUser([]byte(auth.SysAdminUsername), []byte("password2"))
+		require.NoError(t, err)
+	})
+
+}
+
+type dbMockResetAdminPasswordCornerCases struct {
+	database.DB
+	setErr error
+}
+
+func (d *dbMockResetAdminPasswordCornerCases) Set(req *schema.SetRequest) (*schema.TxHeader, error) {
+	return nil, d.setErr
+}
+
+func TestResetAdminPasswordCornerCases(t *testing.T) {
+	t.Run("Do not allow changing sysadmin password if running as a systemdb replica", func(t *testing.T) {
+		opts := DefaultOptions().WithDir(t.TempDir())
+		opts.ReplicationOptions.WithIsReplica(true)
+
+		s, closer := testServer(opts)
+		defer closer()
+
+		err := s.Initialize()
+		require.NoError(t, err)
+
+		err = s.resetAdminPassword("newPassword")
+		require.ErrorContains(t, err, "database is running as a replica")
+	})
+
+	t.Run("Failure to read the current sysadmin user ", func(t *testing.T) {
+		opts := DefaultOptions().WithDir(t.TempDir())
+
+		s, closer := testServer(opts)
+		defer closer()
+
+		err := s.Initialize()
+		require.NoError(t, err)
+
+		err = s.CloseDatabases()
+		require.NoError(t, err)
+
+		err = s.resetAdminPassword("newPassword")
+		require.ErrorContains(t, err, "could not read sysadmin user data")
+	})
+
+	t.Run("Failure to read the current sysadmin user", func(t *testing.T) {
+		opts := DefaultOptions().WithDir(t.TempDir())
+
+		s, closer := testServer(opts)
+		defer closer()
+
+		err := s.Initialize()
+		require.NoError(t, err)
+
+		err = s.CloseDatabases()
+		require.NoError(t, err)
+
+		err = s.resetAdminPassword("newPassword")
+		require.ErrorContains(t, err, "could not read sysadmin user data")
+	})
+
+	t.Run("Invalid password", func(t *testing.T) {
+		opts := DefaultOptions().WithDir(t.TempDir())
+
+		s, closer := testServer(opts)
+		defer closer()
+
+		err := s.Initialize()
+		require.NoError(t, err)
+
+		err = s.resetAdminPassword("")
+		require.ErrorContains(t, err, "password is empty")
+	})
+
+	t.Run("Failing to save sysadmin user", func(t *testing.T) {
+		opts := DefaultOptions().WithDir(t.TempDir())
+
+		s, closer := testServer(opts)
+		defer closer()
+
+		err := s.Initialize()
+		require.NoError(t, err)
+
+		injectedErr := errors.New("injected error")
+
+		s.sysDB = &dbMockResetAdminPasswordCornerCases{
+			DB:     s.sysDB,
+			setErr: injectedErr,
+		}
+		err = s.resetAdminPassword("newPassword")
+		require.ErrorIs(t, err, injectedErr)
+	})
 }
 
 func TestServerWithEmptyAdminPassword(t *testing.T) {
@@ -213,9 +385,9 @@ func TestServerCreateDatabase(t *testing.T) {
 	require.Equal(t, ErrIllegalArguments, err)
 
 	dbSettings := &schema.DatabaseSettings{
-		DatabaseName:   "lisbon",
-		Replica:        false,
-		MasterDatabase: "masterdb",
+		DatabaseName:    "lisbon",
+		Replica:         false,
+		PrimaryDatabase: "primarydb",
 	}
 	_, err = s.CreateDatabaseWith(ctx, dbSettings)
 	require.ErrorIs(t, err, ErrIllegalArguments)
@@ -376,15 +548,15 @@ func TestServerUpdateDatabaseAuthEnabled(t *testing.T) {
 	require.Equal(t, database.ErrDatabaseNotExists, err)
 
 	newdb := &schema.DatabaseSettings{
-		DatabaseName:   "lisbon",
-		Replica:        true,
-		MasterDatabase: "defaultdb",
+		DatabaseName:    "lisbon",
+		Replica:         true,
+		PrimaryDatabase: "defaultdb",
 	}
 	_, err = s.CreateDatabaseWith(ctx, newdb)
 	require.NoError(t, err)
 
 	newdb.Replica = false
-	newdb.MasterDatabase = ""
+	newdb.PrimaryDatabase = ""
 	_, err = s.UpdateDatabase(ctx, newdb)
 	require.NoError(t, err)
 
@@ -457,8 +629,8 @@ func TestServerUpdateDatabaseV2AuthEnabled(t *testing.T) {
 		Name: "lisbon",
 		Settings: &schema.DatabaseNullableSettings{
 			ReplicationSettings: &schema.ReplicationNullableSettings{
-				Replica:        &schema.NullableBool{Value: true},
-				MasterDatabase: &schema.NullableString{Value: "defaultdb"},
+				Replica:         &schema.NullableBool{Value: true},
+				PrimaryDatabase: &schema.NullableString{Value: "defaultdb"},
 			},
 		},
 		IfNotExists: true,
@@ -1700,11 +1872,8 @@ func TestServerGetUserAndUserExists(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, err)
 
-	_, err = s.getUser([]byte(username), true)
+	_, err = s.getUser([]byte(username))
 	require.NoError(t, err)
-
-	_, err = s.getUser([]byte(username), false)
-	require.Equal(t, errors.New("user not found"), err)
 
 	_, err = s.getValidatedUser([]byte(username), []byte("wrongpass"))
 	require.Error(t, err)

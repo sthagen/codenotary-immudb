@@ -38,6 +38,7 @@ func TestOptions(t *testing.T) {
 		op.DevMode != false ||
 		op.NoHistograms != false ||
 		op.AdminPassword != auth.SysAdminPassword ||
+		op.ForceAdminPassword != false ||
 		op.Address != "0.0.0.0" ||
 		op.Network != "tcp" ||
 		op.Port != 3322 ||
@@ -66,10 +67,10 @@ func TestReplicationOptions(t *testing.T) {
 		WithIsReplica(true).
 		WithSyncReplication(false).
 		WithSyncAcks(0).
-		WithMasterAddress("localhost").
-		WithMasterPort(3322).
-		WithFollowerUsername("follower-user").
-		WithFollowerPassword("follower-pwd").
+		WithPrimaryHost("localhost").
+		WithPrimaryPort(3322).
+		WithPrimaryUsername("primary-user").
+		WithPrimaryPassword("primary-pwd").
 		WithPrefetchTxBufferSize(100).
 		WithReplicationCommitConcurrency(5).
 		WithAllowTxDiscarding(true)
@@ -77,15 +78,15 @@ func TestReplicationOptions(t *testing.T) {
 	require.True(t, repOpts.IsReplica)
 	require.False(t, repOpts.SyncReplication)
 	require.Zero(t, repOpts.SyncAcks)
-	require.Equal(t, "localhost", repOpts.MasterAddress)
-	require.Equal(t, 3322, repOpts.MasterPort)
-	require.Equal(t, "follower-user", repOpts.FollowerUsername)
-	require.Equal(t, "follower-pwd", repOpts.FollowerPassword)
+	require.Equal(t, "localhost", repOpts.PrimaryHost)
+	require.Equal(t, 3322, repOpts.PrimaryPort)
+	require.Equal(t, "primary-user", repOpts.PrimaryUsername)
+	require.Equal(t, "primary-pwd", repOpts.PrimaryPassword)
 	require.Equal(t, 100, repOpts.PrefetchTxBufferSize)
 	require.Equal(t, 5, repOpts.ReplicationCommitConcurrency)
 	require.True(t, repOpts.AllowTxDiscarding)
 
-	// master-related settings
+	// primary-related settings
 	repOpts.
 		WithIsReplica(false).
 		WithSyncReplication(true).
@@ -100,11 +101,17 @@ func TestSetOptions(t *testing.T) {
 	tlsConfig := &tls.Config{Certificates: []tls.Certificate{}}
 
 	op := DefaultOptions().WithDir("immudb_dir").WithNetwork("udp").
-		WithAddress("localhost").WithPort(2048).
-		WithPidfile("immu.pid").WithAuth(false).
+		WithAddress("localhost").
+		WithPort(2048).
+		WithPidfile("immu.pid").
+		WithAuth(false).
 		WithMaxRecvMsgSize(4096).
-		WithDetached(true).WithNoHistograms(true).WithMetricsServer(false).
-		WithDevMode(true).WithLogfile("logfile").WithAdminPassword("admin").
+		WithDetached(true).
+		WithNoHistograms(true).
+		WithMetricsServer(false).
+		WithDevMode(true).WithLogfile("logfile").
+		WithAdminPassword("admin").
+		WithForceAdminPassword(true).
 		WithStreamChunkSize(4096).
 		WithWebServerPort(8081).
 		WithTokenExpiryTime(52).
@@ -130,6 +137,7 @@ func TestSetOptions(t *testing.T) {
 		op.DevMode != true ||
 		op.Logfile != "logfile" ||
 		op.AdminPassword != "admin" ||
+		op.ForceAdminPassword != true ||
 		op.StreamChunkSize != 4096 ||
 		op.WebServerPort != 8081 ||
 		op.Bind() != "localhost:2048" ||
