@@ -91,7 +91,6 @@ var ErrInvalidPreconditionMaxKeyLenExceeded = fmt.Errorf("%w: %v", ErrInvalidPre
 var ErrInvalidPreconditionInvalidTxID = fmt.Errorf("%w: invalid transaction ID", ErrInvalidPrecondition)
 
 var ErrSourceTxNewerThanTargetTx = errors.New("source tx is newer than target tx")
-var ErrLinearProofMaxLenExceeded = errors.New("max linear proof length limit exceeded")
 
 var ErrCompactionUnsupported = errors.New("compaction is unsupported when remote storage is used")
 
@@ -165,7 +164,6 @@ type ImmuStore struct {
 	maxTxEntries          int
 	maxKeyLen             int
 	maxValueLen           int
-	maxLinearProofLen     int
 
 	maxTxSize int
 
@@ -186,11 +184,7 @@ type ImmuStore struct {
 	_valBs    []byte       // pre-allocated buffer to support tx exportation
 	_valBsMux sync.Mutex
 
-	aht      *ahtree.AHtree
-	blBuffer chan ([sha256.Size]byte)
-	blErr    error
-
-	ahtWHub              *watchers.WatchersHub
+	aht                  *ahtree.AHtree
 	inmemPrecommitWHub   *watchers.WatchersHub
 	durablePrecommitWHub *watchers.WatchersHub
 	commitWHub           *watchers.WatchersHub
@@ -198,7 +192,6 @@ type ImmuStore struct {
 	indexer *indexer
 
 	closed bool
-	blDone chan (struct{})
 
 	mutex sync.Mutex
 
@@ -474,11 +467,6 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		kvs[i] = &tbtree.KV{K: make([]byte, maxKeyLen), V: make([]byte, elen)}
 	}
 
-	var blBuffer chan ([sha256.Size]byte)
-	if opts.MaxLinearProofLen > 0 {
-		blBuffer = make(chan [sha256.Size]byte, opts.MaxLinearProofLen)
-	}
-
 	txLogCache, err := cache.NewLRUCache(opts.TxLogCacheSize) // TODO: optionally it could include up to opts.MaxActiveTransactions upon start
 	if err != nil {
 		return nil, err
@@ -514,7 +502,6 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		maxTxEntries:          maxTxEntries,
 		maxKeyLen:             maxKeyLen,
 		maxValueLen:           maxInt(maxValueLen, opts.MaxValueLen),
-		maxLinearProofLen:     opts.MaxLinearProofLen,
 
 		maxTxSize: maxTxSize,
 
@@ -525,10 +512,8 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		useExternalCommitAllowance: opts.UseExternalCommitAllowance,
 		commitAllowedUpToTxID:      committedTxID,
 
-		aht:      aht,
-		blBuffer: blBuffer,
+		aht: aht,
 
-		ahtWHub:              watchers.New(0, opts.MaxActiveTransactions),
 		inmemPrecommitWHub:   watchers.New(0, opts.MaxActiveTransactions+1), // syncer (TODO: indexer may wait here instead)
 		durablePrecommitWHub: watchers.New(0, opts.MaxActiveTransactions+opts.MaxWaitees),
 		commitWHub:           watchers.New(0, 1+opts.MaxActiveTransactions+opts.MaxWaitees), // including indexer
@@ -557,16 +542,6 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 			store.Close()
 			return nil, fmt.Errorf("binary linking failed: %w", err)
 		}
-	}
-
-	if store.blBuffer != nil {
-		store.blDone = make(chan struct{})
-		go store.binaryLinking()
-	}
-
-	err = store.ahtWHub.DoneUpto(precommittedTxID)
-	if err != nil {
-		return nil, err
 	}
 
 	err = store.inmemPrecommitWHub.DoneUpto(precommittedTxID)
@@ -800,35 +775,6 @@ func (s *ImmuStore) SnapshotSince(tx uint64) (*Snapshot, error) {
 	}, nil
 }
 
-func (s *ImmuStore) binaryLinking() {
-	for {
-		select {
-		case alh := <-s.blBuffer:
-			{
-				n, _, err := s.aht.Append(alh[:])
-				if err != nil {
-					s.SetBlErr(err)
-					s.logger.Errorf("Binary linking at '%s' stopped due to error: %v", s.path, err)
-					return
-				}
-
-				s.ahtWHub.DoneUpto(n)
-			}
-		case <-s.blDone:
-			{
-				return
-			}
-		}
-	}
-}
-
-func (s *ImmuStore) SetBlErr(err error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	s.blErr = err
-}
-
 func (s *ImmuStore) CommittedAlh() (uint64, [sha256.Size]byte) {
 	s.commitStateRWMutex.RLock()
 	defer s.commitStateRWMutex.RUnlock()
@@ -861,21 +807,6 @@ func (s *ImmuStore) precommittedAlh() (uint64, [sha256.Size]byte) {
 	defer s.commitStateRWMutex.RUnlock()
 
 	return s.inmemPrecommittedTxID, s.inmemPrecommittedAlh
-}
-
-func (s *ImmuStore) BlInfo() (uint64, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	alhSize := s.aht.Size()
-	committedTxID := s.LastCommittedTxID()
-
-	// only expose fully committed (durable) information
-	if alhSize < committedTxID {
-		return alhSize, s.blErr
-	}
-
-	return committedTxID, s.blErr
 }
 
 func (s *ImmuStore) syncBinaryLinking() error {
@@ -1028,10 +959,6 @@ func (s *ImmuStore) MaxKeyLen() int {
 
 func (s *ImmuStore) MaxValueLen() int {
 	return s.maxValueLen
-}
-
-func (s *ImmuStore) MaxLinearProofLen() int {
-	return s.maxLinearProofLen
 }
 
 func (s *ImmuStore) TxCount() uint64 {
@@ -1280,14 +1207,6 @@ func (s *ImmuStore) precommit(otx *OngoingTx, hdr *TxHeader) (*TxHeader, error) 
 		var blRoot [sha256.Size]byte
 
 		if hdr.BlTxID > 0 {
-			err = s.ahtWHub.WaitFor(hdr.BlTxID, nil)
-			if err == watchers.ErrAlreadyClosed {
-				return nil, ErrAlreadyClosed
-			}
-			if err != nil {
-				return nil, err
-			}
-
 			blRoot, err = s.aht.RootAt(hdr.BlTxID)
 			if err != nil && err != ahtree.ErrEmptyTree {
 				return nil, err
@@ -1378,10 +1297,6 @@ func (s *ImmuStore) lastPrecommittedTxID() uint64 {
 }
 
 func (s *ImmuStore) performPrecommit(tx *Tx, ts int64, blTxID uint64) error {
-	if s.blErr != nil {
-		return s.blErr
-	}
-
 	s.commitStateRWMutex.Lock()
 	defer s.commitStateRWMutex.Unlock()
 
@@ -1507,19 +1422,13 @@ func (s *ImmuStore) performPrecommit(tx *Tx, ts int64, blTxID uint64) error {
 		return err
 	}
 
-	if s.blBuffer == nil {
-		err = s.aht.ResetSize(s.inmemPrecommittedTxID)
-		if err != nil {
-			return err
-		}
-		_, _, err := s.aht.Append(alh[:])
-		if err != nil {
-			return err
-		}
-
-		s.ahtWHub.DoneUpto(tx.header.ID)
-	} else {
-		s.blBuffer <- alh
+	err = s.aht.ResetSize(s.inmemPrecommittedTxID)
+	if err != nil {
+		return err
+	}
+	_, _, err = s.aht.Append(alh[:])
+	if err != nil {
+		return err
 	}
 
 	s.inmemPrecommittedTxID++
@@ -1866,6 +1775,7 @@ type DualProof struct {
 	TargetBlTxAlh      [sha256.Size]byte
 	LastInclusionProof [][sha256.Size]byte
 	LinearProof        *LinearProof
+	LinearAdvanceProof *LinearAdvanceProof
 }
 
 // DualProof combines linear cryptographic linking i.e. transactions include the linear accumulative hash up to the previous one,
@@ -1931,6 +1841,16 @@ func (s *ImmuStore) DualProof(sourceTxHdr, targetTxHdr *TxHeader) (proof *DualPr
 	}
 	proof.LinearProof = lproof
 
+	laproof, err := s.LinearAdvanceProof(
+		sourceTxHdr.BlTxID,
+		minUint64(sourceTxHdr.ID, targetTxHdr.BlTxID),
+		targetTxHdr.BlTxID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	proof.LinearAdvanceProof = laproof
+
 	return
 }
 
@@ -1944,10 +1864,6 @@ type LinearProof struct {
 func (s *ImmuStore) LinearProof(sourceTxID, targetTxID uint64) (*LinearProof, error) {
 	if sourceTxID == 0 || sourceTxID > targetTxID {
 		return nil, ErrSourceTxNewerThanTargetTx
-	}
-
-	if s.maxLinearProofLen > 0 && int(targetTxID-sourceTxID+1) > s.maxLinearProofLen {
-		return nil, ErrLinearProofMaxLenExceeded
 	}
 
 	tx, err := s.fetchAllocTx()
@@ -1983,6 +1899,64 @@ func (s *ImmuStore) LinearProof(sourceTxID, targetTxID uint64) (*LinearProof, er
 		TargetTxID: targetTxID,
 		Terms:      proof,
 	}, nil
+}
+
+// LinearAdvanceProof returns additional inclusion proof for part of the old linear proof consumed by
+// the new Merkle Tree
+func (s *ImmuStore) LinearAdvanceProof(sourceTxID, targetTxID uint64, targetBlTxID uint64) (*LinearAdvanceProof, error) {
+	if targetTxID < sourceTxID {
+		return nil, ErrSourceTxNewerThanTargetTx
+	}
+
+	if targetTxID <= sourceTxID+1 {
+		// Additional proof is not needed
+		return nil, nil
+	}
+
+	tx, err := s.fetchAllocTx()
+	if err != nil {
+		return nil, err
+	}
+	defer s.releaseAllocTx(tx)
+
+	r, err := s.NewTxReader(sourceTxID+1, false, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err = r.Read()
+	if err != nil {
+		return nil, err
+	}
+
+	linearProofTerms := make([][sha256.Size]byte, targetTxID-sourceTxID)
+	linearProofTerms[0] = tx.header.Alh()
+
+	inclusionProofs := make([][][sha256.Size]byte, targetTxID-sourceTxID-1)
+
+	for txID := sourceTxID + 1; txID < targetTxID; txID++ {
+		inclusionProof, err := s.aht.InclusionProof(txID, targetBlTxID)
+		if err != nil {
+			return nil, err
+		}
+		inclusionProofs[txID-sourceTxID-1] = inclusionProof
+
+		tx, err := r.Read()
+		if err != nil {
+			return nil, err
+		}
+		linearProofTerms[txID-sourceTxID] = tx.Header().innerHash()
+	}
+
+	return &LinearAdvanceProof{
+		LinearProofTerms: linearProofTerms,
+		InclusionProofs:  inclusionProofs,
+	}, nil
+}
+
+type LinearAdvanceProof struct {
+	LinearProofTerms [][sha256.Size]byte
+	InclusionProofs  [][][sha256.Size]byte
 }
 
 func (s *ImmuStore) txOffsetAndSize(txID uint64) (int64, int, error) {
@@ -2702,17 +2676,7 @@ func (s *ImmuStore) Close() error {
 		s.releaseVLog(i + 1)
 	}
 
-	if s.blBuffer != nil && s.blErr == nil && s.blDone != nil {
-		s.logger.Infof("Stopping Binary Linking at '%s'...", s.path)
-		s.blDone <- struct{}{}
-		s.logger.Infof("Binary linking gracefully stopped at '%s'", s.path)
-		close(s.blBuffer)
-	}
-
-	err := s.ahtWHub.Close()
-	merr.Append(err)
-
-	err = s.inmemPrecommitWHub.Close()
+	err := s.inmemPrecommitWHub.Close()
 	merr.Append(err)
 
 	err = s.durablePrecommitWHub.Close()
@@ -2768,6 +2732,13 @@ func maxInt(a, b int) int {
 
 func maxUint64(a, b uint64) uint64 {
 	if a <= b {
+		return b
+	}
+	return a
+}
+
+func minUint64(a, b uint64) uint64 {
+	if a >= b {
 		return b
 	}
 	return a

@@ -40,7 +40,6 @@ import (
 	"github.com/codenotary/immudb/pkg/immuos"
 	"github.com/codenotary/immudb/pkg/logger"
 	"github.com/golang/protobuf/ptypes/empty"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -250,7 +249,7 @@ func TestResetAdminPasswordCornerCases(t *testing.T) {
 		err := s.Initialize()
 		require.NoError(t, err)
 
-		err = s.resetAdminPassword("newPassword")
+		_, err = s.resetAdminPassword("newPassword")
 		require.ErrorContains(t, err, "database is running as a replica")
 	})
 
@@ -266,7 +265,7 @@ func TestResetAdminPasswordCornerCases(t *testing.T) {
 		err = s.CloseDatabases()
 		require.NoError(t, err)
 
-		err = s.resetAdminPassword("newPassword")
+		_, err = s.resetAdminPassword("newPassword")
 		require.ErrorContains(t, err, "could not read sysadmin user data")
 	})
 
@@ -282,7 +281,7 @@ func TestResetAdminPasswordCornerCases(t *testing.T) {
 		err = s.CloseDatabases()
 		require.NoError(t, err)
 
-		err = s.resetAdminPassword("newPassword")
+		_, err = s.resetAdminPassword("newPassword")
 		require.ErrorContains(t, err, "could not read sysadmin user data")
 	})
 
@@ -295,7 +294,7 @@ func TestResetAdminPasswordCornerCases(t *testing.T) {
 		err := s.Initialize()
 		require.NoError(t, err)
 
-		err = s.resetAdminPassword("")
+		_, err = s.resetAdminPassword("")
 		require.ErrorContains(t, err, "password is empty")
 	})
 
@@ -314,7 +313,7 @@ func TestResetAdminPasswordCornerCases(t *testing.T) {
 			DB:     s.sysDB,
 			setErr: injectedErr,
 		}
-		err = s.resetAdminPassword("newPassword")
+		_, err = s.resetAdminPassword("newPassword")
 		require.ErrorIs(t, err, injectedErr)
 	})
 }
@@ -329,7 +328,7 @@ func TestServerWithEmptyAdminPassword(t *testing.T) {
 	defer closer()
 
 	err := s.Initialize()
-	assert.ErrorIs(t, err, ErrEmptyAdminPassword)
+	require.ErrorIs(t, err, ErrEmptyAdminPassword)
 }
 
 func TestServerWithInvalidAdminPassword(t *testing.T) {
@@ -342,7 +341,7 @@ func TestServerWithInvalidAdminPassword(t *testing.T) {
 	defer closer()
 
 	err := s.Initialize()
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestServerErrChunkSizeTooSmall(t *testing.T) {
@@ -354,7 +353,7 @@ func TestServerErrChunkSizeTooSmall(t *testing.T) {
 	defer closer()
 
 	err := s.Initialize()
-	assert.ErrorContains(t, err, stream.ErrChunkTooSmall)
+	require.ErrorContains(t, err, stream.ErrChunkTooSmall)
 }
 
 func TestServerCreateDatabase(t *testing.T) {
@@ -427,12 +426,12 @@ func TestServerCreateDatabaseCaseError(t *testing.T) {
 	ctx = metadata.NewIncomingContext(context.Background(), md)
 
 	_, err = s.CreateDatabaseWith(ctx, newdb)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	newdb.DatabaseName = strings.ToLower(newdb.DatabaseName)
 
 	_, err = s.CreateDatabaseWith(ctx, newdb)
-	assert.ErrorIs(t, err, database.ErrDatabaseAlreadyExists)
+	require.ErrorIs(t, err, database.ErrDatabaseAlreadyExists)
 }
 
 func TestServerCreateMultipleDatabases(t *testing.T) {

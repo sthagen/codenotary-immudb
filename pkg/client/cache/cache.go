@@ -24,6 +24,7 @@ import (
 
 var ErrCacheNotLocked = errors.New("cache is not locked")
 var ErrCacheAlreadyLocked = errors.New("cache is already locked")
+var ErrServerIdentityValidationFailed = errors.New("failed to validate the identity of the server")
 
 // Cache the cache interface
 type Cache interface {
@@ -31,6 +32,13 @@ type Cache interface {
 	Set(serverUUID, db string, state *schema.ImmutableState) error
 	Lock(serverUUID string) error
 	Unlock() error
+
+	// ServerIdentityCheck check validates that a server with given identity can use given server uuid
+	//
+	// `serverIdentity` must uniquely identify given immudb server instance.
+	// Go SDK passes `host:port` pair as the server identity however the Cache interface implementation
+	// must not do any assumptions about the structure of this data.
+	ServerIdentityCheck(serverIdentity, serverUUID string) error
 }
 
 // HistoryCache the history cache interface

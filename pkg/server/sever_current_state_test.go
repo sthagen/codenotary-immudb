@@ -24,7 +24,6 @@ import (
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/signer"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -41,7 +40,7 @@ func TestServerCurrentStateSigned(t *testing.T) {
 	dbRootpath := dir
 
 	sig, err := signer.NewSigner("./../../test/signer/ec3.key")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	stSig := NewStateSigner(sig)
 	s = s.WithOptions(s.Options.WithAuth(false).WithSigningKey("foo")).WithStateSigner(stSig).(*ImmuServer)
@@ -66,16 +65,16 @@ func TestServerCurrentStateSigned(t *testing.T) {
 
 	state, err := s.CurrentState(ctx, &emptypb.Empty{})
 
-	assert.NoError(t, err)
-	assert.IsType(t, &schema.ImmutableState{}, state)
-	assert.IsType(t, &schema.Signature{}, state.Signature)
-	assert.NotNil(t, state.Signature.Signature)
-	assert.NotNil(t, state.Signature.PublicKey)
+	require.NoError(t, err)
+	require.IsType(t, &schema.ImmutableState{}, state)
+	require.IsType(t, &schema.Signature{}, state.Signature)
+	require.NotNil(t, state.Signature.Signature)
+	require.NotNil(t, state.Signature.PublicKey)
 
 	ecdsaPK, err := signer.UnmarshalKey(state.Signature.PublicKey)
 	require.NoError(t, err)
 
 	ok, err := signer.Verify(state.ToBytes(), state.Signature.Signature, ecdsaPK)
-	assert.NoError(t, err)
-	assert.True(t, ok)
+	require.NoError(t, err)
+	require.True(t, ok)
 }

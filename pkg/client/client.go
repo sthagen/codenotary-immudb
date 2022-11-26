@@ -594,14 +594,28 @@ func NewImmuClient(options *Options) (*immuClient, error) {
 	stateProvider := state.NewStateProvider(serviceClient)
 	uuidProvider := state.NewUUIDProvider(serviceClient)
 
-	stateService, err := state.NewStateService(cache.NewFileCache(options.Dir), l, stateProvider, uuidProvider)
+	stateService, err := state.NewStateService(
+		cache.NewFileCache(options.Dir),
+		l,
+		stateProvider,
+		uuidProvider,
+	)
 	if err != nil {
 		return nil, logErr(l, "Unable to create state service: %s", err)
+	}
+
+	if !c.Options.DisableIdentityCheck {
+		stateService.SetServerIdentity(c.getServerIdentity())
 	}
 
 	c.WithStateService(stateService)
 
 	return c, nil
+}
+
+func (c *immuClient) getServerIdentity() string {
+	// TODO: Allow customizing this value
+	return c.Options.Bind()
 }
 
 // SetupDialOptions extracts grpc dial options from provided client options.
@@ -1037,6 +1051,35 @@ func (c *immuClient) VerifiedGetAtRevision(ctx context.Context, key []byte, rev 
 	return c.VerifiedGet(ctx, key, AtRevision(rev))
 }
 
+func (c *immuClient) verifyDualProof(
+	ctx context.Context,
+	dualProof *store.DualProof,
+	sourceID uint64,
+	targetID uint64,
+	sourceAlh [sha256.Size]byte,
+	targetAlh [sha256.Size]byte,
+) error {
+	err := schema.FillMissingLinearAdvanceProof(
+		ctx, dualProof, sourceID, targetID, c.ServiceClient,
+	)
+	if err != nil {
+		return err
+	}
+
+	verifies := store.VerifyDualProof(
+		dualProof,
+		sourceID,
+		targetID,
+		sourceAlh,
+		targetAlh,
+	)
+	if !verifies {
+		return store.ErrCorruptedData
+	}
+
+	return nil
+}
+
 func (c *immuClient) verifiedGet(ctx context.Context, kReq *schema.KeyRequest) (vi *schema.Entry, err error) {
 	err = c.StateService.CacheLock()
 	if err != nil {
@@ -1120,15 +1163,16 @@ func (c *immuClient) verifiedGet(ctx context.Context, kReq *schema.KeyRequest) (
 	}
 
 	if state.TxId > 0 {
-		verifies = store.VerifyDualProof(
+		err := c.verifyDualProof(
+			ctx,
 			dualProof,
 			sourceID,
 			targetID,
 			sourceAlh,
 			targetAlh,
 		)
-		if !verifies {
-			return nil, store.ErrCorruptedData
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -1299,16 +1343,17 @@ func (c *immuClient) VerifiedSet(ctx context.Context, key []byte, value []byte) 
 	targetAlh = tx.Header().Alh()
 
 	if state.TxId > 0 {
-		verifies = store.VerifyDualProof(
-			schema.DualProofFromProto(verifiableTx.DualProof),
+		dualProof := schema.DualProofFromProto(verifiableTx.DualProof)
+		err := c.verifyDualProof(
+			ctx,
+			dualProof,
 			sourceID,
 			targetID,
 			sourceAlh,
 			targetAlh,
 		)
-
-		if !verifies {
-			return nil, store.ErrCorruptedData
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -1495,15 +1540,16 @@ func (c *immuClient) VerifiedTxByID(ctx context.Context, tx uint64) (*schema.Tx,
 	}
 
 	if state.TxId > 0 {
-		verifies := store.VerifyDualProof(
+		err := c.verifyDualProof(
+			ctx,
 			dualProof,
 			sourceID,
 			targetID,
 			sourceAlh,
 			targetAlh,
 		)
-		if !verifies {
-			return nil, store.ErrCorruptedData
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -1677,15 +1723,17 @@ func (c *immuClient) VerifiedSetReferenceAt(ctx context.Context, key []byte, ref
 	targetAlh = tx.Header().Alh()
 
 	if state.TxId > 0 {
-		verifies = store.VerifyDualProof(
-			schema.DualProofFromProto(verifiableTx.DualProof),
+		dualProof := schema.DualProofFromProto(verifiableTx.DualProof)
+		err := c.verifyDualProof(
+			ctx,
+			dualProof,
 			sourceID,
 			targetID,
 			sourceAlh,
 			targetAlh,
 		)
-		if !verifies {
-			return nil, store.ErrCorruptedData
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -1848,15 +1896,17 @@ func (c *immuClient) VerifiedZAddAt(ctx context.Context, set []byte, score float
 	targetAlh = tx.Header().Alh()
 
 	if state.TxId > 0 {
-		verifies = store.VerifyDualProof(
-			schema.DualProofFromProto(vtx.DualProof),
+		dualProof := schema.DualProofFromProto(vtx.DualProof)
+		err := c.verifyDualProof(
+			ctx,
+			dualProof,
 			sourceID,
 			targetID,
 			sourceAlh,
 			targetAlh,
 		)
-		if !verifies {
-			return nil, store.ErrCorruptedData
+		if err != nil {
+			return nil, err
 		}
 	}
 

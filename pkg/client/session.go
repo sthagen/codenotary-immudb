@@ -63,11 +63,16 @@ func (c *immuClient) OpenSession(ctx context.Context, user []byte, pass []byte, 
 		}
 	}()
 
+	stateCache := cache.NewFileCache(c.Options.Dir)
 	stateProvider := state.NewStateProvider(serviceClient)
 
-	stateService, err := state.NewStateServiceWithUUID(cache.NewFileCache(c.Options.Dir), c.Logger, stateProvider, resp.GetServerUUID())
+	stateService, err := state.NewStateServiceWithUUID(stateCache, c.Logger, stateProvider, resp.GetServerUUID())
 	if err != nil {
 		return errors.FromError(fmt.Errorf("unable to create state service: %v", err))
+	}
+
+	if !c.Options.DisableIdentityCheck {
+		stateService.SetServerIdentity(c.getServerIdentity())
 	}
 
 	c.clientConn = clientConn
