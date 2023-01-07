@@ -59,6 +59,7 @@ var ErrorMaxValueLenExceeded = errors.New("max value length exceeded")
 var ErrPreconditionFailed = errors.New("precondition failed")
 var ErrDuplicatedKey = errors.New("duplicated key")
 var ErrMaxActiveTransactionsLimitExceeded = errors.New("max active transactions limit exceeded")
+var ErrMVCCReadSetLimitExceeded = errors.New("MVCC read-set limit exceeded")
 var ErrMaxConcurrencyLimitExceeded = errors.New("max concurrency limit exceeded")
 var ErrorPathIsNotADirectory = errors.New("path is not a directory")
 var ErrorCorruptedTxData = errors.New("tx data is corrupted")
@@ -158,6 +159,7 @@ type ImmuStore struct {
 	synced                bool
 	syncFrequency         time.Duration
 	maxActiveTransactions int
+	mvccReadSetLimit      int
 	maxWaitees            int
 	maxConcurrency        int
 	maxIOConcurrency      int
@@ -496,6 +498,7 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		synced:                opts.Synced,
 		syncFrequency:         opts.SyncFrequency,
 		maxActiveTransactions: opts.MaxActiveTransactions,
+		mvccReadSetLimit:      opts.MVCCReadSetLimit,
 		maxWaitees:            opts.MaxWaitees,
 		maxConcurrency:        opts.MaxConcurrency,
 		maxIOConcurrency:      opts.MaxIOConcurrency,
@@ -688,15 +691,11 @@ func (s *ImmuStore) IndexInfo() uint64 {
 	return s.indexer.Ts()
 }
 
-func (s *ImmuStore) ExistKeyWith(prefix []byte, neq []byte) (bool, error) {
-	return s.indexer.ExistKeyWith(prefix, neq)
-}
-
 func (s *ImmuStore) Get(key []byte) (valRef ValueRef, err error) {
-	return s.GetWith(key, IgnoreExpired, IgnoreDeleted)
+	return s.GetWithFilters(key, IgnoreExpired, IgnoreDeleted)
 }
 
-func (s *ImmuStore) GetWith(key []byte, filters ...FilterFn) (valRef ValueRef, err error) {
+func (s *ImmuStore) GetWithFilters(key []byte, filters ...FilterFn) (valRef ValueRef, err error) {
 	indexedVal, tx, hc, err := s.indexer.Get(key)
 	if err != nil {
 		return nil, err
@@ -721,6 +720,37 @@ func (s *ImmuStore) GetWith(key []byte, filters ...FilterFn) (valRef ValueRef, e
 	}
 
 	return valRef, nil
+}
+
+func (s *ImmuStore) GetWithPrefix(prefix []byte, neq []byte) (key []byte, valRef ValueRef, err error) {
+	return s.GetWithPrefixAndFilters(prefix, neq, IgnoreExpired, IgnoreDeleted)
+}
+
+func (s *ImmuStore) GetWithPrefixAndFilters(prefix []byte, neq []byte, filters ...FilterFn) (key []byte, valRef ValueRef, err error) {
+	key, indexedVal, tx, hc, err := s.indexer.GetWithPrefix(prefix, neq)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	valRef, err = s.valueRefFrom(tx, hc, indexedVal)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	now := time.Now()
+
+	for _, filter := range filters {
+		if filter == nil {
+			return nil, nil, fmt.Errorf("%w: invalid filter function", ErrIllegalArguments)
+		}
+
+		err = filter(valRef, now)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return key, valRef, nil
 }
 
 func (s *ImmuStore) History(key []byte, offset uint64, descOrder bool, limit int) (txs []uint64, hCount uint64, err error) {
@@ -749,6 +779,19 @@ func (s *ImmuStore) NewTxHolderPool(poolSize int, preallocated bool) (TxPool, er
 	})
 }
 
+func (s *ImmuStore) syncSnapshot() (*Snapshot, error) {
+	snap, err := s.indexer.index.SyncSnapshot()
+	if err != nil {
+		return nil, err
+	}
+
+	return &Snapshot{
+		st:   s,
+		snap: snap,
+		ts:   time.Now(),
+	}, nil
+}
+
 func (s *ImmuStore) Snapshot() (*Snapshot, error) {
 	snap, err := s.indexer.Snapshot()
 	if err != nil {
@@ -762,8 +805,21 @@ func (s *ImmuStore) Snapshot() (*Snapshot, error) {
 	}, nil
 }
 
-func (s *ImmuStore) SnapshotSince(tx uint64) (*Snapshot, error) {
-	snap, err := s.indexer.SnapshotSince(tx)
+func (s *ImmuStore) SnapshotMustIncludeTxID(snapshotMustIncludeTxID uint64) (*Snapshot, error) {
+	return s.SnapshotMustIncludeTxIDWithRenewalPeriod(snapshotMustIncludeTxID, 0)
+}
+
+func (s *ImmuStore) SnapshotMustIncludeTxIDWithRenewalPeriod(snapshotMustIncludeTxID uint64, snapshotRenewalPeriod time.Duration) (*Snapshot, error) {
+	if snapshotMustIncludeTxID > s.lastPrecommittedTxID() {
+		return nil, fmt.Errorf("%w: snapshotMustIncludeTxID is greater than the last precommitted transaction", ErrIllegalArguments)
+	}
+
+	err := s.WaitForIndexingUpto(snapshotMustIncludeTxID, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	snap, err := s.indexer.SnapshotMustIncludeTxIDWithRenewalPeriod(snapshotMustIncludeTxID, snapshotRenewalPeriod)
 	if err != nil {
 		return nil, err
 	}
@@ -941,6 +997,10 @@ func (s *ImmuStore) MaxActiveTransactions() int {
 	return s.maxActiveTransactions
 }
 
+func (s *ImmuStore) MVCCReadSetLimit() int {
+	return s.mvccReadSetLimit
+}
+
 func (s *ImmuStore) MaxConcurrency() int {
 	return s.maxConcurrency
 }
@@ -1051,11 +1111,11 @@ func (s *ImmuStore) appendData(entries []*EntrySpec, donec chan<- appendableResu
 }
 
 func (s *ImmuStore) NewWriteOnlyTx() (*OngoingTx, error) {
-	return newWriteOnlyTx(s)
+	return newOngoingTx(s, &TxOptions{Mode: WriteOnlyTx})
 }
 
-func (s *ImmuStore) NewTx() (*OngoingTx, error) {
-	return newReadWriteTx(s)
+func (s *ImmuStore) NewTx(opts *TxOptions) (*OngoingTx, error) {
+	return newOngoingTx(s, opts)
 }
 
 func (s *ImmuStore) commit(otx *OngoingTx, expectedHeader *TxHeader, waitForIndexing bool) (*TxHeader, error) {
@@ -1102,44 +1162,6 @@ func (s *ImmuStore) precommit(otx *OngoingTx, hdr *TxHeader) (*TxHeader, error) 
 	if err != nil {
 		return nil, err
 	}
-
-	if otx.hasPreconditions() {
-		// First check is performed on the currently committed transaction.
-		// It may happen that between now and the commit of this change there are
-		// more transactions happening. This check though will prevent acquiring
-		// the write lock and putting garbage into appendables if we can already
-		// determine that preconditions are not met.
-
-		// A corner case is if the DB fails to meet preconditions now but would fulfill
-		// those during final commit phase - but in such case, we are allowed to reason
-		// about the DB state in any point in time between both checks thus it is still
-		// valid to fail precondition check.
-
-		err = s.WaitForIndexingUpto(s.lastPrecommittedTxID(), nil)
-		if err != nil {
-			return nil, err
-		}
-
-		err = otx.checkPreconditions(s)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// early check to reduce amount of garbage when tx is not finally committed
-	s.mutex.Lock()
-
-	if s.closed {
-		s.mutex.Unlock()
-		return nil, ErrAlreadyClosed
-	}
-
-	if !otx.IsWriteOnly() && otx.snap.Ts() <= s.lastPrecommittedTxID() {
-		s.mutex.Unlock()
-		return nil, ErrTxReadConflict
-	}
-
-	s.mutex.Unlock()
 
 	tx, err := s.fetchAllocTx()
 	if err != nil {
@@ -1251,10 +1273,6 @@ func (s *ImmuStore) precommit(otx *OngoingTx, hdr *TxHeader) (*TxHeader, error) 
 		if currPrecommittedAlh != hdr.PrevAlh {
 			return nil, fmt.Errorf("%w: attempt to commit a tx with invalid prevAlh", ErrIllegalArguments)
 		}
-	}
-
-	if !otx.IsWriteOnly() && otx.snap.Ts() <= currPrecomittedTxID {
-		return nil, ErrTxReadConflict
 	}
 
 	if otx.hasPreconditions() {
@@ -1653,7 +1671,9 @@ func (s *ImmuStore) CommitWith(callback func(txID uint64, index KeyIndex) ([]*En
 
 type KeyIndex interface {
 	Get(key []byte) (valRef ValueRef, err error)
-	GetWith(key []byte, filters ...FilterFn) (valRef ValueRef, err error)
+	GetWithFilters(key []byte, filters ...FilterFn) (valRef ValueRef, err error)
+	GetWithPrefix(prefix []byte, neq []byte) (key []byte, valRef ValueRef, err error)
+	GetWithPrefixAndFilters(prefix []byte, neq []byte, filters ...FilterFn) (key []byte, valRef ValueRef, err error)
 }
 
 type unsafeIndex struct {
@@ -1661,11 +1681,19 @@ type unsafeIndex struct {
 }
 
 func (index *unsafeIndex) Get(key []byte) (ValueRef, error) {
-	return index.GetWith(key, IgnoreDeleted)
+	return index.GetWithFilters(key, IgnoreDeleted, IgnoreExpired)
 }
 
-func (index *unsafeIndex) GetWith(key []byte, filters ...FilterFn) (ValueRef, error) {
-	return index.st.GetWith(key, filters...)
+func (index *unsafeIndex) GetWithFilters(key []byte, filters ...FilterFn) (ValueRef, error) {
+	return index.st.GetWithFilters(key, filters...)
+}
+
+func (index *unsafeIndex) GetWithPrefix(prefix []byte, neq []byte) (key []byte, valRef ValueRef, err error) {
+	return index.st.GetWithPrefixAndFilters(prefix, neq, IgnoreDeleted, IgnoreExpired)
+}
+
+func (index *unsafeIndex) GetWithPrefixAndFilters(prefix []byte, neq []byte, filters ...FilterFn) (key []byte, valRef ValueRef, err error) {
+	return index.st.GetWithPrefixAndFilters(prefix, neq, filters...)
 }
 
 func (s *ImmuStore) preCommitWith(callback func(txID uint64, index KeyIndex) ([]*EntrySpec, []Precondition, error)) (*TxHeader, error) {

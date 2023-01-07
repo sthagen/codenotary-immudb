@@ -39,29 +39,11 @@ func (d *db) Scan(req *schema.ScanRequest) (*schema.Entries, error) {
 			ErrResultSizeLimitExceeded, req.Limit, d.maxResultSize)
 	}
 
-	waitUntilTx := req.SinceTx
-	if waitUntilTx == 0 {
-		waitUntilTx = currTxID
-	}
-
-	if !req.NoWait {
-		err := d.st.WaitForIndexingUpto(waitUntilTx, nil)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	limit := int(req.Limit)
 
 	if req.Limit == 0 {
 		limit = d.maxResultSize
 	}
-
-	snap, err := d.st.SnapshotSince(waitUntilTx)
-	if err != nil {
-		return nil, err
-	}
-	defer snap.Close()
 
 	seekKey := req.SeekKey
 
@@ -74,8 +56,14 @@ func (d *db) Scan(req *schema.ScanRequest) (*schema.Entries, error) {
 		endKey = EncodeKey(req.EndKey)
 	}
 
+	snap, err := d.snapshotSince(req.SinceTx)
+	if err != nil {
+		return nil, err
+	}
+	defer snap.Close()
+
 	r, err := snap.NewKeyReader(
-		&store.KeyReaderSpec{
+		store.KeyReaderSpec{
 			SeekKey:       seekKey,
 			EndKey:        endKey,
 			Prefix:        EncodeKey(req.Prefix),

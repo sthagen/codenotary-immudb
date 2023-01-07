@@ -61,12 +61,11 @@ func TestClosedIndexerFailures(t *testing.T) {
 	require.Zero(t, snap)
 	require.ErrorIs(t, err, ErrAlreadyClosed)
 
-	snap, err = indexer.SnapshotSince(0)
+	snap, err = indexer.SnapshotMustIncludeTxIDWithRenewalPeriod(0, 0)
 	require.Zero(t, snap)
 	require.ErrorIs(t, err, ErrAlreadyClosed)
 
-	exists, err := indexer.ExistKeyWith(nil, nil)
-	require.Zero(t, exists)
+	_, _, _, _, err = indexer.GetWithPrefix(nil, nil)
 	require.ErrorIs(t, err, ErrAlreadyClosed)
 
 	err = indexer.Sync()
@@ -186,12 +185,11 @@ func TestClosedIndexer(t *testing.T) {
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrAlreadyClosed)
 
-	_, err = i.SnapshotSince(0)
+	_, err = i.SnapshotMustIncludeTxIDWithRenewalPeriod(0, 0)
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrAlreadyClosed)
 
-	_, err = i.ExistKeyWith(dummy, dummy)
-	assert.Error(t, err)
+	_, _, _, _, err = i.GetWithPrefix(dummy, dummy)
 	assert.ErrorIs(t, err, ErrAlreadyClosed)
 
 	err = i.Sync()

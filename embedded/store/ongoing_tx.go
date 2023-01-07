@@ -17,7 +17,9 @@ limitations under the License.
 package store
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -25,13 +27,20 @@ import (
 // OngoingTx (no-thread safe) represents an interactive or incremental transaction with support of RYOW.
 // The snapshot may be locally modified but isolated from other transactions
 type OngoingTx struct {
-	st   *ImmuStore
-	snap *Snapshot
+	st       *ImmuStore
+	snap     *Snapshot
+	readOnly bool
 
 	entries      []*EntrySpec
 	entriesByKey map[[sha256.Size]byte]int
 
 	preconditions []Precondition
+
+	//MVCC
+	expectedGets           []expectedGet
+	expectedGetsWithPrefix []expectedGetWithPrefix
+	expectedReaders        []*expectedReader
+	readsetSize            int
 
 	metadata *TxMetadata
 
@@ -40,38 +49,56 @@ type OngoingTx struct {
 	closed bool
 }
 
+type expectedGet struct {
+	key        []byte
+	filters    []FilterFn
+	expectedTx uint64 // 0 used to denote non-existence
+}
+
+type expectedGetWithPrefix struct {
+	prefix      []byte
+	neq         []byte
+	filters     []FilterFn
+	expectedKey []byte
+	expectedTx  uint64 // 0 used to denote non-existence
+}
+
 type EntrySpec struct {
 	Key      []byte
 	Metadata *KVMetadata
 	Value    []byte
 }
 
-func newWriteOnlyTx(s *ImmuStore) (*OngoingTx, error) {
-	return &OngoingTx{
-		st:           s,
-		entriesByKey: make(map[[sha256.Size]byte]int),
-		ts:           time.Now(),
-	}, nil
-}
+func newOngoingTx(s *ImmuStore, opts *TxOptions) (*OngoingTx, error) {
+	err := opts.Validate()
+	if err != nil {
+		return nil, err
+	}
 
-func newReadWriteTx(s *ImmuStore) (*OngoingTx, error) {
 	tx := &OngoingTx{
 		st:           s,
 		entriesByKey: make(map[[sha256.Size]byte]int),
 		ts:           time.Now(),
 	}
 
-	precommittedTxID := s.lastPrecommittedTxID()
+	if opts.Mode == WriteOnlyTx {
+		return tx, nil
+	}
 
-	err := s.WaitForIndexingUpto(precommittedTxID, nil)
+	tx.readOnly = opts.Mode == ReadOnlyTx
+
+	var snapshotMustIncludeTxID uint64
+
+	if opts.SnapshotMustIncludeTxID != nil {
+		snapshotMustIncludeTxID = opts.SnapshotMustIncludeTxID(s.lastPrecommittedTxID())
+	}
+
+	snap, err := s.SnapshotMustIncludeTxIDWithRenewalPeriod(snapshotMustIncludeTxID, opts.SnapshotRenewalPeriod)
 	if err != nil {
 		return nil, err
 	}
 
-	tx.snap, err = s.SnapshotSince(precommittedTxID)
-	if err != nil {
-		return nil, err
-	}
+	tx.snap = snap
 
 	// using an "interceptor" to construct the valueRef from current entries
 	// so to avoid storing more data into the snapshot
@@ -215,16 +242,8 @@ func (tx *OngoingTx) AddPrecondition(c Precondition) error {
 	return nil
 }
 
-func (tx *OngoingTx) ExistKeyWith(prefix, neq []byte) (bool, error) {
-	if tx.closed {
-		return false, ErrAlreadyClosed
-	}
-
-	if tx.IsWriteOnly() {
-		return false, ErrWriteOnlyTx
-	}
-
-	return tx.snap.ExistKeyWith(prefix, neq)
+func (tx *OngoingTx) mvccReadSetLimitReached() bool {
+	return tx.readsetSize == tx.st.mvccReadSetLimit
 }
 
 func (tx *OngoingTx) Delete(key []byte) error {
@@ -245,10 +264,10 @@ func (tx *OngoingTx) Delete(key []byte) error {
 }
 
 func (tx *OngoingTx) Get(key []byte) (ValueRef, error) {
-	return tx.GetWith(key, IgnoreExpired, IgnoreDeleted)
+	return tx.GetWithFilters(key, IgnoreExpired, IgnoreDeleted)
 }
 
-func (tx *OngoingTx) GetWith(key []byte, filters ...FilterFn) (ValueRef, error) {
+func (tx *OngoingTx) GetWithFilters(key []byte, filters ...FilterFn) (ValueRef, error) {
 	if tx.closed {
 		return nil, ErrAlreadyClosed
 	}
@@ -257,10 +276,97 @@ func (tx *OngoingTx) GetWith(key []byte, filters ...FilterFn) (ValueRef, error) 
 		return nil, ErrWriteOnlyTx
 	}
 
-	return tx.snap.GetWith(key, filters...)
+	valRef, err := tx.snap.GetWithFilters(key, filters...)
+	if errors.Is(err, ErrKeyNotFound) {
+		expectedGet := expectedGet{
+			key:     cp(key),
+			filters: filters,
+		}
+
+		if tx.mvccReadSetLimitReached() {
+			return nil, ErrMVCCReadSetLimitExceeded
+		}
+
+		tx.expectedGets = append(tx.expectedGets, expectedGet)
+		tx.readsetSize++
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if valRef.Tx() > 0 {
+		// it only requires validation when the entry was pre-existent to ongoing tx
+		expectedGet := expectedGet{
+			key:        cp(key),
+			filters:    filters,
+			expectedTx: valRef.Tx(),
+		}
+
+		if tx.mvccReadSetLimitReached() {
+			return nil, ErrMVCCReadSetLimitExceeded
+		}
+
+		tx.expectedGets = append(tx.expectedGets, expectedGet)
+		tx.readsetSize++
+	}
+
+	return valRef, nil
 }
 
-func (tx *OngoingTx) NewKeyReader(spec *KeyReaderSpec) (*KeyReader, error) {
+func (tx *OngoingTx) GetWithPrefix(prefix, neq []byte) (key []byte, valRef ValueRef, err error) {
+	return tx.GetWithPrefixAndFilters(prefix, neq, IgnoreExpired, IgnoreDeleted)
+}
+
+func (tx *OngoingTx) GetWithPrefixAndFilters(prefix, neq []byte, filters ...FilterFn) (key []byte, valRef ValueRef, err error) {
+	if tx.closed {
+		return nil, nil, ErrAlreadyClosed
+	}
+
+	if tx.IsWriteOnly() {
+		return nil, nil, ErrWriteOnlyTx
+	}
+
+	key, valRef, err = tx.snap.GetWithPrefixAndFilters(prefix, neq, filters...)
+	if errors.Is(err, ErrKeyNotFound) {
+		expectedGetWithPrefix := expectedGetWithPrefix{
+			prefix:  cp(prefix),
+			neq:     cp(neq),
+			filters: filters,
+		}
+
+		if tx.mvccReadSetLimitReached() {
+			return nil, nil, ErrMVCCReadSetLimitExceeded
+		}
+
+		tx.expectedGetsWithPrefix = append(tx.expectedGetsWithPrefix, expectedGetWithPrefix)
+		tx.readsetSize++
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if valRef.Tx() > 0 {
+		// it only requires validation when the entry was pre-existent to ongoing tx
+		expectedGetWithPrefix := expectedGetWithPrefix{
+			prefix:      cp(prefix),
+			neq:         cp(neq),
+			filters:     filters,
+			expectedKey: cp(key),
+			expectedTx:  valRef.Tx(),
+		}
+
+		if tx.mvccReadSetLimitReached() {
+			return nil, nil, ErrMVCCReadSetLimitExceeded
+		}
+
+		tx.expectedGetsWithPrefix = append(tx.expectedGetsWithPrefix, expectedGetWithPrefix)
+		tx.readsetSize++
+	}
+
+	return key, valRef, nil
+}
+
+func (tx *OngoingTx) NewKeyReader(spec KeyReaderSpec) (KeyReader, error) {
 	if tx.closed {
 		return nil, ErrAlreadyClosed
 	}
@@ -269,7 +375,7 @@ func (tx *OngoingTx) NewKeyReader(spec *KeyReaderSpec) (*KeyReader, error) {
 		return nil, ErrWriteOnlyTx
 	}
 
-	return tx.snap.NewKeyReader(spec)
+	return newOngoingTxKeyReader(tx, spec)
 }
 
 func (tx *OngoingTx) Commit() (*TxHeader, error) {
@@ -312,15 +418,18 @@ func (tx *OngoingTx) Cancel() error {
 }
 
 func (tx *OngoingTx) hasPreconditions() bool {
-	return len(tx.preconditions) > 0
+	return len(tx.preconditions) > 0 ||
+		len(tx.expectedGets) > 0 ||
+		len(tx.expectedGetsWithPrefix) > 0 ||
+		len(tx.expectedReaders) > 0
 }
 
-func (tx *OngoingTx) checkPreconditions(idx KeyIndex) error {
+func (tx *OngoingTx) checkPreconditions(st *ImmuStore) error {
 	for _, c := range tx.preconditions {
 		if c == nil {
 			return ErrInvalidPreconditionNull
 		}
-		ok, err := c.Check(idx)
+		ok, err := c.Check(st)
 		if err != nil {
 			return fmt.Errorf("error checking %s precondition: %w", c, err)
 		}
@@ -328,6 +437,123 @@ func (tx *OngoingTx) checkPreconditions(idx KeyIndex) error {
 			return fmt.Errorf("%w: %s", ErrPreconditionFailed, c)
 		}
 	}
+
+	if tx.IsWriteOnly() || tx.snap.Ts() > st.lastPrecommittedTxID() {
+		// read-only transactions or read-write transactions when no other transaction was committed won't be invalidated
+		return nil
+	}
+
+	// current snapshot is fetched without flushing
+	snap, err := st.syncSnapshot()
+	if err != nil {
+		return err
+	}
+	defer snap.Close()
+
+	for _, e := range tx.expectedGets {
+		valRef, err := snap.GetWithFilters(e.key, e.filters...)
+		if errors.Is(err, ErrKeyNotFound) {
+			if e.expectedTx > 0 {
+				return ErrTxReadConflict
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		if e.expectedTx != valRef.Tx() {
+			return ErrTxReadConflict
+		}
+	}
+
+	for _, e := range tx.expectedGetsWithPrefix {
+		key, valRef, err := snap.GetWithPrefixAndFilters(e.prefix, e.neq, e.filters...)
+		if errors.Is(err, ErrKeyNotFound) {
+			if e.expectedTx > 0 {
+				return ErrTxReadConflict
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		if !bytes.Equal(e.expectedKey, key) || e.expectedTx != valRef.Tx() {
+			return ErrTxReadConflict
+		}
+	}
+
+	for _, eReader := range tx.expectedReaders {
+		rspec := KeyReaderSpec{
+			SeekKey:       eReader.spec.SeekKey,
+			EndKey:        eReader.spec.EndKey,
+			Prefix:        eReader.spec.Prefix,
+			InclusiveSeek: eReader.spec.InclusiveSeek,
+			InclusiveEnd:  eReader.spec.InclusiveEnd,
+			DescOrder:     eReader.spec.DescOrder,
+		}
+
+		reader, err := snap.NewKeyReader(rspec)
+		if err != nil {
+			return err
+		}
+
+		defer reader.Close()
+
+		for _, eReads := range eReader.expectedReads {
+			var key []byte
+			var valRef ValueRef
+
+			for _, eRead := range eReads {
+
+				if len(key) == 0 {
+					if eRead.initialTxID == 0 && eRead.finalTxID == 0 {
+						key, valRef, err = reader.Read()
+					} else {
+						key, valRef, err = reader.ReadBetween(eRead.initialTxID, eRead.finalTxID)
+					}
+
+					if err != nil && !errors.Is(err, ErrNoMoreEntries) {
+						return err
+					}
+				}
+
+				if eRead.expectedNoMoreEntries {
+					if err == nil {
+						return fmt.Errorf("%w: fetching more entries than expected", ErrTxReadConflict)
+					}
+
+					break
+				}
+
+				if eRead.expectedTx == 0 {
+					if err == nil && bytes.Equal(eRead.expectedKey, key) {
+						// key was updated by the transaction
+						key = nil
+						valRef = nil
+					}
+				} else {
+					if errors.Is(err, ErrNoMoreEntries) {
+						return fmt.Errorf("%w: fetching less entries than expected", ErrTxReadConflict)
+					}
+
+					if !bytes.Equal(eRead.expectedKey, key) || eRead.expectedTx != valRef.Tx() {
+						return fmt.Errorf("%w: fetching a different key or an updated one", ErrTxReadConflict)
+					}
+
+					key = nil
+					valRef = nil
+				}
+			}
+
+			err = reader.Reset()
+			if err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -351,4 +577,15 @@ func (tx *OngoingTx) validateAgainst(hdr *TxHeader) error {
 	}
 
 	return nil
+}
+
+func cp(s []byte) []byte {
+	if s == nil {
+		return nil
+	}
+
+	c := make([]byte, len(s))
+	copy(c, s)
+
+	return c
 }

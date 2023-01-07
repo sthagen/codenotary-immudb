@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1842,7 +1843,7 @@ func TestQueryCornerCases(t *testing.T) {
 	t.Run("run out of snapshots", func(t *testing.T) {
 
 		// Get one tx that takes the snapshot
-		tx, err := engine.NewTx(context.Background())
+		tx, err := engine.NewTx(context.Background(), DefaultTxOptions())
 		require.NoError(t, err)
 
 		res, err = engine.Query("SELECT * FROM table1", nil, nil)
@@ -5251,7 +5252,12 @@ func (h *multidbHandlerMock) UseDatabase(ctx context.Context, db string) error {
 	return nil
 }
 
-func (h *multidbHandlerMock) ExecPreparedStmts(ctx context.Context, stmts []SQLStmt, params map[string]interface{}) (ntx *SQLTx, committedTxs []*SQLTx, err error) {
+func (h *multidbHandlerMock) ExecPreparedStmts(
+	ctx context.Context,
+	opts *TxOptions,
+	stmts []SQLStmt,
+	params map[string]interface{},
+) (ntx *SQLTx, committedTxs []*SQLTx, err error) {
 	return h.engine.ExecPreparedStmts(stmts, params, nil)
 }
 
@@ -5446,4 +5452,379 @@ func TestSingleDBCatalogQueries(t *testing.T) {
 		_, err = r.Read()
 		require.ErrorIs(t, err, ErrNoMoreRows)
 	})
+}
+
+func TestMVCC(t *testing.T) {
+	engine := setupCommonTest(t)
+
+	_, _, err := engine.Exec("CREATE TABLE table1 (id INTEGER, title VARCHAR[10], active BOOLEAN, payload BLOB[2], PRIMARY KEY id);", nil, nil)
+	require.NoError(t, err)
+
+	_, _, err = engine.Exec("CREATE INDEX ON table1 (title);", nil, nil)
+	require.NoError(t, err)
+
+	_, _, err = engine.Exec("CREATE INDEX ON table1 (active);", nil, nil)
+	require.NoError(t, err)
+
+	t.Run("read conflict should be detected when a new index was created by another transaction", func(t *testing.T) {
+		tx1, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		tx2, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("CREATE INDEX ON table1 (payload);", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("INSERT INTO table1 (id, title, active, payload) VALUES (1, 'title1', true, x'00A1');", nil, tx2)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx2)
+		require.ErrorIs(t, err, store.ErrTxReadConflict)
+	})
+
+	t.Run("no read conflict should be detected when processing transactions without overlapping rows", func(t *testing.T) {
+		tx1, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		tx2, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (1, 'title1', true, x'00A1');", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("INSERT INTO table1 (id, title, active, payload) VALUES (2, 'title2', false, x'00A2');", nil, tx2)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx2)
+		require.NoError(t, err)
+	})
+
+	t.Run("read conflict should be detected when processing transactions with overlapping rows", func(t *testing.T) {
+		tx1, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		tx2, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (1, 'title1', true, x'00A1');", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (1, 'title1', true, x'00A1');", nil, tx2)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx2)
+		require.ErrorIs(t, err, store.ErrTxReadConflict)
+	})
+
+	t.Run("read conflict should be detected when processing transactions with invalidated queries", func(t *testing.T) {
+		tx1, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		tx2, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (1, 'title1', true, x'00A1');", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx1)
+		require.NoError(t, err)
+
+		rowReader, err := engine.Query("SELECT * FROM table1 USE INDEX ON id WHERE id > 0", nil, tx2)
+		require.NoError(t, err)
+
+		for {
+			_, err = rowReader.Read()
+			if err != nil {
+				require.ErrorIs(t, err, ErrNoMoreRows)
+				break
+			}
+		}
+
+		err = rowReader.Close()
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (2, 'title2', false, x'00A2');", nil, tx2)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx2)
+		require.ErrorIs(t, err, store.ErrTxReadConflict)
+	})
+
+	t.Run("no read conflict should be detected when processing transactions with non-invalidated queries", func(t *testing.T) {
+		tx1, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		tx2, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (1, 'title1', true, x'00A1');", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx1)
+		require.NoError(t, err)
+
+		rowReader, err := engine.Query("SELECT * FROM table1 USE INDEX ON id WHERE id > 10", nil, tx2)
+		require.NoError(t, err)
+
+		_, err = rowReader.Read()
+		require.ErrorIs(t, err, ErrNoMoreRows)
+
+		err = rowReader.Close()
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (2, 'title2', false, x'00A2');", nil, tx2)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx2)
+		require.NoError(t, err)
+	})
+
+	t.Run("read conflict should be detected when processing transactions with invalidated queries", func(t *testing.T) {
+		tx1, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		tx2, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (1, 'title1', true, x'00A1');", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("DELETE FROM table1 WHERE id > 0", nil, tx2)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (2, 'title2', false, x'00A2');", nil, tx2)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx2)
+		require.ErrorIs(t, err, store.ErrTxReadConflict)
+	})
+
+	t.Run("no read conflict should be detected when processing transactions with non-invalidated queries", func(t *testing.T) {
+		tx1, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		tx2, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (1, 'title1', true, x'00A1');", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("DELETE FROM table1 WHERE id > 2", nil, tx2)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (2, 'title2', false, x'00A2');", nil, tx2)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx2)
+		require.NoError(t, err)
+	})
+
+	t.Run("read conflict should be detected when processing transactions with invalidated queries in desc order", func(t *testing.T) {
+		tx1, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		tx2, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (10, 'title10', true, x'0A10');", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx1)
+		require.NoError(t, err)
+
+		rowReader, err := engine.Query("SELECT * FROM table1 USE INDEX ON id WHERE id < 10 ORDER BY id DESC", nil, tx2)
+		require.NoError(t, err)
+
+		for {
+			_, err = rowReader.Read()
+			if err != nil {
+				require.ErrorIs(t, err, ErrNoMoreRows)
+				break
+			}
+		}
+
+		err = rowReader.Close()
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (10, 'title10', false, x'0A10');", nil, tx2)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx2)
+		require.ErrorIs(t, err, store.ErrTxReadConflict)
+	})
+
+	t.Run("no read conflict should be detected when processing transactions with non invalidated queries in desc order", func(t *testing.T) {
+		tx1, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		tx2, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (11, 'title11', true, x'0A11');", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx1)
+		require.NoError(t, err)
+
+		rowReader, err := engine.Query("SELECT * FROM table1 USE INDEX ON id WHERE id < 10 ORDER BY id DESC", nil, tx2)
+		require.NoError(t, err)
+
+		for {
+			_, err = rowReader.Read()
+			if err != nil {
+				require.ErrorIs(t, err, ErrNoMoreRows)
+				break
+			}
+		}
+
+		err = rowReader.Close()
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (10, 'title10', false, x'0A10');", nil, tx2)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx2)
+		require.NoError(t, err)
+	})
+
+	t.Run("no read conflict should be detected when processing transactions with non invalidated queries", func(t *testing.T) {
+		tx1, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		tx2, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (11, 'title11', true, x'0A11');", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (12, 'title12', true, x'0A12');", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx1)
+		require.NoError(t, err)
+
+		rowReader, err := engine.Query("SELECT * FROM table1 LIMIT 2", nil, tx2)
+		require.NoError(t, err)
+
+		for {
+			_, err = rowReader.Read()
+			if err != nil {
+				require.ErrorIs(t, err, ErrNoMoreRows)
+				break
+			}
+		}
+
+		err = rowReader.Close()
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (10, 'title10', false, x'0A10');", nil, tx2)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx2)
+		require.NoError(t, err)
+	})
+
+	t.Run("read conflict should be detected when processing transactions with invalidated queries", func(t *testing.T) {
+		tx1, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		tx2, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (11, 'title11', true, x'0A11');", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (12, 'title12', true, x'0A12');", nil, tx1)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx1)
+		require.NoError(t, err)
+
+		rowReader, err := engine.Query("SELECT * FROM table1 ORDER BY id DESC LIMIT 1 OFFSET 1", nil, tx2)
+		require.NoError(t, err)
+
+		for {
+			_, err = rowReader.Read()
+			if err != nil {
+				require.ErrorIs(t, err, ErrNoMoreRows)
+				break
+			}
+		}
+
+		err = rowReader.Close()
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("UPSERT INTO table1 (id, title, active, payload) VALUES (10, 'title10', false, x'0A10');", nil, tx2)
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec("COMMIT;", nil, tx2)
+		require.ErrorIs(t, err, store.ErrTxReadConflict)
+	})
+}
+
+func TestConcurrentInsertions(t *testing.T) {
+	workers := 10
+
+	st, err := store.Open(t.TempDir(), store.DefaultOptions().WithMaxConcurrency(workers))
+	require.NoError(t, err)
+	t.Cleanup(func() { closeStore(t, st) })
+
+	engine, err := NewEngine(st, DefaultOptions().WithPrefix(sqlPrefix))
+	require.NoError(t, err)
+
+	_, _, err = engine.Exec(`
+		CREATE DATABASE db1;
+		USE DATABASE db1;
+		CREATE TABLE table1 (id INTEGER, title VARCHAR[10], active BOOLEAN, payload BLOB[2], PRIMARY KEY id);
+		CREATE INDEX ON table1 (title);
+	`, nil, nil)
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for i := 0; i < workers; i++ {
+		go func(i int) {
+			tx, _, err := engine.Exec("BEGIN TRANSACTION;", nil, nil)
+			if err != nil {
+				panic(err)
+			}
+
+			_, _, err = engine.Exec(
+				"UPSERT INTO table1 (id, title, active, payload) VALUES (@id, 'title', true, x'00A1');",
+				map[string]interface{}{
+					"id": i,
+				},
+				tx,
+			)
+			if err != nil {
+				panic(err)
+			}
+
+			_, _, err = engine.Exec("COMMIT;", nil, tx)
+			if err != nil {
+				panic(err)
+			}
+
+			wg.Done()
+		}(i)
+	}
+
+	wg.Wait()
 }

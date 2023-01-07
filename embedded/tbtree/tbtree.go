@@ -957,31 +957,32 @@ func (t *TBtree) History(key []byte, offset uint64, descOrder bool, limit int) (
 	return t.root.history(key, offset, descOrder, limit)
 }
 
-func (t *TBtree) ExistKeyWith(prefix []byte, neq []byte) (bool, error) {
+func (t *TBtree) GetWithPrefix(prefix []byte, neq []byte) (key []byte, value []byte, ts uint64, hc uint64, err error) {
 	t.rwmutex.RLock()
 	defer t.rwmutex.RUnlock()
 
 	if t.closed {
-		return false, ErrAlreadyClosed
+		return nil, nil, 0, 0, ErrAlreadyClosed
 	}
 
 	path, leaf, off, err := t.root.findLeafNode(prefix, nil, 0, neq, false)
-	if err == ErrKeyNotFound {
-		return false, nil
-	}
 	if err != nil {
-		return false, err
+		return nil, nil, 0, 0, err
 	}
 
 	metricsBtreeDepth.WithLabelValues(t.path).Set(float64(len(path) + 1))
 
-	v := leaf.values[off]
+	leafValue := leaf.values[off]
 
-	if len(prefix) > len(v.key) {
-		return false, nil
+	if len(prefix) > len(leafValue.key) {
+		return nil, nil, 0, 0, ErrKeyNotFound
 	}
 
-	return bytes.Equal(prefix, v.key[:len(prefix)]), nil
+	if bytes.Equal(prefix, leafValue.key[:len(prefix)]) {
+		return leafValue.key, cp(leafValue.value), leafValue.ts, leafValue.hCount + uint64(len(leafValue.tss)), nil
+	}
+
+	return nil, nil, 0, 0, ErrKeyNotFound
 }
 
 func (t *TBtree) Sync() error {
@@ -1654,11 +1655,34 @@ func (t *TBtree) Ts() uint64 {
 	return t.root.ts()
 }
 
-func (t *TBtree) Snapshot() (*Snapshot, error) {
-	return t.SnapshotSince(0)
+func (t *TBtree) SyncSnapshot() (*Snapshot, error) {
+	t.rwmutex.RLock()
+
+	if t.closed {
+		return nil, ErrAlreadyClosed
+	}
+
+	return &Snapshot{
+		id:      math.MaxUint64,
+		t:       t,
+		ts:      t.root.ts(),
+		root:    t.root,
+		readers: make(map[int]io.Closer),
+		_buf:    make([]byte, t.maxNodeSize),
+	}, nil
 }
 
-func (t *TBtree) SnapshotSince(ts uint64) (*Snapshot, error) {
+func (t *TBtree) Snapshot() (*Snapshot, error) {
+	return t.SnapshotMustIncludeTs(0)
+}
+
+func (t *TBtree) SnapshotMustIncludeTs(snapshotMustIncludeTs uint64) (*Snapshot, error) {
+	return t.SnapshotMustIncludeTsWithRenewalPeriod(snapshotMustIncludeTs, t.renewSnapRootAfter)
+}
+
+// SnapshotMustIncludeTsWithRenewalPeriod returns a new snapshot based on an existent dumped root (snapshot reuse).
+// Current root may be dumped if there are no previous root already stored on disk or if the dumped one was old enough.
+func (t *TBtree) SnapshotMustIncludeTsWithRenewalPeriod(snapshotMustIncludeTs uint64, snapshotRenewalPeriod time.Duration) (*Snapshot, error) {
 	t.rwmutex.Lock()
 	defer t.rwmutex.Unlock()
 
@@ -1666,20 +1690,38 @@ func (t *TBtree) SnapshotSince(ts uint64) (*Snapshot, error) {
 		return nil, ErrAlreadyClosed
 	}
 
+	if snapshotMustIncludeTs > t.root.ts() {
+		return nil, fmt.Errorf("%w: snapshotMustIncludeTs is greater than current ts", ErrIllegalArguments)
+	}
+
 	if len(t.snapshots) == t.maxActiveSnapshots {
 		return nil, ErrorToManyActiveSnapshots
 	}
 
-	if t.lastSnapRoot == nil || t.lastSnapRoot.ts() < ts ||
-		(t.renewSnapRootAfter > 0 && time.Since(t.lastSnapRootAt) >= t.renewSnapRootAfter) {
+	if t.root.mutated() {
+		// it means the current root is not stored on disk
 
-		_, _, err := t.flushTree(t.cleanupPercentage, false, false, "SnapshotSince")
-		if err != nil {
-			return nil, err
+		var snapshotRenewalNeeded bool
+
+		if t.lastSnapRoot == nil {
+			snapshotRenewalNeeded = true
+		} else if t.lastSnapRoot.ts() < t.root.ts() {
+			snapshotRenewalNeeded = t.lastSnapRoot.ts() < snapshotMustIncludeTs ||
+				(snapshotRenewalPeriod > 0 && time.Since(t.lastSnapRootAt) >= snapshotRenewalPeriod)
+		}
+
+		if snapshotRenewalNeeded {
+			// a new snapshot is dumped on disk including current root
+			_, _, err := t.flushTree(t.cleanupPercentage, false, false, "SnapshotSince")
+			if err != nil {
+				return nil, err
+			}
+			// !t.root.mutated() hold as this point
 		}
 	}
 
 	if !t.root.mutated() {
+		// either if the root was not updated or if it was dumped as part of a snapshot renewal
 		t.lastSnapRoot = t.root
 		t.lastSnapRootAt = time.Now()
 	}
@@ -1705,6 +1747,11 @@ func (t *TBtree) newSnapshot(snapshotID uint64, root node) *Snapshot {
 }
 
 func (t *TBtree) snapshotClosed(snapshot *Snapshot) error {
+	if snapshot.id == math.MaxUint64 {
+		t.rwmutex.RUnlock()
+		return nil
+	}
+
 	t.rwmutex.Lock()
 	defer t.rwmutex.Unlock()
 
@@ -1816,7 +1863,7 @@ func (n *innerNode) findLeafNode(keyPrefix []byte, path path, offset int, neqKey
 		}
 
 		path, leafNode, off, err := n.nodes[i].findLeafNode(keyPrefix, append(path, &pathNode{node: n, offset: i}), 0, neqKey, descOrder)
-		if err == ErrKeyNotFound {
+		if errors.Is(err, ErrKeyNotFound) {
 			continue
 		}
 

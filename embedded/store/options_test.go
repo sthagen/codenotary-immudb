@@ -36,6 +36,8 @@ func TestInvalidOptions(t *testing.T) {
 		{"MaxConcurrency", DefaultOptions().WithMaxConcurrency(0)},
 		{"WriteBufferSize", DefaultOptions().WithWriteBufferSize(0)},
 		{"SyncFrequency", DefaultOptions().WithSyncFrequency(-1)},
+		{"MaxActiveTransactions", DefaultOptions().WithMaxActiveTransactions(0)},
+		{"MVCCReadSetLimit", DefaultOptions().WithMVCCReadSetLimit(0)},
 		{"MaxIOConcurrency", DefaultOptions().WithMaxIOConcurrency(0)},
 		{"MaxIOConcurrency-max", DefaultOptions().WithMaxIOConcurrency(MaxParallelIO + 1)},
 		{"TxLogCacheSize", DefaultOptions().WithTxLogCacheSize(-1)},
@@ -119,6 +121,7 @@ func TestValidOptions(t *testing.T) {
 	require.Equal(t, DefaultFileSize, opts.WithFileSize(DefaultFileSize).FileSize)
 	require.Equal(t, DefaultSyncFrequency, opts.WithSyncFrequency(DefaultSyncFrequency).SyncFrequency)
 	require.Equal(t, DefaultMaxActiveTransactions, opts.WithMaxActiveTransactions(DefaultMaxActiveTransactions).MaxActiveTransactions)
+	require.Equal(t, DefaultMVCCReadSetLimit, opts.WithMVCCReadSetLimit(DefaultMVCCReadSetLimit).MVCCReadSetLimit)
 	require.Equal(t, DefaultMaxIOConcurrency, opts.WithMaxIOConcurrency(DefaultMaxIOConcurrency).MaxIOConcurrency)
 	require.Equal(t, DefaultMaxKeyLen, opts.WithMaxKeyLen(DefaultMaxKeyLen).MaxKeyLen)
 	require.Equal(t, DefaultMaxTxEntries, opts.WithMaxTxEntries(DefaultMaxTxEntries).MaxTxEntries)

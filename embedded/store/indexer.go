@@ -152,7 +152,7 @@ func (idx *indexer) Snapshot() (*tbtree.Snapshot, error) {
 	return idx.index.Snapshot()
 }
 
-func (idx *indexer) SnapshotSince(tx uint64) (*tbtree.Snapshot, error) {
+func (idx *indexer) SnapshotMustIncludeTxIDWithRenewalPeriod(snapshotMustIncludeTxID uint64, snapshotRenewalPeriod time.Duration) (*tbtree.Snapshot, error) {
 	idx.mutex.Lock()
 	defer idx.mutex.Unlock()
 
@@ -160,18 +160,18 @@ func (idx *indexer) SnapshotSince(tx uint64) (*tbtree.Snapshot, error) {
 		return nil, ErrAlreadyClosed
 	}
 
-	return idx.index.SnapshotSince(tx)
+	return idx.index.SnapshotMustIncludeTsWithRenewalPeriod(snapshotMustIncludeTxID, snapshotRenewalPeriod)
 }
 
-func (idx *indexer) ExistKeyWith(prefix []byte, neq []byte) (bool, error) {
+func (idx *indexer) GetWithPrefix(prefix []byte, neq []byte) (key []byte, value []byte, tx uint64, hc uint64, err error) {
 	idx.mutex.Lock()
 	defer idx.mutex.Unlock()
 
 	if idx.closed {
-		return false, ErrAlreadyClosed
+		return nil, nil, 0, 0, ErrAlreadyClosed
 	}
 
-	return idx.index.ExistKeyWith(prefix, neq)
+	return idx.index.GetWithPrefix(prefix, neq)
 }
 
 func (idx *indexer) Sync() error {
