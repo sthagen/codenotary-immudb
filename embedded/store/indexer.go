@@ -20,10 +20,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/codenotary/immudb/embedded/appendable"
+	"github.com/codenotary/immudb/embedded/appendable/multiapp"
 	"github.com/codenotary/immudb/embedded/tbtree"
 	"github.com/codenotary/immudb/embedded/watchers"
 	"github.com/prometheus/client_golang/prometheus"
@@ -35,6 +38,11 @@ type indexer struct {
 
 	store *ImmuStore
 	tx    *Tx
+
+	maxBulkSize            int
+	bulkPreparationTimeout time.Duration
+
+	_kvs []*tbtree.KVT //pre-allocated for multi-tx bulk indexing
 
 	index *tbtree.TBtree
 
@@ -77,15 +85,46 @@ var (
 	})
 )
 
-func newIndexer(path string, store *ImmuStore, indexOpts *tbtree.Options, maxWaitees int) (*indexer, error) {
+func newIndexer(path string, store *ImmuStore, opts *Options) (*indexer, error) {
+	if store == nil {
+		return nil, fmt.Errorf("%w: nil store", ErrIllegalArguments)
+	}
+
+	indexOpts := tbtree.DefaultOptions().
+		WithReadOnly(opts.ReadOnly).
+		WithFileMode(opts.FileMode).
+		WithLogger(opts.logger).
+		WithFileSize(opts.FileSize).
+		WithCacheSize(opts.IndexOpts.CacheSize).
+		WithFlushThld(opts.IndexOpts.FlushThld).
+		WithSyncThld(opts.IndexOpts.SyncThld).
+		WithFlushBufferSize(opts.IndexOpts.FlushBufferSize).
+		WithCleanupPercentage(opts.IndexOpts.CleanupPercentage).
+		WithMaxActiveSnapshots(opts.IndexOpts.MaxActiveSnapshots).
+		WithMaxNodeSize(opts.IndexOpts.MaxNodeSize).
+		WithMaxKeySize(opts.MaxKeyLen).
+		WithMaxValueSize(lszSize + offsetSize + sha256.Size + sszSize + maxTxMetadataLen + sszSize + maxKVMetadataLen). // indexed values
+		WithNodesLogMaxOpenedFiles(opts.IndexOpts.NodesLogMaxOpenedFiles).
+		WithHistoryLogMaxOpenedFiles(opts.IndexOpts.HistoryLogMaxOpenedFiles).
+		WithCommitLogMaxOpenedFiles(opts.IndexOpts.CommitLogMaxOpenedFiles).
+		WithRenewSnapRootAfter(opts.IndexOpts.RenewSnapRootAfter).
+		WithCompactionThld(opts.IndexOpts.CompactionThld).
+		WithDelayDuringCompaction(opts.IndexOpts.DelayDuringCompaction)
+
+	if opts.appFactory != nil {
+		indexOpts.WithAppFactory(func(rootPath, subPath string, appOpts *multiapp.Options) (appendable.Appendable, error) {
+			return opts.appFactory(store.path, filepath.Join(indexDirname, subPath), appOpts)
+		})
+	}
+
 	index, err := tbtree.Open(path, indexOpts)
 	if err != nil {
 		return nil, err
 	}
 
 	var wHub *watchers.WatchersHub
-	if maxWaitees > 0 {
-		wHub = watchers.New(0, maxWaitees)
+	if opts.MaxWaitees > 0 {
+		wHub = watchers.New(0, opts.MaxWaitees)
 	}
 
 	tx, err := store.fetchAllocTx()
@@ -93,14 +132,24 @@ func newIndexer(path string, store *ImmuStore, indexOpts *tbtree.Options, maxWai
 		return nil, err
 	}
 
+	kvs := make([]*tbtree.KVT, store.maxTxEntries*opts.IndexOpts.MaxBulkSize)
+	for i := range kvs {
+		// vLen + vOff + vHash + txmdLen + txmd + kvmdLen + kvmd
+		elen := lszSize + offsetSize + sha256.Size + sszSize + maxTxMetadataLen + sszSize + maxKVMetadataLen
+		kvs[i] = &tbtree.KVT{K: make([]byte, store.maxKeyLen), V: make([]byte, elen)}
+	}
+
 	indexer := &indexer{
-		store:     store,
-		tx:        tx,
-		path:      path,
-		index:     index,
-		wHub:      wHub,
-		state:     stopped,
-		stateCond: sync.NewCond(&sync.Mutex{}),
+		store:                  store,
+		tx:                     tx,
+		maxBulkSize:            opts.IndexOpts.MaxBulkSize,
+		bulkPreparationTimeout: opts.IndexOpts.BulkPreparationTimeout,
+		_kvs:                   kvs,
+		path:                   path,
+		index:                  index,
+		wHub:                   wHub,
+		state:                  stopped,
+		stateCond:              sync.NewCond(&sync.Mutex{}),
 	}
 
 	dbName := filepath.Base(store.path)
@@ -152,7 +201,7 @@ func (idx *indexer) Snapshot() (*tbtree.Snapshot, error) {
 	return idx.index.Snapshot()
 }
 
-func (idx *indexer) SnapshotMustIncludeTxIDWithRenewalPeriod(snapshotMustIncludeTxID uint64, snapshotRenewalPeriod time.Duration) (*tbtree.Snapshot, error) {
+func (idx *indexer) SnapshotMustIncludeTxIDWithRenewalPeriod(txID uint64, renewalPeriod time.Duration) (*tbtree.Snapshot, error) {
 	idx.mutex.Lock()
 	defer idx.mutex.Unlock()
 
@@ -160,7 +209,7 @@ func (idx *indexer) SnapshotMustIncludeTxIDWithRenewalPeriod(snapshotMustInclude
 		return nil, ErrAlreadyClosed
 	}
 
-	return idx.index.SnapshotMustIncludeTsWithRenewalPeriod(snapshotMustIncludeTxID, snapshotRenewalPeriod)
+	return idx.index.SnapshotMustIncludeTsWithRenewalPeriod(txID, renewalPeriod)
 }
 
 func (idx *indexer) GetWithPrefix(prefix []byte, neq []byte) (key []byte, value []byte, tx uint64, hc uint64, err error) {
@@ -360,7 +409,7 @@ func (idx *indexer) doIndexing() {
 		}
 		idx.stateCond.L.Unlock()
 
-		err = idx.indexTx(lastIndexedTx + 1)
+		err = idx.indexSince(lastIndexedTx + 1)
 		if err == ErrAlreadyClosed || err == tbtree.ErrAlreadyClosed {
 			return
 		}
@@ -371,78 +420,103 @@ func (idx *indexer) doIndexing() {
 	}
 }
 
-func (idx *indexer) indexTx(txID uint64) error {
-	err := idx.store.readTx(txID, false, idx.tx)
-	if err != nil {
-		return err
-	}
+func (idx *indexer) indexSince(txID uint64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), idx.bulkPreparationTimeout)
+	defer cancel()
 
-	txEntries := idx.tx.Entries()
-
-	var txmd []byte
-
-	if idx.tx.header.Metadata != nil {
-		txmd = idx.tx.header.Metadata.Bytes()
-	}
-
-	txmdLen := len(txmd)
-
+	bulkSize := 0
 	indexableEntries := 0
 
-	for _, e := range txEntries {
-		if e.md != nil && e.md.NonIndexable() {
-			continue
+	for i := 0; i < idx.maxBulkSize; i++ {
+		err := idx.store.readTx(txID+uint64(i), false, idx.tx)
+		if err != nil {
+			return err
 		}
 
-		// vLen + vOff + vHash + txmdLen + txmd + kvmdLen + kvmd
-		var b [lszSize + offsetSize + sha256.Size + sszSize + maxTxMetadataLen + sszSize + maxKVMetadataLen]byte
-		o := 0
+		txEntries := idx.tx.Entries()
 
-		binary.BigEndian.PutUint32(b[o:], uint32(e.vLen))
-		o += lszSize
+		var txmd []byte
 
-		binary.BigEndian.PutUint64(b[o:], uint64(e.vOff))
-		o += offsetSize
-
-		copy(b[o:], e.hVal[:])
-		o += sha256.Size
-
-		binary.BigEndian.PutUint16(b[o:], uint16(txmdLen))
-		o += sszSize
-
-		copy(b[o:], txmd)
-		o += txmdLen
-
-		var kvmd []byte
-
-		if e.md != nil {
-			kvmd = e.md.Bytes()
+		if idx.tx.header.Metadata != nil {
+			txmd = idx.tx.header.Metadata.Bytes()
 		}
 
-		kvmdLen := len(kvmd)
+		txmdLen := len(txmd)
 
-		binary.BigEndian.PutUint16(b[o:], uint16(kvmdLen))
-		o += sszSize
+		for _, e := range txEntries {
+			if e.md != nil && e.md.NonIndexable() {
+				continue
+			}
 
-		copy(b[o:], kvmd)
-		o += kvmdLen
+			// vLen + vOff + vHash + txmdLen + txmd + kvmdLen + kvmd
+			var b [lszSize + offsetSize + sha256.Size + sszSize + maxTxMetadataLen + sszSize + maxKVMetadataLen]byte
+			o := 0
 
-		idx.store._kvs[indexableEntries].K = e.key()
-		idx.store._kvs[indexableEntries].V = b[:o]
+			binary.BigEndian.PutUint32(b[o:], uint32(e.vLen))
+			o += lszSize
 
-		indexableEntries++
+			binary.BigEndian.PutUint64(b[o:], uint64(e.vOff))
+			o += offsetSize
+
+			copy(b[o:], e.hVal[:])
+			o += sha256.Size
+
+			binary.BigEndian.PutUint16(b[o:], uint16(txmdLen))
+			o += sszSize
+
+			copy(b[o:], txmd)
+			o += txmdLen
+
+			var kvmd []byte
+
+			if e.md != nil {
+				kvmd = e.md.Bytes()
+			}
+
+			kvmdLen := len(kvmd)
+
+			binary.BigEndian.PutUint16(b[o:], uint16(kvmdLen))
+			o += sszSize
+
+			copy(b[o:], kvmd)
+			o += kvmdLen
+
+			idx._kvs[indexableEntries].K = e.key()
+			idx._kvs[indexableEntries].V = b[:o]
+			idx._kvs[indexableEntries].T = txID + uint64(i)
+
+			indexableEntries++
+		}
+
+		bulkSize++
+
+		if bulkSize < idx.maxBulkSize {
+			// wait for the next tx to be committed
+			err = idx.store.commitWHub.WaitFor(txID+uint64(i+1), ctx.Done())
+		}
+		if err == watchers.ErrCancellationRequested {
+			break
+		}
+		if err != nil {
+			return err
+		}
 	}
 
+	var err error
+
 	if indexableEntries == 0 {
-		err = idx.index.IncreaseTs(txID)
+		// if there are no entries to be indexed, the logical time in the tree
+		// is still moved forward to indicate up to what point has transaction
+		// indexing been completed
+		err = idx.index.IncreaseTs(txID + uint64(bulkSize-1))
 	} else {
-		err = idx.index.BulkInsert(idx.store._kvs[:indexableEntries])
+		err = idx.index.BulkInsert(idx._kvs[:indexableEntries])
 	}
 	if err != nil {
 		return err
 	}
 
-	idx.metricsLastIndexedTrx.Set(float64(txID))
+	idx.metricsLastIndexedTrx.Set(float64(txID + uint64(bulkSize-1)))
 
 	return nil
 }

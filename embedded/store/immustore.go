@@ -50,6 +50,7 @@ var ErrAlreadyClosed = embedded.ErrAlreadyClosed
 var ErrUnexpectedLinkingError = errors.New("internal inconsistency between linear and binary linking")
 var ErrorNoEntriesProvided = errors.New("no entries provided")
 var ErrWriteOnlyTx = errors.New("write-only transaction")
+var ErrReadOnlyTx = errors.New("read-only transaction")
 var ErrTxReadConflict = errors.New("tx read conflict")
 var ErrTxAlreadyCommitted = errors.New("tx already committed")
 var ErrorMaxTxEntriesLimitExceeded = errors.New("max number of entries per tx exceeded")
@@ -167,8 +168,6 @@ type ImmuStore struct {
 	maxKeyLen             int
 	maxValueLen           int
 
-	maxTxSize int
-
 	writeTxHeaderVersion int
 
 	timeFunc TimeFunc
@@ -181,9 +180,8 @@ type ImmuStore struct {
 	waiteesMutex sync.Mutex
 	waiteesCount int // current number of go-routines waiting for a tx to be indexed or committed
 
-	_txbs     []byte       // pre-allocated buffer to support tx serialization
-	_kvs      []*tbtree.KV //pre-allocated for indexing
-	_valBs    []byte       // pre-allocated buffer to support tx exportation
+	_txbs     []byte // pre-allocated buffer to support tx serialization
+	_valBs    []byte // pre-allocated buffer to support tx exportation
 	_valBsMux sync.Mutex
 
 	aht                  *ahtree.AHtree
@@ -462,13 +460,6 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		return nil, fmt.Errorf("could not open aht: %w", err)
 	}
 
-	kvs := make([]*tbtree.KV, maxTxEntries)
-	for i := range kvs {
-		// vLen + vOff + vHash + txmdLen + txmd + kvmdLen + kvmd
-		elen := lszSize + offsetSize + sha256.Size + sszSize + maxTxMetadataLen + sszSize + maxKVMetadataLen
-		kvs[i] = &tbtree.KV{K: make([]byte, maxKeyLen), V: make([]byte, elen)}
-	}
-
 	txLogCache, err := cache.NewLRUCache(opts.TxLogCacheSize) // TODO: optionally it could include up to opts.MaxActiveTransactions upon start
 	if err != nil {
 		return nil, err
@@ -506,8 +497,6 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		maxKeyLen:             maxKeyLen,
 		maxValueLen:           maxInt(maxValueLen, opts.MaxValueLen),
 
-		maxTxSize: maxTxSize,
-
 		writeTxHeaderVersion: opts.WriteTxHeaderVersion,
 
 		timeFunc: opts.TimeFunc,
@@ -522,7 +511,6 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		commitWHub:           watchers.New(0, 1+opts.MaxActiveTransactions+opts.MaxWaitees), // including indexer
 
 		txPool: txPool,
-		_kvs:   kvs,
 		_txbs:  txbs,
 		_valBs: make([]byte, maxValueLen),
 
@@ -562,42 +550,9 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		return nil, err
 	}
 
-	indexOpts := tbtree.DefaultOptions().
-		WithReadOnly(opts.ReadOnly).
-		WithFileMode(opts.FileMode).
-		WithLogger(opts.logger).
-		WithFileSize(fileSize).
-		WithCacheSize(opts.IndexOpts.CacheSize).
-		WithFlushThld(opts.IndexOpts.FlushThld).
-		WithSyncThld(opts.IndexOpts.SyncThld).
-		WithFlushBufferSize(opts.IndexOpts.FlushBufferSize).
-		WithCleanupPercentage(opts.IndexOpts.CleanupPercentage).
-		WithMaxActiveSnapshots(opts.IndexOpts.MaxActiveSnapshots).
-		WithMaxNodeSize(opts.IndexOpts.MaxNodeSize).
-		WithMaxKeySize(opts.MaxKeyLen).
-		WithMaxValueSize(lszSize + offsetSize + sha256.Size + sszSize + maxTxMetadataLen + sszSize + maxKVMetadataLen). // indexed values
-		WithNodesLogMaxOpenedFiles(opts.IndexOpts.NodesLogMaxOpenedFiles).
-		WithHistoryLogMaxOpenedFiles(opts.IndexOpts.HistoryLogMaxOpenedFiles).
-		WithCommitLogMaxOpenedFiles(opts.IndexOpts.CommitLogMaxOpenedFiles).
-		WithRenewSnapRootAfter(opts.IndexOpts.RenewSnapRootAfter).
-		WithCompactionThld(opts.IndexOpts.CompactionThld).
-		WithDelayDuringCompaction(opts.IndexOpts.DelayDuringCompaction)
-
-	err = indexOpts.Validate()
-	if err != nil {
-		store.Close()
-		return nil, fmt.Errorf("%w: invalid index options", err)
-	}
-
-	if opts.appFactory != nil {
-		indexOpts.WithAppFactory(func(rootPath, subPath string, appOpts *multiapp.Options) (appendable.Appendable, error) {
-			return opts.appFactory(store.path, filepath.Join(indexDirname, subPath), appOpts)
-		})
-	}
-
 	indexPath := filepath.Join(store.path, indexDirname)
 
-	store.indexer, err = newIndexer(indexPath, store, indexOpts, opts.MaxWaitees)
+	store.indexer, err = newIndexer(indexPath, store, opts)
 	if err != nil {
 		store.Close()
 		return nil, fmt.Errorf("could not open indexer: %w", err)
@@ -805,21 +760,28 @@ func (s *ImmuStore) Snapshot() (*Snapshot, error) {
 	}, nil
 }
 
-func (s *ImmuStore) SnapshotMustIncludeTxID(snapshotMustIncludeTxID uint64) (*Snapshot, error) {
-	return s.SnapshotMustIncludeTxIDWithRenewalPeriod(snapshotMustIncludeTxID, 0)
+// SnapshotMustIncludeTxID returns a new snapshot based on an existent dumped root (snapshot reuse).
+// Current root may be dumped if there are no previous root already stored on disk or if the dumped one was old enough.
+// If txID is 0, any snapshot may be used.
+func (s *ImmuStore) SnapshotMustIncludeTxID(txID uint64) (*Snapshot, error) {
+	return s.SnapshotMustIncludeTxIDWithRenewalPeriod(txID, 0)
 }
 
-func (s *ImmuStore) SnapshotMustIncludeTxIDWithRenewalPeriod(snapshotMustIncludeTxID uint64, snapshotRenewalPeriod time.Duration) (*Snapshot, error) {
-	if snapshotMustIncludeTxID > s.lastPrecommittedTxID() {
-		return nil, fmt.Errorf("%w: snapshotMustIncludeTxID is greater than the last precommitted transaction", ErrIllegalArguments)
+// SnapshotMustIncludeTxIDWithRenewalPeriod returns a new snapshot based on an existent dumped root (snapshot reuse).
+// Current root may be dumped if there are no previous root already stored on disk or if the dumped one was old enough.
+// If txID is 0, any snapshot not older than renewalPeriod may be used.
+// If renewalPeriod is 0, renewal period is not taken into consideration
+func (s *ImmuStore) SnapshotMustIncludeTxIDWithRenewalPeriod(txID uint64, renewalPeriod time.Duration) (*Snapshot, error) {
+	if txID > s.lastPrecommittedTxID() {
+		return nil, fmt.Errorf("%w: txID is greater than the last precommitted transaction", ErrIllegalArguments)
 	}
 
-	err := s.WaitForIndexingUpto(snapshotMustIncludeTxID, nil)
+	err := s.WaitForIndexingUpto(txID, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	snap, err := s.indexer.SnapshotMustIncludeTxIDWithRenewalPeriod(snapshotMustIncludeTxID, snapshotRenewalPeriod)
+	snap, err := s.indexer.SnapshotMustIncludeTxIDWithRenewalPeriod(txID, renewalPeriod)
 	if err != nil {
 		return nil, err
 	}

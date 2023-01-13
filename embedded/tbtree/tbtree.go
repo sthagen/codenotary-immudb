@@ -27,7 +27,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -225,7 +224,7 @@ type pathNode struct {
 }
 
 type node interface {
-	insertAt(key []byte, value []byte, ts uint64) ([]node, int, error)
+	insert(kvts []*KVT) ([]node, int, error)
 	get(key []byte) (value []byte, ts uint64, hc uint64, err error)
 	history(key []byte, offset uint64, descOrder bool, limit int) ([]uint64, uint64, error)
 	findLeafNode(keyPrefix []byte, path path, offset int, neqKey []byte, descOrder bool) (path, *leafNode, int, error)
@@ -641,6 +640,8 @@ func OpenWith(path string, nLog, hLog, cLog appendable.Appendable, opts *Options
 	}
 
 	if validatedCLogEntry == nil {
+		// It is not necessary to copy the root node when starting with a fresh btree.
+		// A fresh root will be used if insertion fails
 		t.root = &leafNode{t: t, mut: true}
 	} else {
 		t.root, err = t.readNodeAt(validatedCLogEntry.finalNLogSize - int64(validatedCLogEntry.rootNodeSize))
@@ -1224,6 +1225,10 @@ func (t *TBtree) flushTree(cleanupPercentageHint float32, forceSync bool, forceC
 
 	metricsBtreeNodesDataEndOffset.WithLabelValues(t.path).Set(float64(t.committedNLogSize))
 
+	// current root can be used as latest snapshot as !t.root.mutated() holds
+	t.lastSnapRoot = t.root
+	t.lastSnapRootAt = time.Now()
+
 	return wN, wH, nil
 }
 
@@ -1548,97 +1553,142 @@ func (t *TBtree) IncreaseTs(ts uint64) error {
 	return nil
 }
 
-type KV struct {
+type KVT struct {
 	K []byte
 	V []byte
+	T uint64
+}
+
+func (t *TBtree) lock() {
+	t.rwmutex.Lock()
+}
+
+func (t *TBtree) unlock() {
+	slowDown := t.compacting && t.delayDuringCompaction > 0
+
+	t.rwmutex.Unlock()
+
+	if slowDown {
+		time.Sleep(t.delayDuringCompaction)
+	}
 }
 
 func (t *TBtree) Insert(key []byte, value []byte) error {
-	return t.BulkInsert([]*KV{{K: key, V: value}})
+	t.lock()
+	defer t.unlock()
+
+	return t.bulkInsert([]*KVT{{K: key, V: value}})
 }
 
-func (t *TBtree) BulkInsert(kvs []*KV) error {
-	if len(kvs) == 0 {
-		return ErrIllegalArguments
-	}
+// BulkInsert inserts multiple entries atomically.
+// It is possible to specify a logical timestamp for each entry.
+// Timestamps with zero will be associated with the current time plus one.
+// The specified timestamp must be greater than the root's current timestamp.
+// Timestamps must be increased by one for each additional entry for a key.
+func (t *TBtree) BulkInsert(kvts []*KVT) error {
+	t.lock()
+	defer t.unlock()
 
-	for _, kv := range kvs {
-		if kv == nil || kv.K == nil || kv.V == nil {
-			return ErrIllegalArguments
-		}
+	return t.bulkInsert(kvts)
+}
 
-		if len(kv.K) > t.maxKeySize {
-			return ErrorMaxKeySizeExceeded
-		}
-
-		if len(kv.V) > t.maxValueSize {
-			return ErrorMaxValueSizeExceeded
-		}
-	}
-
-	// sort entries to increase cache hits
-	sort.Slice(kvs, func(i, j int) bool {
-		return bytes.Compare(kvs[i].K, kvs[j].K) < 0
-	})
-
-	t.rwmutex.Lock()
-
-	defer func() {
-		slowDown := false
-
-		if t.compacting && t.delayDuringCompaction > 0 {
-			slowDown = true
-		}
-
-		t.rwmutex.Unlock()
-
-		if slowDown {
-			time.Sleep(t.delayDuringCompaction)
-		}
-	}()
-
+func (t *TBtree) bulkInsert(kvts []*KVT) error {
 	if t.closed {
 		return ErrAlreadyClosed
 	}
 
-	ts := t.root.ts() + 1
+	if len(kvts) == 0 {
+		return ErrIllegalArguments
+	}
 
-	for _, kv := range kvs {
-		k := make([]byte, len(kv.K))
-		copy(k, kv.K)
+	currTs := t.root.ts()
 
-		v := make([]byte, len(kv.V))
-		copy(v, kv.V)
+	// newTs will hold the greatest time, the minimun value will be currTs + 1
+	var newTs uint64
 
-		nodes, depth, err := t.root.insertAt(k, v, ts)
+	// validated immutable copy of input kv pairs
+	immutableKVTs := make([]*KVT, len(kvts))
+
+	for i, kvt := range kvts {
+		if kvt == nil || kvt.K == nil || kvt.V == nil {
+			return ErrIllegalArguments
+		}
+
+		if len(kvt.K) > t.maxKeySize {
+			return ErrorMaxKeySizeExceeded
+		}
+
+		if len(kvt.V) > t.maxValueSize {
+			return ErrorMaxValueSizeExceeded
+		}
+
+		k := make([]byte, len(kvt.K))
+		copy(k, kvt.K)
+
+		v := make([]byte, len(kvt.V))
+		copy(v, kvt.V)
+
+		t := kvt.T
+
+		if t == 0 {
+			// zero-valued timestamps are associated with current time plus one
+			t = currTs + 1
+		} else if kvt.T < currTs {
+			return fmt.Errorf("%w: specific timestamp is older than root's current timestamp", ErrIllegalArguments)
+		}
+
+		immutableKVTs[i] = &KVT{
+			K: k,
+			V: v,
+			T: t,
+		}
+
+		if t > newTs {
+			newTs = t
+		}
+	}
+
+	nodes, depth, err := t.root.insert(immutableKVTs)
+	if err != nil {
+		// INVARIANT: if !node.mutated() then for every node 'n' in the subtree with node as root !n.mutated() also holds
+		// if t.root is not mutated it means no change was made on any node of the tree. Thus no rollback is needed
+
+		if t.root.mutated() {
+			// changes may need to be rolled back
+			// the most recent snapshot becomes the root again or a fresh start if no snapshots are stored
+			if t.lastSnapRoot == nil {
+				t.root = &leafNode{t: t, mut: true}
+			} else {
+				t.root = t.lastSnapRoot
+			}
+		}
+
+		return err
+	}
+
+	for len(nodes) > 1 {
+		newRoot := &innerNode{
+			t:     t,
+			nodes: nodes,
+			_ts:   newTs,
+			mut:   true,
+		}
+
+		depth++
+
+		nodes, err = newRoot.split()
 		if err != nil {
 			return err
 		}
-
-		for len(nodes) > 1 {
-			newRoot := &innerNode{
-				t:     t,
-				nodes: nodes,
-				_ts:   ts,
-				mut:   true,
-			}
-
-			depth++
-
-			nodes, err = newRoot.split()
-			if err != nil {
-				return err
-			}
-		}
-
-		t.root = nodes[0]
-
-		metricsBtreeDepth.WithLabelValues(t.path).Set(float64(depth))
-
-		t.insertionCountSinceFlush++
-		t.insertionCountSinceSync++
-		t.insertionCountSinceCleanup++
 	}
+
+	t.root = nodes[0]
+
+	metricsBtreeDepth.WithLabelValues(t.path).Set(float64(depth))
+
+	t.insertionCountSinceFlush += len(immutableKVTs)
+	t.insertionCountSinceSync += len(immutableKVTs)
+	t.insertionCountSinceCleanup += len(immutableKVTs)
 
 	if t.insertionCountSinceFlush >= t.flushThld {
 		_, _, err := t.flushTree(t.cleanupPercentage, false, false, "BulkInsert")
@@ -1676,13 +1726,15 @@ func (t *TBtree) Snapshot() (*Snapshot, error) {
 	return t.SnapshotMustIncludeTs(0)
 }
 
-func (t *TBtree) SnapshotMustIncludeTs(snapshotMustIncludeTs uint64) (*Snapshot, error) {
-	return t.SnapshotMustIncludeTsWithRenewalPeriod(snapshotMustIncludeTs, t.renewSnapRootAfter)
+func (t *TBtree) SnapshotMustIncludeTs(ts uint64) (*Snapshot, error) {
+	return t.SnapshotMustIncludeTsWithRenewalPeriod(ts, t.renewSnapRootAfter)
 }
 
 // SnapshotMustIncludeTsWithRenewalPeriod returns a new snapshot based on an existent dumped root (snapshot reuse).
 // Current root may be dumped if there are no previous root already stored on disk or if the dumped one was old enough.
-func (t *TBtree) SnapshotMustIncludeTsWithRenewalPeriod(snapshotMustIncludeTs uint64, snapshotRenewalPeriod time.Duration) (*Snapshot, error) {
+// If ts is 0, any snapshot not older than renewalPeriod may be used.
+// If renewalPeriod is 0, renewal period is not taken into consideration
+func (t *TBtree) SnapshotMustIncludeTsWithRenewalPeriod(ts uint64, renewalPeriod time.Duration) (*Snapshot, error) {
 	t.rwmutex.Lock()
 	defer t.rwmutex.Unlock()
 
@@ -1690,14 +1742,16 @@ func (t *TBtree) SnapshotMustIncludeTsWithRenewalPeriod(snapshotMustIncludeTs ui
 		return nil, ErrAlreadyClosed
 	}
 
-	if snapshotMustIncludeTs > t.root.ts() {
-		return nil, fmt.Errorf("%w: snapshotMustIncludeTs is greater than current ts", ErrIllegalArguments)
+	if ts > t.root.ts() {
+		return nil, fmt.Errorf("%w: ts is greater than current ts", ErrIllegalArguments)
 	}
 
 	if len(t.snapshots) == t.maxActiveSnapshots {
 		return nil, ErrorToManyActiveSnapshots
 	}
 
+	// the tbtree will be flushed if the current root is mutated, the data on disk is not synchronized,
+	// and no snapshot on disk can be re-used.
 	if t.root.mutated() {
 		// it means the current root is not stored on disk
 
@@ -1706,8 +1760,8 @@ func (t *TBtree) SnapshotMustIncludeTsWithRenewalPeriod(snapshotMustIncludeTs ui
 		if t.lastSnapRoot == nil {
 			snapshotRenewalNeeded = true
 		} else if t.lastSnapRoot.ts() < t.root.ts() {
-			snapshotRenewalNeeded = t.lastSnapRoot.ts() < snapshotMustIncludeTs ||
-				(snapshotRenewalPeriod > 0 && time.Since(t.lastSnapRootAt) >= snapshotRenewalPeriod)
+			snapshotRenewalNeeded = t.lastSnapRoot.ts() < ts ||
+				(renewalPeriod > 0 && time.Since(t.lastSnapRootAt) >= renewalPeriod)
 		}
 
 		if snapshotRenewalNeeded {
@@ -1760,63 +1814,110 @@ func (t *TBtree) snapshotClosed(snapshot *Snapshot) error {
 	return nil
 }
 
-func (n *innerNode) insertAt(key []byte, value []byte, ts uint64) (nodes []node, depth int, err error) {
-	if !n.mutated() {
-		return n.copyOnInsertAt(key, value, ts)
-	}
-	return n.updateOnInsertAt(key, value, ts)
-}
-
-func (n *innerNode) updateOnInsertAt(key []byte, value []byte, ts uint64) (nodes []node, depth int, err error) {
-	insertAt := n.indexOf(key)
-
-	c := n.nodes[insertAt]
-
-	cs, depth, err := c.insertAt(key, value, ts)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	n._ts = ts
-
-	ns := make([]node, len(n.nodes)+len(cs)-1)
-
-	copy(ns, n.nodes[:insertAt])
-	copy(ns[insertAt:], cs)
-	copy(ns[insertAt+len(cs):], n.nodes[insertAt+1:])
-
-	n.nodes = ns
-
-	nodes, err = n.split()
-
-	return nodes, depth + 1, err
-}
-
-func (n *innerNode) copyOnInsertAt(key []byte, value []byte, ts uint64) (nodes []node, depth int, err error) {
-	insertAt := n.indexOf(key)
-
-	c := n.nodes[insertAt]
-
-	cs, depth, err := c.insertAt(key, value, ts)
-	if err != nil {
-		return nil, 0, err
+func (n *innerNode) insert(kvts []*KVT) (nodes []node, depth int, err error) {
+	if n.mutated() {
+		return n.updateOnInsert(kvts)
 	}
 
 	newNode := &innerNode{
 		t:       n.t,
-		nodes:   make([]node, len(n.nodes)+len(cs)-1),
-		_ts:     ts,
-		mut:     true,
+		nodes:   make([]node, len(n.nodes)),
+		_ts:     n._ts,
 		_minOff: n._minOff,
+		mut:     true,
 	}
 
-	copy(newNode.nodes, n.nodes[:insertAt])
-	copy(newNode.nodes[insertAt:], cs)
-	copy(newNode.nodes[insertAt+len(cs):], n.nodes[insertAt+1:])
+	copy(newNode.nodes, n.nodes)
 
-	nodes, err = newNode.split()
+	return newNode.updateOnInsert(kvts)
+}
 
-	return nodes, depth + 1, err
+func (n *innerNode) updateOnInsert(kvts []*KVT) (nodes []node, depth int, err error) {
+	// group kvs by child at which they will be inserted
+	kvtsPerChild := make(map[int][]*KVT)
+
+	for _, kvt := range kvts {
+		childIndex := n.indexOf(kvt.K)
+		kvtsPerChild[childIndex] = append(kvtsPerChild[childIndex], kvt)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(len(kvtsPerChild))
+
+	nodesPerChild := make(map[int][]node)
+	var nodesMutex sync.Mutex
+
+	for childIndex, childKVTs := range kvtsPerChild {
+		// insert kvs at every child simultaneously
+		go func(childIndex int, childKVTs []*KVT) {
+			defer wg.Done()
+
+			child := n.nodes[childIndex]
+
+			newChildren, childrenDepth, childrenErr := child.insert(childKVTs)
+
+			nodesMutex.Lock()
+			defer nodesMutex.Unlock()
+
+			if childrenErr != nil {
+				// if any of its children fail to insert, insertion fails
+				err = childrenErr
+				return
+			}
+
+			nodesPerChild[childIndex] = newChildren
+			if childrenDepth > depth {
+				depth = childrenDepth
+			}
+
+			for _, newChild := range newChildren {
+				if newChild.ts() > n._ts {
+					n._ts = newChild.ts()
+				}
+			}
+
+		}(childIndex, childKVTs)
+	}
+
+	// wait for all the insertions to be done
+	wg.Wait()
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// count the number of children after insertion
+	nsSize := len(n.nodes)
+
+	for i := range n.nodes {
+		cs, ok := nodesPerChild[i]
+		if ok {
+			nsSize += len(cs) - 1
+		}
+	}
+
+	ns := make([]node, nsSize)
+	nsi := 0
+
+	for i, n := range n.nodes {
+		cs, ok := nodesPerChild[i]
+		if ok {
+			copy(ns[nsi:], cs)
+			nsi += len(cs)
+		} else {
+			ns[nsi] = n
+			nsi++
+		}
+	}
+
+	n.nodes = ns
+
+	nodes, err = n.split()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return nodes, depth + 1, nil
 }
 
 func (n *innerNode) get(key []byte) (value []byte, ts uint64, hc uint64, err error) {
@@ -1936,6 +2037,7 @@ func (n *innerNode) minKey() []byte {
 	return n.nodes[0].minKey()
 }
 
+// indexOf returns the first child at which key is equal or greater than its minKey
 func (n *innerNode) indexOf(key []byte) int {
 	metricsBtreeInnerNodeEntries.WithLabelValues(n.t.path).Observe(float64(len(n.nodes)))
 
@@ -1955,8 +2057,10 @@ func (n *innerNode) indexOf(key []byte) int {
 		if diff == 0 {
 			return middle
 		} else if diff < 0 {
+			// minKey < key
 			left = middle
 		} else {
+			// minKey > key
 			right = middle - 1
 		}
 	}
@@ -2012,12 +2116,12 @@ func (n *innerNode) updateTs() {
 
 ////////////////////////////////////////////////////////////
 
-func (r *nodeRef) insertAt(key []byte, value []byte, ts uint64) (nodes []node, depth int, err error) {
+func (r *nodeRef) insert(kvts []*KVT) (nodes []node, depth int, err error) {
 	n, err := r.t.nodeAt(r.off, true)
 	if err != nil {
 		return nil, 0, err
 	}
-	return n.insertAt(key, value, ts)
+	return n.insert(kvts)
 }
 
 func (r *nodeRef) get(key []byte) (value []byte, ts uint64, hc uint64, err error) {
@@ -2084,130 +2188,77 @@ func (r *nodeRef) offset() int64 {
 
 ////////////////////////////////////////////////////////////
 
-func (l *leafNode) insertAt(key []byte, value []byte, ts uint64) (nodes []node, depth int, err error) {
-	if !l.mutated() {
-		return l.copyOnInsertAt(key, value, ts)
+func (l *leafNode) insert(kvts []*KVT) (nodes []node, depth int, err error) {
+	if l.mutated() {
+		return l.updateOnInsert(kvts)
 	}
-	return l.updateOnInsertAt(key, value, ts)
+
+	newLeaf := &leafNode{
+		t:      l.t,
+		values: make([]*leafValue, len(l.values)),
+		_ts:    l._ts,
+		mut:    true,
+	}
+
+	for i, lv := range l.values {
+		tss := make([]uint64, len(lv.tss))
+		copy(tss, lv.tss)
+
+		newLeaf.values[i] = &leafValue{
+			key:    lv.key,
+			value:  lv.value,
+			ts:     lv.ts,
+			tss:    tss,
+			hOff:   lv.hOff,
+			hCount: lv.hCount,
+		}
+	}
+
+	return newLeaf.updateOnInsert(kvts)
 }
 
-func (l *leafNode) updateOnInsertAt(key []byte, value []byte, ts uint64) (nodes []node, depth int, err error) {
-	i, found := l.indexOf(key)
+func (l *leafNode) updateOnInsert(kvts []*KVT) (nodes []node, depth int, err error) {
+	for _, kvt := range kvts {
+		i, found := l.indexOf(kvt.K)
 
-	l._ts = ts
+		if found {
+			lv := l.values[i]
 
-	if found {
-		l.values[i].value = value
-		l.values[i].ts = ts
-		l.values[i].tss = append([]uint64{ts}, l.values[i].tss...)
-	} else {
-		values := make([]*leafValue, len(l.values)+1)
+			if kvt.T <= lv.ts {
+				// The validation can be done upfront at bulkInsert,
+				// but postponing it could reduce resource requirements during the earlier stages,
+				// resulting in higher performance due to concurrency.
+				return nil, 0, fmt.Errorf("%w: attempt to insert a value without a newer timestamp", ErrIllegalArguments)
+			}
 
-		copy(values, l.values[:i])
+			lv.value = kvt.V
+			lv.ts = kvt.T
+			lv.tss = append([]uint64{kvt.T}, lv.tss...)
+		} else {
+			values := make([]*leafValue, len(l.values)+1)
 
-		values[i] = &leafValue{
-			key:    key,
-			value:  value,
-			ts:     ts,
-			tss:    []uint64{ts},
-			hOff:   -1,
-			hCount: 0,
+			copy(values, l.values[:i])
+
+			values[i] = &leafValue{
+				key:    kvt.K,
+				value:  kvt.V,
+				ts:     kvt.T,
+				tss:    []uint64{kvt.T},
+				hOff:   -1,
+				hCount: 0,
+			}
+
+			copy(values[i+1:], l.values[i:])
+
+			l.values = values
 		}
 
-		copy(values[i+1:], l.values[i:])
-
-		l.values = values
+		if l._ts < kvt.T {
+			l._ts = kvt.T
+		}
 	}
 
 	nodes, err = l.split()
-
-	return nodes, 1, err
-}
-
-func (l *leafNode) copyOnInsertAt(key []byte, value []byte, ts uint64) (nodes []node, depth int, err error) {
-	i, found := l.indexOf(key)
-
-	var newLeaf *leafNode
-
-	if found {
-		newLeaf = &leafNode{
-			t:      l.t,
-			values: make([]*leafValue, len(l.values)),
-			_ts:    ts,
-			mut:    true,
-		}
-
-		for pi := 0; pi < i; pi++ {
-			newLeaf.values[pi] = &leafValue{
-				key:    l.values[pi].key,
-				value:  l.values[pi].value,
-				ts:     l.values[pi].ts,
-				tss:    l.values[pi].tss,
-				hOff:   l.values[pi].hOff,
-				hCount: l.values[pi].hCount,
-			}
-		}
-
-		newLeaf.values[i] = &leafValue{
-			key:    key,
-			value:  value,
-			ts:     ts,
-			tss:    append([]uint64{ts}, l.values[i].tss...),
-			hOff:   l.values[i].hOff,
-			hCount: l.values[i].hCount,
-		}
-
-		for pi := i + 1; pi < len(newLeaf.values); pi++ {
-			newLeaf.values[pi] = &leafValue{
-				key:    l.values[pi].key,
-				value:  l.values[pi].value,
-				ts:     l.values[pi].ts,
-				tss:    l.values[pi].tss,
-				hOff:   l.values[pi].hOff,
-				hCount: l.values[pi].hCount,
-			}
-		}
-	} else {
-		newLeaf = &leafNode{
-			t:      l.t,
-			values: make([]*leafValue, len(l.values)+1),
-			_ts:    ts,
-			mut:    true,
-		}
-
-		for pi := 0; pi < i; pi++ {
-			newLeaf.values[pi] = &leafValue{
-				key:    l.values[pi].key,
-				value:  l.values[pi].value,
-				ts:     l.values[pi].ts,
-				tss:    l.values[pi].tss,
-				hOff:   l.values[pi].hOff,
-				hCount: l.values[pi].hCount,
-			}
-		}
-
-		newLeaf.values[i] = &leafValue{
-			key:    key,
-			value:  value,
-			ts:     ts,
-			tss:    []uint64{ts},
-			hOff:   -1,
-			hCount: 0,
-		}
-
-		for pi := i + 1; pi < len(newLeaf.values); pi++ {
-			newLeaf.values[pi] = &leafValue{
-				key:    l.values[pi-1].key,
-				value:  l.values[pi-1].value,
-				ts:     l.values[pi-1].ts,
-				tss:    l.values[pi-1].tss,
-				hOff:   l.values[pi-1].hOff,
-				hCount: l.values[pi-1].hCount,
-			}
-		}
-	}
-
-	nodes, err = newLeaf.split()
 
 	return nodes, 1, err
 }

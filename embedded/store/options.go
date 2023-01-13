@@ -47,6 +47,8 @@ const DefaultTxLogMaxOpenedFiles = 10
 const DefaultCommitLogMaxOpenedFiles = 10
 const DefaultWriteTxHeaderVersion = MaxTxHeaderVersion
 const DefaultWriteBufferSize = 1 << 22 //4Mb
+const DefaultIndexingMaxBulkSize = 1
+const DefaultBulkPreparationTimeout = DefaultSyncFrequency
 
 const MaxFileSize = (1 << 31) - 1 // 2Gb
 
@@ -105,6 +107,7 @@ type Options struct {
 	// Version of transaction header to use (limits available features)
 	WriteTxHeaderVersion int
 
+	// Maximum number of go-routines waiting for specific transactions to be in a committed or indexed state
 	MaxWaitees int
 
 	TimeFunc TimeFunc
@@ -148,7 +151,7 @@ type IndexOptions struct {
 	// Max size of a single Btree node in bytes
 	MaxNodeSize int
 
-	// Time in milliseconds between the most recent DB snapshot is automatically renewed
+	// Time between the most recent DB snapshot is automatically renewed
 	RenewSnapRootAfter time.Duration
 
 	// Minimum number of updates entries in the btree to allow for full compaction
@@ -165,6 +168,12 @@ type IndexOptions struct {
 
 	// Maximum number of simultaneously opened commit log files
 	CommitLogMaxOpenedFiles int
+
+	// Maximum number of transactions indexed together
+	MaxBulkSize int
+
+	// Maximum time waiting for more transactions to be committed and included into the same bulk
+	BulkPreparationTimeout time.Duration
 }
 
 type AHTOptions struct {
@@ -233,6 +242,9 @@ func DefaultIndexOptions() *IndexOptions {
 		NodesLogMaxOpenedFiles:   tbtree.DefaultNodesLogMaxOpenedFiles,
 		HistoryLogMaxOpenedFiles: tbtree.DefaultHistoryLogMaxOpenedFiles,
 		CommitLogMaxOpenedFiles:  tbtree.DefaultCommitLogMaxOpenedFiles,
+
+		MaxBulkSize:            DefaultIndexingMaxBulkSize,
+		BulkPreparationTimeout: DefaultBulkPreparationTimeout,
 	}
 }
 
@@ -358,6 +370,12 @@ func (opts *IndexOptions) Validate() error {
 	}
 	if opts.RenewSnapRootAfter < 0 {
 		return fmt.Errorf("%w: invalid index option RenewSnapRootAfter", ErrInvalidOptions)
+	}
+	if opts.MaxBulkSize < 1 {
+		return fmt.Errorf("%w: invalid MaxBulkSize", ErrInvalidOptions)
+	}
+	if opts.BulkPreparationTimeout < 0 {
+		return fmt.Errorf("%w: invalid BulkPreparationTimeout", ErrInvalidOptions)
 	}
 	if opts.NodesLogMaxOpenedFiles <= 0 {
 		return fmt.Errorf("%w: invalid index option NodesLogMaxOpenedFiles", ErrInvalidOptions)
@@ -565,6 +583,16 @@ func (opts *IndexOptions) WithMaxNodeSize(maxNodeSize int) *IndexOptions {
 
 func (opts *IndexOptions) WithRenewSnapRootAfter(renewSnapRootAfter time.Duration) *IndexOptions {
 	opts.RenewSnapRootAfter = renewSnapRootAfter
+	return opts
+}
+
+func (opts *IndexOptions) WithMaxBulkSize(maxBulkSize int) *IndexOptions {
+	opts.MaxBulkSize = maxBulkSize
+	return opts
+}
+
+func (opts *IndexOptions) WithBulkPreparationTimeout(bulkPreparationTimeout time.Duration) *IndexOptions {
+	opts.BulkPreparationTimeout = bulkPreparationTimeout
 	return opts
 }
 
