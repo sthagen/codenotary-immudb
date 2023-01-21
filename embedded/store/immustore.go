@@ -19,6 +19,7 @@ package store
 import (
 	"bytes"
 	"container/list"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -572,7 +573,7 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 				committedTxID := store.LastCommittedTxID()
 
 				// passive wait for one new transaction at least
-				store.inmemPrecommitWHub.WaitFor(committedTxID+1, nil)
+				store.inmemPrecommitWHub.WaitFor(context.Background(), committedTxID+1)
 
 				// TODO: waiting on earlier stages of transaction processing may also be possible
 				prevLatestPrecommitedTx := committedTxID + 1
@@ -763,20 +764,20 @@ func (s *ImmuStore) Snapshot() (*Snapshot, error) {
 // SnapshotMustIncludeTxID returns a new snapshot based on an existent dumped root (snapshot reuse).
 // Current root may be dumped if there are no previous root already stored on disk or if the dumped one was old enough.
 // If txID is 0, any snapshot may be used.
-func (s *ImmuStore) SnapshotMustIncludeTxID(txID uint64) (*Snapshot, error) {
-	return s.SnapshotMustIncludeTxIDWithRenewalPeriod(txID, 0)
+func (s *ImmuStore) SnapshotMustIncludeTxID(ctx context.Context, txID uint64) (*Snapshot, error) {
+	return s.SnapshotMustIncludeTxIDWithRenewalPeriod(ctx, txID, 0)
 }
 
 // SnapshotMustIncludeTxIDWithRenewalPeriod returns a new snapshot based on an existent dumped root (snapshot reuse).
 // Current root may be dumped if there are no previous root already stored on disk or if the dumped one was old enough.
 // If txID is 0, any snapshot not older than renewalPeriod may be used.
 // If renewalPeriod is 0, renewal period is not taken into consideration
-func (s *ImmuStore) SnapshotMustIncludeTxIDWithRenewalPeriod(txID uint64, renewalPeriod time.Duration) (*Snapshot, error) {
+func (s *ImmuStore) SnapshotMustIncludeTxIDWithRenewalPeriod(ctx context.Context, txID uint64, renewalPeriod time.Duration) (*Snapshot, error) {
 	if txID > s.lastPrecommittedTxID() {
 		return nil, fmt.Errorf("%w: txID is greater than the last precommitted transaction", ErrIllegalArguments)
 	}
 
-	err := s.WaitForIndexingUpto(txID, nil)
+	err := s.WaitForIndexingUpto(ctx, txID)
 	if err != nil {
 		return nil, err
 	}
@@ -863,7 +864,7 @@ func (s *ImmuStore) syncBinaryLinking() error {
 	return nil
 }
 
-func (s *ImmuStore) WaitForTx(txID uint64, allowPrecommitted bool, cancellation <-chan struct{}) error {
+func (s *ImmuStore) WaitForTx(ctx context.Context, txID uint64, allowPrecommitted bool) error {
 	s.waiteesMutex.Lock()
 
 	if s.waiteesCount == s.maxWaitees {
@@ -884,9 +885,9 @@ func (s *ImmuStore) WaitForTx(txID uint64, allowPrecommitted bool, cancellation 
 	var err error
 
 	if allowPrecommitted {
-		err = s.durablePrecommitWHub.WaitFor(txID, cancellation)
+		err = s.durablePrecommitWHub.WaitFor(ctx, txID)
 	} else {
-		err = s.commitWHub.WaitFor(txID, cancellation)
+		err = s.commitWHub.WaitFor(ctx, txID)
 	}
 	if err == watchers.ErrAlreadyClosed {
 		return ErrAlreadyClosed
@@ -894,7 +895,7 @@ func (s *ImmuStore) WaitForTx(txID uint64, allowPrecommitted bool, cancellation 
 	return err
 }
 
-func (s *ImmuStore) WaitForIndexingUpto(txID uint64, cancellation <-chan struct{}) error {
+func (s *ImmuStore) WaitForIndexingUpto(ctx context.Context, txID uint64) error {
 	s.waiteesMutex.Lock()
 
 	if s.waiteesCount == s.maxWaitees {
@@ -912,7 +913,7 @@ func (s *ImmuStore) WaitForIndexingUpto(txID uint64, cancellation <-chan struct{
 		s.waiteesMutex.Unlock()
 	}()
 
-	return s.indexer.WaitForIndexingUpto(txID, cancellation)
+	return s.indexer.WaitForIndexingUpto(ctx, txID)
 }
 
 func (s *ImmuStore) CompactIndex() error {
@@ -1072,32 +1073,33 @@ func (s *ImmuStore) appendData(entries []*EntrySpec, donec chan<- appendableResu
 	donec <- appendableResult{offsets, nil}
 }
 
-func (s *ImmuStore) NewWriteOnlyTx() (*OngoingTx, error) {
-	return newOngoingTx(s, &TxOptions{Mode: WriteOnlyTx})
+func (s *ImmuStore) NewWriteOnlyTx(ctx context.Context) (*OngoingTx, error) {
+	return newOngoingTx(ctx, s, &TxOptions{Mode: WriteOnlyTx})
 }
 
-func (s *ImmuStore) NewTx(opts *TxOptions) (*OngoingTx, error) {
-	return newOngoingTx(s, opts)
+func (s *ImmuStore) NewTx(ctx context.Context, opts *TxOptions) (*OngoingTx, error) {
+	return newOngoingTx(ctx, s, opts)
 }
 
-func (s *ImmuStore) commit(otx *OngoingTx, expectedHeader *TxHeader, waitForIndexing bool) (*TxHeader, error) {
-	hdr, err := s.precommit(otx, expectedHeader)
+func (s *ImmuStore) commit(ctx context.Context, otx *OngoingTx, expectedHeader *TxHeader, waitForIndexing bool) (*TxHeader, error) {
+	hdr, err := s.precommit(ctx, otx, expectedHeader)
 	if err != nil {
 		return nil, err
 	}
 
 	// note: durability is ensured only if the store is in sync mode
-	err = s.commitWHub.WaitFor(hdr.ID, nil)
+	err = s.commitWHub.WaitFor(ctx, hdr.ID)
 	if err == watchers.ErrAlreadyClosed {
-		return hdr, ErrAlreadyClosed
+		return nil, ErrAlreadyClosed
 	}
 	if err != nil {
-		return hdr, err
+		return nil, err
 	}
 
 	if waitForIndexing {
-		err = s.WaitForIndexingUpto(hdr.ID, nil)
+		err = s.WaitForIndexingUpto(ctx, hdr.ID)
 		if err != nil {
+			// header is returned because transaction is already committed
 			return hdr, err
 		}
 	}
@@ -1105,7 +1107,7 @@ func (s *ImmuStore) commit(otx *OngoingTx, expectedHeader *TxHeader, waitForInde
 	return hdr, nil
 }
 
-func (s *ImmuStore) precommit(otx *OngoingTx, hdr *TxHeader) (*TxHeader, error) {
+func (s *ImmuStore) precommit(ctx context.Context, otx *OngoingTx, hdr *TxHeader) (*TxHeader, error) {
 	if otx == nil {
 		return nil, fmt.Errorf("%w: no transaction", ErrIllegalArguments)
 	}
@@ -1180,7 +1182,7 @@ func (s *ImmuStore) precommit(otx *OngoingTx, hdr *TxHeader) (*TxHeader, error) 
 		}
 
 		// ensure tx is committed in the expected order
-		err = s.inmemPrecommitWHub.WaitFor(hdr.ID-1, nil)
+		err = s.inmemPrecommitWHub.WaitFor(ctx, hdr.ID-1)
 		if err == watchers.ErrAlreadyClosed {
 			return nil, ErrAlreadyClosed
 		}
@@ -1239,7 +1241,7 @@ func (s *ImmuStore) precommit(otx *OngoingTx, hdr *TxHeader) (*TxHeader, error) 
 
 	if otx.hasPreconditions() {
 		// Preconditions must be executed with up-to-date tree
-		err = s.WaitForIndexingUpto(currPrecomittedTxID, nil)
+		err = s.WaitForIndexingUpto(ctx, currPrecomittedTxID)
 		if err != nil {
 			return nil, err
 		}
@@ -1606,24 +1608,25 @@ func (s *ImmuStore) mayCommit() error {
 	return nil
 }
 
-func (s *ImmuStore) CommitWith(callback func(txID uint64, index KeyIndex) ([]*EntrySpec, []Precondition, error), waitForIndexing bool) (*TxHeader, error) {
-	hdr, err := s.preCommitWith(callback)
+func (s *ImmuStore) CommitWith(ctx context.Context, callback func(txID uint64, index KeyIndex) ([]*EntrySpec, []Precondition, error), waitForIndexing bool) (*TxHeader, error) {
+	hdr, err := s.preCommitWith(ctx, callback)
 	if err != nil {
 		return nil, err
 	}
 
 	// note: durability is ensured only if the store is in sync mode
-	err = s.commitWHub.WaitFor(hdr.ID, nil)
+	err = s.commitWHub.WaitFor(ctx, hdr.ID)
 	if errors.Is(err, watchers.ErrAlreadyClosed) {
-		return hdr, ErrAlreadyClosed
+		return nil, ErrAlreadyClosed
 	}
 	if err != nil {
-		return hdr, err
+		return nil, err
 	}
 
 	if waitForIndexing {
-		err = s.WaitForIndexingUpto(hdr.ID, nil)
+		err = s.WaitForIndexingUpto(ctx, hdr.ID)
 		if err != nil {
+			// header is returned because transaction is already committed
 			return hdr, err
 		}
 	}
@@ -1658,7 +1661,7 @@ func (index *unsafeIndex) GetWithPrefixAndFilters(prefix []byte, neq []byte, fil
 	return index.st.GetWithPrefixAndFilters(prefix, neq, filters...)
 }
 
-func (s *ImmuStore) preCommitWith(callback func(txID uint64, index KeyIndex) ([]*EntrySpec, []Precondition, error)) (*TxHeader, error) {
+func (s *ImmuStore) preCommitWith(ctx context.Context, callback func(txID uint64, index KeyIndex) ([]*EntrySpec, []Precondition, error)) (*TxHeader, error) {
 	if callback == nil {
 		return nil, ErrIllegalArguments
 	}
@@ -1670,7 +1673,7 @@ func (s *ImmuStore) preCommitWith(callback func(txID uint64, index KeyIndex) ([]
 		return nil, ErrAlreadyClosed
 	}
 
-	otx, err := s.NewWriteOnlyTx()
+	otx, err := s.NewWriteOnlyTx(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1700,7 +1703,7 @@ func (s *ImmuStore) preCommitWith(callback func(txID uint64, index KeyIndex) ([]
 		s.indexer.Resume()
 
 		// Preconditions must be executed with up-to-date tree
-		err = s.WaitForIndexingUpto(lastPreCommittedTxID, nil)
+		err = s.WaitForIndexingUpto(ctx, lastPreCommittedTxID)
 		if err != nil {
 			return nil, err
 		}
@@ -2087,7 +2090,7 @@ func (s *ImmuStore) ExportTx(txID uint64, allowPrecommitted bool, tx *Tx) ([]byt
 	return buf.Bytes(), nil
 }
 
-func (s *ImmuStore) ReplicateTx(exportedTx []byte, waitForIndexing bool) (*TxHeader, error) {
+func (s *ImmuStore) ReplicateTx(ctx context.Context, exportedTx []byte, waitForIndexing bool) (*TxHeader, error) {
 	if len(exportedTx) == 0 {
 		return nil, ErrIllegalArguments
 	}
@@ -2112,7 +2115,7 @@ func (s *ImmuStore) ReplicateTx(exportedTx []byte, waitForIndexing bool) (*TxHea
 	}
 	i += hdrLen
 
-	txSpec, err := s.NewWriteOnlyTx()
+	txSpec, err := s.NewWriteOnlyTx(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -2173,30 +2176,31 @@ func (s *ImmuStore) ReplicateTx(exportedTx []byte, waitForIndexing bool) (*TxHea
 		return nil, ErrIllegalArguments
 	}
 
-	txHdr, err := s.precommit(txSpec, hdr)
+	txHdr, err := s.precommit(ctx, txSpec, hdr)
 	if err != nil {
 		return nil, err
 	}
 
-	err = s.durablePrecommitWHub.WaitFor(txHdr.ID, nil)
+	// wait for syncing to happen before exposing the header
+	err = s.durablePrecommitWHub.WaitFor(ctx, txHdr.ID)
 	if err == watchers.ErrAlreadyClosed {
-		return txHdr, ErrAlreadyClosed
+		return nil, ErrAlreadyClosed
 	}
 	if err != nil {
-		return txHdr, err
+		return nil, err
 	}
 
 	if !s.useExternalCommitAllowance {
-		err = s.commitWHub.WaitFor(txHdr.ID, nil)
+		err = s.commitWHub.WaitFor(ctx, txHdr.ID)
 		if err == watchers.ErrAlreadyClosed {
-			return txHdr, ErrAlreadyClosed
+			return nil, ErrAlreadyClosed
 		}
 		if err != nil {
-			return txHdr, err
+			return nil, err
 		}
 
 		if waitForIndexing {
-			err = s.WaitForIndexingUpto(txHdr.ID, nil)
+			err = s.WaitForIndexingUpto(ctx, txHdr.ID)
 			if err != nil {
 				return txHdr, err
 			}

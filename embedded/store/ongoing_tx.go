@@ -18,6 +18,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -27,7 +28,8 @@ import (
 // OngoingTx (no-thread safe) represents an interactive or incremental transaction with support of RYOW.
 // The snapshot may be locally modified but isolated from other transactions
 type OngoingTx struct {
-	st       *ImmuStore
+	st *ImmuStore
+
 	snap     *Snapshot
 	readOnly bool // MVCC validations are not needed for read-only transactions
 
@@ -69,7 +71,11 @@ type EntrySpec struct {
 	Value    []byte
 }
 
-func newOngoingTx(s *ImmuStore, opts *TxOptions) (*OngoingTx, error) {
+func newOngoingTx(ctx context.Context, s *ImmuStore, opts *TxOptions) (*OngoingTx, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	err := opts.Validate()
 	if err != nil {
 		return nil, err
@@ -93,7 +99,7 @@ func newOngoingTx(s *ImmuStore, opts *TxOptions) (*OngoingTx, error) {
 		snapshotMustIncludeTxID = opts.SnapshotMustIncludeTxID(s.lastPrecommittedTxID())
 	}
 
-	snap, err := s.SnapshotMustIncludeTxIDWithRenewalPeriod(snapshotMustIncludeTxID, opts.SnapshotRenewalPeriod)
+	snap, err := s.SnapshotMustIncludeTxIDWithRenewalPeriod(ctx, snapshotMustIncludeTxID, opts.SnapshotRenewalPeriod)
 	if err != nil {
 		return nil, err
 	}
@@ -398,15 +404,15 @@ func (tx *OngoingTx) NewKeyReader(spec KeyReaderSpec) (KeyReader, error) {
 	return newOngoingTxKeyReader(tx, spec)
 }
 
-func (tx *OngoingTx) Commit() (*TxHeader, error) {
-	return tx.commit(true)
+func (tx *OngoingTx) Commit(ctx context.Context) (*TxHeader, error) {
+	return tx.commit(ctx, true)
 }
 
-func (tx *OngoingTx) AsyncCommit() (*TxHeader, error) {
-	return tx.commit(false)
+func (tx *OngoingTx) AsyncCommit(ctx context.Context) (*TxHeader, error) {
+	return tx.commit(ctx, false)
 }
 
-func (tx *OngoingTx) commit(waitForIndexing bool) (*TxHeader, error) {
+func (tx *OngoingTx) commit(ctx context.Context, waitForIndexing bool) (*TxHeader, error) {
 	if tx.closed {
 		return nil, ErrAlreadyClosed
 	}
@@ -424,7 +430,11 @@ func (tx *OngoingTx) commit(waitForIndexing bool) (*TxHeader, error) {
 
 	tx.closed = true
 
-	return tx.st.commit(tx, nil, waitForIndexing)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	return tx.st.commit(ctx, tx, nil, waitForIndexing)
 }
 
 func (tx *OngoingTx) Cancel() error {

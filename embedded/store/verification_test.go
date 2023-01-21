@@ -17,6 +17,7 @@ limitations under the License.
 package store
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"path/filepath"
@@ -67,7 +68,7 @@ func TestVerifyDualProofEdgeCases(t *testing.T) {
 	eCount := 4
 
 	for i := 0; i < txCount; i++ {
-		tx, err := immuStore.NewWriteOnlyTx()
+		tx, err := immuStore.NewWriteOnlyTx(context.Background())
 		require.NoError(t, err)
 
 		for j := 0; j < eCount; j++ {
@@ -81,7 +82,7 @@ func TestVerifyDualProofEdgeCases(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		txhdr, err := tx.AsyncCommit()
+		txhdr, err := tx.AsyncCommit(context.Background())
 		require.NoError(t, err)
 		require.Equal(t, uint64(i+1), txhdr.ID)
 	}

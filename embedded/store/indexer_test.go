@@ -17,6 +17,7 @@ limitations under the License.
 package store
 
 import (
+	"context"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -85,7 +86,7 @@ func TestMaxIndexWaitees(t *testing.T) {
 	errCh := make(chan error)
 	for i := 0; i < 2; i++ {
 		go func() {
-			errCh <- store.WaitForIndexingUpto(1, make(<-chan struct{}))
+			errCh <- store.WaitForIndexingUpto(context.Background(), 1)
 		}()
 	}
 
@@ -98,13 +99,13 @@ func TestMaxIndexWaitees(t *testing.T) {
 	}
 
 	// Store one transaction
-	tx, err := store.NewWriteOnlyTx()
+	tx, err := store.NewWriteOnlyTx(context.Background())
 	require.NoError(t, err)
 
 	err = tx.Set([]byte{1}, nil, []byte{2})
 	require.NoError(t, err)
 
-	hdr, err := tx.AsyncCommit()
+	hdr, err := tx.AsyncCommit(context.Background())
 	require.NoError(t, err)
 	require.EqualValues(t, 1, hdr.ID)
 

@@ -17,13 +17,13 @@ limitations under the License.
 package watchers
 
 import (
+	"context"
 	"errors"
 	"sync"
 )
 
 var ErrMaxWaitessLimitExceeded = errors.New("watchers: max waiting limit exceeded")
 var ErrAlreadyClosed = errors.New("watchers: already closed")
-var ErrCancellationRequested = errors.New("watchers: cancellation requested")
 
 type WatchersHub struct {
 	wpoints map[uint64]*waitingPoint
@@ -94,7 +94,7 @@ func (w *WatchersHub) DoneUpto(t uint64) error {
 	return nil
 }
 
-func (w *WatchersHub) WaitFor(t uint64, cancellation <-chan struct{}) error {
+func (w *WatchersHub) WaitFor(ctx context.Context, t uint64) error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
@@ -126,7 +126,7 @@ func (w *WatchersHub) WaitFor(t uint64, cancellation <-chan struct{}) error {
 	select {
 	case <-wp.ch:
 		break
-	case <-cancellation:
+	case <-ctx.Done():
 		cancelled = true
 	}
 
@@ -153,7 +153,7 @@ func (w *WatchersHub) WaitFor(t uint64, cancellation <-chan struct{}) error {
 			}
 		}
 
-		return ErrCancellationRequested
+		return ctx.Err()
 	}
 
 	return nil

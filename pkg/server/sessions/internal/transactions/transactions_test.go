@@ -18,7 +18,6 @@ package transactions
 
 import (
 	"context"
-	"io/ioutil"
 	"os"
 	"testing"
 
@@ -29,9 +28,7 @@ import (
 )
 
 func TestNewTx(t *testing.T) {
-	path, err := ioutil.TempDir(os.TempDir(), "tx_session_data")
-	require.NoError(t, err)
-	defer os.RemoveAll(path)
+	path := t.TempDir()
 
 	db, err := database.NewDB("db1", nil, database.DefaultOption().WithDBRootPath(path), logger.NewSimpleLogger("logger", os.Stdout))
 	require.NoError(t, err)
@@ -43,15 +40,15 @@ func TestNewTx(t *testing.T) {
 	err = tx.Rollback()
 	require.NoError(t, err)
 
-	_, err = tx.SQLQuery(nil)
+	_, err = tx.SQLQuery(context.Background(), nil)
 	require.ErrorIs(t, err, sql.ErrNoOngoingTx)
 
-	err = tx.SQLExec(nil)
+	err = tx.SQLExec(context.Background(), nil)
 	require.ErrorIs(t, err, sql.ErrNoOngoingTx)
 
 	err = tx.Rollback()
 	require.ErrorIs(t, err, sql.ErrNoOngoingTx)
 
-	_, err = tx.Commit()
+	_, err = tx.Commit(context.Background())
 	require.ErrorIs(t, err, sql.ErrNoOngoingTx)
 }

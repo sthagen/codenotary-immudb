@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"flag"
@@ -118,7 +119,7 @@ func main() {
 
 	defer st.Close()
 
-	tx, err := st.NewWriteOnlyTx()
+	tx, err := st.NewWriteOnlyTx(context.Background())
 	if err != nil {
 		panic(err)
 	}
@@ -128,7 +129,7 @@ func main() {
 		panic(err)
 	}
 
-	hdr, err := tx.Commit()
+	hdr, err := tx.Commit(context.Background())
 	if err != nil {
 		panic(err)
 	}
@@ -178,7 +179,7 @@ func main() {
 		}
 
 		if *action == "set" {
-			tx, err := st.NewWriteOnlyTx()
+			tx, err := st.NewWriteOnlyTx(context.Background())
 			if err != nil {
 				panic(err)
 			}
@@ -188,7 +189,7 @@ func main() {
 				panic(err)
 			}
 
-			_, err = tx.Commit()
+			_, err = tx.Commit(context.Background())
 			if err != nil {
 				panic(err)
 			}
@@ -269,7 +270,7 @@ func main() {
 				ids := make([]uint64, *txCount)
 
 				for t := 0; t < *txCount; t++ {
-					tx, err := immuStore.NewWriteOnlyTx()
+					tx, err := immuStore.NewWriteOnlyTx(context.Background())
 					if err != nil {
 						panic(err)
 					}
@@ -281,7 +282,7 @@ func main() {
 						}
 					}
 
-					txhdr, err := tx.Commit()
+					txhdr, err := tx.Commit(context.Background())
 					if err != nil {
 						panic(err)
 					}

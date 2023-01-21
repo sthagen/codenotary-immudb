@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -254,9 +255,9 @@ func (idx *indexer) Close() error {
 	return idx.index.Close()
 }
 
-func (idx *indexer) WaitForIndexingUpto(txID uint64, cancellation <-chan struct{}) error {
+func (idx *indexer) WaitForIndexingUpto(ctx context.Context, txID uint64) error {
 	if idx.wHub != nil {
-		err := idx.wHub.WaitFor(txID, cancellation)
+		err := idx.wHub.WaitFor(ctx, txID)
 		if err == watchers.ErrAlreadyClosed {
 			return ErrAlreadyClosed
 		}
@@ -381,8 +382,8 @@ func (idx *indexer) doIndexing() {
 			idx.wHub.DoneUpto(lastIndexedTx)
 		}
 
-		err := idx.store.commitWHub.WaitFor(lastIndexedTx+1, idx.ctx.Done())
-		if err == watchers.ErrCancellationRequested || err == watchers.ErrAlreadyClosed {
+		err := idx.store.commitWHub.WaitFor(idx.ctx, lastIndexedTx+1)
+		if idx.ctx.Err() != nil || errors.Is(err, watchers.ErrAlreadyClosed) {
 			return
 		}
 		if err != nil {
@@ -492,9 +493,9 @@ func (idx *indexer) indexSince(txID uint64) error {
 
 		if bulkSize < idx.maxBulkSize {
 			// wait for the next tx to be committed
-			err = idx.store.commitWHub.WaitFor(txID+uint64(i+1), ctx.Done())
+			err = idx.store.commitWHub.WaitFor(ctx, txID+uint64(i+1))
 		}
-		if err == watchers.ErrCancellationRequested {
+		if ctx.Err() != nil {
 			break
 		}
 		if err != nil {

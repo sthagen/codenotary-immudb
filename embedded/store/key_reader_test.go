@@ -17,6 +17,7 @@ limitations under the License.
 package store
 
 import (
+	"context"
 	"encoding/binary"
 	"testing"
 
@@ -34,7 +35,7 @@ func TestImmudbStoreReader(t *testing.T) {
 	eCount := 100
 
 	for i := 0; i < txCount; i++ {
-		tx, err := immuStore.NewWriteOnlyTx()
+		tx, err := immuStore.NewWriteOnlyTx(context.Background())
 		require.NoError(t, err)
 
 		for j := 0; j < eCount; j++ {
@@ -48,7 +49,7 @@ func TestImmudbStoreReader(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		_, err = tx.Commit()
+		_, err = tx.Commit(context.Background())
 		require.NoError(t, err)
 	}
 
@@ -93,7 +94,7 @@ func TestImmudbStoreReaderAsBefore(t *testing.T) {
 	eCount := 100
 
 	for i := 0; i < txCount; i++ {
-		tx, err := immuStore.NewWriteOnlyTx()
+		tx, err := immuStore.NewWriteOnlyTx(context.Background())
 		require.NoError(t, err)
 
 		for j := 0; j < eCount; j++ {
@@ -107,7 +108,7 @@ func TestImmudbStoreReaderAsBefore(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		_, err = tx.Commit()
+		_, err = tx.Commit(context.Background())
 		require.NoError(t, err)
 	}
 
@@ -157,7 +158,7 @@ func TestImmudbStoreReaderWithOffset(t *testing.T) {
 	eCount := 100
 
 	for i := 0; i < txCount; i++ {
-		tx, err := immuStore.NewWriteOnlyTx()
+		tx, err := immuStore.NewWriteOnlyTx(context.Background())
 		require.NoError(t, err)
 
 		for j := 0; j < eCount; j++ {
@@ -171,7 +172,7 @@ func TestImmudbStoreReaderWithOffset(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		_, err = tx.Commit()
+		_, err = tx.Commit(context.Background())
 		require.NoError(t, err)
 	}
 
@@ -220,7 +221,7 @@ func TestImmudbStoreReaderAsBeforeWithOffset(t *testing.T) {
 	eCount := 100
 
 	for i := 0; i < txCount; i++ {
-		tx, err := immuStore.NewWriteOnlyTx()
+		tx, err := immuStore.NewWriteOnlyTx(context.Background())
 		require.NoError(t, err)
 
 		for j := 0; j < eCount; j++ {
@@ -234,7 +235,7 @@ func TestImmudbStoreReaderAsBeforeWithOffset(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		_, err = tx.Commit()
+		_, err = tx.Commit(context.Background())
 		require.NoError(t, err)
 	}
 

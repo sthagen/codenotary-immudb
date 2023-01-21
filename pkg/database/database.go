@@ -30,7 +30,6 @@ import (
 
 	"github.com/codenotary/immudb/embedded/sql"
 	"github.com/codenotary/immudb/embedded/store"
-	"github.com/codenotary/immudb/embedded/watchers"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/logger"
@@ -75,61 +74,61 @@ type DB interface {
 	Size() (uint64, error)
 
 	// Key-Value
-	Set(req *schema.SetRequest) (*schema.TxHeader, error)
-	VerifiableSet(req *schema.VerifiableSetRequest) (*schema.VerifiableTx, error)
+	Set(ctx context.Context, req *schema.SetRequest) (*schema.TxHeader, error)
+	VerifiableSet(ctx context.Context, req *schema.VerifiableSetRequest) (*schema.VerifiableTx, error)
 
-	Get(req *schema.KeyRequest) (*schema.Entry, error)
-	VerifiableGet(req *schema.VerifiableGetRequest) (*schema.VerifiableEntry, error)
-	GetAll(req *schema.KeyListRequest) (*schema.Entries, error)
+	Get(ctx context.Context, req *schema.KeyRequest) (*schema.Entry, error)
+	VerifiableGet(ctx context.Context, req *schema.VerifiableGetRequest) (*schema.VerifiableEntry, error)
+	GetAll(ctx context.Context, req *schema.KeyListRequest) (*schema.Entries, error)
 
-	Delete(req *schema.DeleteKeysRequest) (*schema.TxHeader, error)
+	Delete(ctx context.Context, req *schema.DeleteKeysRequest) (*schema.TxHeader, error)
 
-	SetReference(req *schema.ReferenceRequest) (*schema.TxHeader, error)
-	VerifiableSetReference(req *schema.VerifiableReferenceRequest) (*schema.VerifiableTx, error)
+	SetReference(ctx context.Context, req *schema.ReferenceRequest) (*schema.TxHeader, error)
+	VerifiableSetReference(ctx context.Context, req *schema.VerifiableReferenceRequest) (*schema.VerifiableTx, error)
 
-	Scan(req *schema.ScanRequest) (*schema.Entries, error)
+	Scan(ctx context.Context, req *schema.ScanRequest) (*schema.Entries, error)
 
-	History(req *schema.HistoryRequest) (*schema.Entries, error)
+	History(ctx context.Context, req *schema.HistoryRequest) (*schema.Entries, error)
 
-	ExecAll(operations *schema.ExecAllRequest) (*schema.TxHeader, error)
+	ExecAll(ctx context.Context, operations *schema.ExecAllRequest) (*schema.TxHeader, error)
 
-	Count(prefix *schema.KeyPrefix) (*schema.EntryCount, error)
-	CountAll() (*schema.EntryCount, error)
+	Count(ctx context.Context, prefix *schema.KeyPrefix) (*schema.EntryCount, error)
+	CountAll(ctx context.Context) (*schema.EntryCount, error)
 
-	ZAdd(req *schema.ZAddRequest) (*schema.TxHeader, error)
-	VerifiableZAdd(req *schema.VerifiableZAddRequest) (*schema.VerifiableTx, error)
-	ZScan(req *schema.ZScanRequest) (*schema.ZEntries, error)
+	ZAdd(ctx context.Context, req *schema.ZAddRequest) (*schema.TxHeader, error)
+	VerifiableZAdd(ctx context.Context, req *schema.VerifiableZAddRequest) (*schema.VerifiableTx, error)
+	ZScan(ctx context.Context, req *schema.ZScanRequest) (*schema.ZEntries, error)
 
 	// SQL-related
 	NewSQLTx(ctx context.Context, opts *sql.TxOptions) (*sql.SQLTx, error)
 
-	SQLExec(req *schema.SQLExecRequest, tx *sql.SQLTx) (ntx *sql.SQLTx, ctxs []*sql.SQLTx, err error)
-	SQLExecPrepared(stmts []sql.SQLStmt, params map[string]interface{}, tx *sql.SQLTx) (ntx *sql.SQLTx, ctxs []*sql.SQLTx, err error)
+	SQLExec(ctx context.Context, tx *sql.SQLTx, req *schema.SQLExecRequest) (ntx *sql.SQLTx, ctxs []*sql.SQLTx, err error)
+	SQLExecPrepared(ctx context.Context, tx *sql.SQLTx, stmts []sql.SQLStmt, params map[string]interface{}) (ntx *sql.SQLTx, ctxs []*sql.SQLTx, err error)
 
-	InferParameters(sql string, tx *sql.SQLTx) (map[string]sql.SQLValueType, error)
-	InferParametersPrepared(stmt sql.SQLStmt, tx *sql.SQLTx) (map[string]sql.SQLValueType, error)
+	InferParameters(ctx context.Context, tx *sql.SQLTx, sql string) (map[string]sql.SQLValueType, error)
+	InferParametersPrepared(ctx context.Context, tx *sql.SQLTx, stmt sql.SQLStmt) (map[string]sql.SQLValueType, error)
 
-	SQLQuery(req *schema.SQLQueryRequest, tx *sql.SQLTx) (*schema.SQLQueryResult, error)
-	SQLQueryPrepared(stmt sql.DataSource, namedParams []*schema.NamedParam, tx *sql.SQLTx) (*schema.SQLQueryResult, error)
-	SQLQueryRowReader(stmt sql.DataSource, params map[string]interface{}, tx *sql.SQLTx) (sql.RowReader, error)
+	SQLQuery(ctx context.Context, tx *sql.SQLTx, req *schema.SQLQueryRequest) (*schema.SQLQueryResult, error)
+	SQLQueryPrepared(ctx context.Context, tx *sql.SQLTx, stmt sql.DataSource, namedParams []*schema.NamedParam) (*schema.SQLQueryResult, error)
+	SQLQueryRowReader(ctx context.Context, tx *sql.SQLTx, stmt sql.DataSource, params map[string]interface{}) (sql.RowReader, error)
 
-	VerifiableSQLGet(req *schema.VerifiableSQLGetRequest) (*schema.VerifiableSQLEntry, error)
+	VerifiableSQLGet(ctx context.Context, req *schema.VerifiableSQLGetRequest) (*schema.VerifiableSQLEntry, error)
 
-	ListTables(tx *sql.SQLTx) (*schema.SQLQueryResult, error)
-	DescribeTable(table string, tx *sql.SQLTx) (*schema.SQLQueryResult, error)
+	ListTables(ctx context.Context, tx *sql.SQLTx) (*schema.SQLQueryResult, error)
+	DescribeTable(ctx context.Context, tx *sql.SQLTx, table string) (*schema.SQLQueryResult, error)
 
 	// Transactional layer
-	WaitForTx(txID uint64, allowPrecommitted bool, cancellation <-chan struct{}) error
-	WaitForIndexingUpto(txID uint64, cancellation <-chan struct{}) error
+	WaitForTx(ctx context.Context, txID uint64, allowPrecommitted bool) error
+	WaitForIndexingUpto(ctx context.Context, txID uint64) error
 
-	TxByID(req *schema.TxRequest) (*schema.Tx, error)
-	ExportTxByID(req *schema.ExportTxRequest) (txbs []byte, mayCommitUpToTxID uint64, mayCommitUpToAlh [sha256.Size]byte, err error)
-	ReplicateTx(exportedTx []byte) (*schema.TxHeader, error)
+	TxByID(ctx context.Context, req *schema.TxRequest) (*schema.Tx, error)
+	ExportTxByID(ctx context.Context, req *schema.ExportTxRequest) (txbs []byte, mayCommitUpToTxID uint64, mayCommitUpToAlh [sha256.Size]byte, err error)
+	ReplicateTx(ctx context.Context, exportedTx []byte) (*schema.TxHeader, error)
 	AllowCommitUpto(txID uint64, alh [sha256.Size]byte) error
 	DiscardPrecommittedTxsSince(txID uint64) error
 
-	VerifiableTxByID(req *schema.VerifiableTxRequest) (*schema.VerifiableTx, error)
-	TxScan(req *schema.TxScanRequest) (*schema.TxList, error)
+	VerifiableTxByID(ctx context.Context, req *schema.VerifiableTxRequest) (*schema.VerifiableTx, error)
+	TxScan(ctx context.Context, req *schema.TxScanRequest) (*schema.TxList, error)
 
 	// Maintenance
 	FlushIndex(req *schema.FlushIndexRequest) error
@@ -234,7 +233,7 @@ func OpenDB(dbName string, multidbHandler sql.MultiDBHandler, op *Options, log l
 
 		dbi.Logger.Infof("Loading SQL Engine for database '%s' {replica = %v}...", dbName, op.replica)
 
-		err := dbi.initSQLEngine()
+		err := dbi.initSQLEngine(context.Background())
 		if err != nil {
 			dbi.Logger.Errorf("Unable to load SQL Engine for database '%s' {replica = %v}. %v", dbName, op.replica, err)
 			return
@@ -266,8 +265,8 @@ func (d *db) releaseTx(tx *store.Tx) {
 	d.txPool.Release(tx)
 }
 
-func (d *db) initSQLEngine() error {
-	err := d.sqlEngine.SetCurrentDatabase(dbInstanceName)
+func (d *db) initSQLEngine(ctx context.Context) error {
+	err := d.sqlEngine.SetCurrentDatabase(ctx, dbInstanceName)
 	if err != nil && err != sql.ErrDatabaseDoesNotExist {
 		return err
 	}
@@ -341,12 +340,12 @@ func NewDB(dbName string, multidbHandler sql.MultiDBHandler, op *Options, log lo
 
 	if !op.replica {
 		// TODO: get rid off this sql initialization
-		_, _, err = dbi.sqlEngine.ExecPreparedStmts([]sql.SQLStmt{&sql.CreateDatabaseStmt{DB: dbInstanceName}}, nil, nil)
+		_, _, err = dbi.sqlEngine.ExecPreparedStmts(context.Background(), nil, []sql.SQLStmt{&sql.CreateDatabaseStmt{DB: dbInstanceName}}, nil)
 		if err != nil {
 			return nil, logErr(dbi.Logger, "Unable to open database: %s", err)
 		}
 
-		err = dbi.sqlEngine.SetCurrentDatabase(dbInstanceName)
+		err = dbi.sqlEngine.SetCurrentDatabase(context.Background(), dbInstanceName)
 		if err != nil {
 			return nil, logErr(dbi.Logger, "Unable to open database: %s", err)
 		}
@@ -382,7 +381,7 @@ func (d *db) CompactIndex() error {
 }
 
 // Set ...
-func (d *db) Set(req *schema.SetRequest) (*schema.TxHeader, error) {
+func (d *db) Set(ctx context.Context, req *schema.SetRequest) (*schema.TxHeader, error) {
 	d.mutex.RLock()
 	defer d.mutex.RUnlock()
 
@@ -390,15 +389,15 @@ func (d *db) Set(req *schema.SetRequest) (*schema.TxHeader, error) {
 		return nil, ErrIsReplica
 	}
 
-	return d.set(req)
+	return d.set(ctx, req)
 }
 
-func (d *db) set(req *schema.SetRequest) (*schema.TxHeader, error) {
+func (d *db) set(ctx context.Context, req *schema.SetRequest) (*schema.TxHeader, error) {
 	if req == nil {
 		return nil, ErrIllegalArguments
 	}
 
-	tx, err := d.st.NewWriteOnlyTx()
+	tx, err := d.st.NewWriteOnlyTx(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -446,9 +445,9 @@ func (d *db) set(req *schema.SetRequest) (*schema.TxHeader, error) {
 	var hdr *store.TxHeader
 
 	if req.NoWait {
-		hdr, err = tx.AsyncCommit()
+		hdr, err = tx.AsyncCommit(ctx)
 	} else {
-		hdr, err = tx.Commit()
+		hdr, err = tx.Commit(ctx)
 	}
 	if err != nil {
 		return nil, err
@@ -492,7 +491,7 @@ func checkKeyRequest(req *schema.KeyRequest) error {
 }
 
 // Get ...
-func (d *db) Get(req *schema.KeyRequest) (*schema.Entry, error) {
+func (d *db) Get(ctx context.Context, req *schema.KeyRequest) (*schema.Entry, error) {
 	err := checkKeyRequest(req)
 	if err != nil {
 		return nil, err
@@ -512,7 +511,7 @@ func (d *db) Get(req *schema.KeyRequest) (*schema.Entry, error) {
 			waitUntilTx = currTxID
 		}
 
-		err := d.WaitForIndexingUpto(waitUntilTx, nil)
+		err := d.WaitForIndexingUpto(ctx, waitUntilTx)
 		if err != nil {
 			return nil, err
 		}
@@ -702,17 +701,17 @@ func (d *db) CurrentState() (*schema.ImmutableState, error) {
 }
 
 // WaitForTx blocks caller until specified tx
-func (d *db) WaitForTx(txID uint64, allowPrecommitted bool, cancellation <-chan struct{}) error {
-	return d.st.WaitForTx(txID, allowPrecommitted, cancellation)
+func (d *db) WaitForTx(ctx context.Context, txID uint64, allowPrecommitted bool) error {
+	return d.st.WaitForTx(ctx, txID, allowPrecommitted)
 }
 
 // WaitForIndexingUpto blocks caller until specified tx gets indexed
-func (d *db) WaitForIndexingUpto(txID uint64, cancellation <-chan struct{}) error {
-	return d.st.WaitForIndexingUpto(txID, cancellation)
+func (d *db) WaitForIndexingUpto(ctx context.Context, txID uint64) error {
+	return d.st.WaitForIndexingUpto(ctx, txID)
 }
 
 // VerifiableSet ...
-func (d *db) VerifiableSet(req *schema.VerifiableSetRequest) (*schema.VerifiableTx, error) {
+func (d *db) VerifiableSet(ctx context.Context, req *schema.VerifiableSetRequest) (*schema.VerifiableTx, error) {
 	if req == nil {
 		return nil, ErrIllegalArguments
 	}
@@ -729,7 +728,7 @@ func (d *db) VerifiableSet(req *schema.VerifiableSetRequest) (*schema.Verifiable
 	}
 	defer d.releaseTx(lastTx)
 
-	txhdr, err := d.Set(req.SetRequest)
+	txhdr, err := d.Set(ctx, req.SetRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -762,7 +761,7 @@ func (d *db) VerifiableSet(req *schema.VerifiableSetRequest) (*schema.Verifiable
 }
 
 // VerifiableGet ...
-func (d *db) VerifiableGet(req *schema.VerifiableGetRequest) (*schema.VerifiableEntry, error) {
+func (d *db) VerifiableGet(ctx context.Context, req *schema.VerifiableGetRequest) (*schema.VerifiableEntry, error) {
 	if req == nil {
 		return nil, ErrIllegalArguments
 	}
@@ -772,7 +771,7 @@ func (d *db) VerifiableGet(req *schema.VerifiableGetRequest) (*schema.Verifiable
 		return nil, ErrIllegalState
 	}
 
-	e, err := d.Get(req.KeyRequest)
+	e, err := d.Get(ctx, req.KeyRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -843,7 +842,7 @@ func (d *db) VerifiableGet(req *schema.VerifiableGetRequest) (*schema.Verifiable
 	}, nil
 }
 
-func (d *db) Delete(req *schema.DeleteKeysRequest) (*schema.TxHeader, error) {
+func (d *db) Delete(ctx context.Context, req *schema.DeleteKeysRequest) (*schema.TxHeader, error) {
 	if req == nil {
 		return nil, ErrIllegalArguments
 	}
@@ -863,7 +862,7 @@ func (d *db) Delete(req *schema.DeleteKeysRequest) (*schema.TxHeader, error) {
 		})
 	}
 
-	tx, err := d.st.NewTx(opts)
+	tx, err := d.st.NewTx(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -888,9 +887,9 @@ func (d *db) Delete(req *schema.DeleteKeysRequest) (*schema.TxHeader, error) {
 
 	var hdr *store.TxHeader
 	if req.NoWait {
-		hdr, err = tx.AsyncCommit()
+		hdr, err = tx.AsyncCommit(ctx)
 	} else {
-		hdr, err = tx.Commit()
+		hdr, err = tx.Commit(ctx)
 	}
 	if err != nil {
 		return nil, err
@@ -900,8 +899,8 @@ func (d *db) Delete(req *schema.DeleteKeysRequest) (*schema.TxHeader, error) {
 }
 
 // GetAll ...
-func (d *db) GetAll(req *schema.KeyListRequest) (*schema.Entries, error) {
-	snap, err := d.snapshotSince(req.SinceTx)
+func (d *db) GetAll(ctx context.Context, req *schema.KeyListRequest) (*schema.Entries, error) {
+	snap, err := d.snapshotSince(ctx, req.SinceTx)
 	if err != nil {
 		return nil, err
 	}
@@ -929,17 +928,17 @@ func (d *db) Size() (uint64, error) {
 }
 
 // Count ...
-func (d *db) Count(prefix *schema.KeyPrefix) (*schema.EntryCount, error) {
+func (d *db) Count(ctx context.Context, prefix *schema.KeyPrefix) (*schema.EntryCount, error) {
 	return nil, fmt.Errorf("Functionality not yet supported: %s", "Count")
 }
 
 // CountAll ...
-func (d *db) CountAll() (*schema.EntryCount, error) {
+func (d *db) CountAll(ctx context.Context) (*schema.EntryCount, error) {
 	return nil, fmt.Errorf("Functionality not yet supported: %s", "Count")
 }
 
 // TxByID ...
-func (d *db) TxByID(req *schema.TxRequest) (*schema.Tx, error) {
+func (d *db) TxByID(ctx context.Context, req *schema.TxRequest) (*schema.Tx, error) {
 	if req == nil {
 		return nil, ErrIllegalArguments
 	}
@@ -954,7 +953,7 @@ func (d *db) TxByID(req *schema.TxRequest) (*schema.Tx, error) {
 	defer d.releaseTx(tx)
 
 	if !req.KeepReferencesUnresolved {
-		snap, err = d.snapshotSince(req.SinceTx)
+		snap, err = d.snapshotSince(ctx, req.SinceTx)
 		if err != nil {
 			return nil, err
 		}
@@ -970,7 +969,7 @@ func (d *db) TxByID(req *schema.TxRequest) (*schema.Tx, error) {
 	return d.serializeTx(tx, req.EntriesSpec, snap)
 }
 
-func (d *db) snapshotSince(txID uint64) (*store.Snapshot, error) {
+func (d *db) snapshotSince(ctx context.Context, txID uint64) (*store.Snapshot, error) {
 	currTxID, _ := d.st.CommittedAlh()
 
 	if txID > currTxID {
@@ -982,7 +981,7 @@ func (d *db) snapshotSince(txID uint64) (*store.Snapshot, error) {
 		waitUntilTx = currTxID
 	}
 
-	return d.st.SnapshotMustIncludeTxID(waitUntilTx)
+	return d.st.SnapshotMustIncludeTxID(ctx, waitUntilTx)
 }
 
 func (d *db) serializeTx(tx *store.Tx, spec *schema.EntriesSpec, snap *store.Snapshot) (*schema.Tx, error) {
@@ -1207,7 +1206,7 @@ func (d *db) mayUpdateReplicaState(committedTxID uint64, newReplicaState *schema
 	return nil
 }
 
-func (d *db) ExportTxByID(req *schema.ExportTxRequest) (txbs []byte, mayCommitUpToTxID uint64, mayCommitUpToAlh [sha256.Size]byte, err error) {
+func (d *db) ExportTxByID(ctx context.Context, req *schema.ExportTxRequest) (txbs []byte, mayCommitUpToTxID uint64, mayCommitUpToAlh [sha256.Size]byte, err error) {
 
 	if req == nil {
 		return nil, 0, mayCommitUpToAlh, ErrIllegalArguments
@@ -1294,8 +1293,8 @@ func (d *db) ExportTxByID(req *schema.ExportTxRequest) (txbs []byte, mayCommitUp
 	ctx, cancel := context.WithTimeout(context.Background(), d.options.storeOpts.SyncFrequency*4)
 	defer cancel()
 
-	err = d.WaitForTx(req.Tx, req.AllowPreCommitted, ctx.Done())
-	if errors.Is(err, watchers.ErrCancellationRequested) {
+	err = d.WaitForTx(ctx, req.Tx, req.AllowPreCommitted)
+	if ctx.Err() != nil {
 		return nil, mayCommitUpToTxID, mayCommitUpToAlh, nil
 	}
 	if err != nil {
@@ -1310,7 +1309,7 @@ func (d *db) ExportTxByID(req *schema.ExportTxRequest) (txbs []byte, mayCommitUp
 	return txbs, mayCommitUpToTxID, mayCommitUpToAlh, nil
 }
 
-func (d *db) ReplicateTx(exportedTx []byte) (*schema.TxHeader, error) {
+func (d *db) ReplicateTx(ctx context.Context, exportedTx []byte) (*schema.TxHeader, error) {
 	d.mutex.RLock()
 	defer d.mutex.RUnlock()
 
@@ -1318,7 +1317,7 @@ func (d *db) ReplicateTx(exportedTx []byte) (*schema.TxHeader, error) {
 		return nil, ErrNotReplica
 	}
 
-	hdr, err := d.st.ReplicateTx(exportedTx, false)
+	hdr, err := d.st.ReplicateTx(ctx, exportedTx, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1368,7 +1367,7 @@ func (d *db) DiscardPrecommittedTxsSince(txID uint64) error {
 }
 
 // VerifiableTxByID ...
-func (d *db) VerifiableTxByID(req *schema.VerifiableTxRequest) (*schema.VerifiableTx, error) {
+func (d *db) VerifiableTxByID(ctx context.Context, req *schema.VerifiableTxRequest) (*schema.VerifiableTx, error) {
 	if req == nil {
 		return nil, ErrIllegalArguments
 	}
@@ -1382,7 +1381,7 @@ func (d *db) VerifiableTxByID(req *schema.VerifiableTxRequest) (*schema.Verifiab
 	var err error
 
 	if !req.KeepReferencesUnresolved {
-		snap, err = d.snapshotSince(req.SinceTx)
+		snap, err = d.snapshotSince(ctx, req.SinceTx)
 		if err != nil {
 			return nil, err
 		}
@@ -1437,7 +1436,7 @@ func (d *db) VerifiableTxByID(req *schema.VerifiableTxRequest) (*schema.Verifiab
 }
 
 // TxScan ...
-func (d *db) TxScan(req *schema.TxScanRequest) (*schema.TxList, error) {
+func (d *db) TxScan(ctx context.Context, req *schema.TxScanRequest) (*schema.TxList, error) {
 	if req == nil {
 		return nil, ErrIllegalArguments
 	}
@@ -1459,7 +1458,7 @@ func (d *db) TxScan(req *schema.TxScanRequest) (*schema.TxList, error) {
 		limit = d.maxResultSize
 	}
 
-	snap, err := d.snapshotSince(req.SinceTx)
+	snap, err := d.snapshotSince(ctx, req.SinceTx)
 	if err != nil {
 		return nil, err
 	}
@@ -1500,7 +1499,7 @@ func (d *db) TxScan(req *schema.TxScanRequest) (*schema.TxList, error) {
 }
 
 // History ...
-func (d *db) History(req *schema.HistoryRequest) (*schema.Entries, error) {
+func (d *db) History(ctx context.Context, req *schema.HistoryRequest) (*schema.Entries, error) {
 	if req == nil {
 		return nil, ErrIllegalArguments
 	}
@@ -1521,7 +1520,7 @@ func (d *db) History(req *schema.HistoryRequest) (*schema.Entries, error) {
 		waitUntilTx = currTxID
 	}
 
-	err := d.WaitForIndexingUpto(waitUntilTx, nil)
+	err := d.WaitForIndexingUpto(ctx, waitUntilTx)
 	if err != nil {
 		return nil, err
 	}

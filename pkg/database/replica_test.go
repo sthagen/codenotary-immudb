@@ -17,6 +17,7 @@ limitations under the License.
 package database
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -40,10 +41,10 @@ func TestReadOnlyReplica(t *testing.T) {
 	replica, err = OpenDB("db", nil, options, logger.NewSimpleLogger("immudb ", os.Stderr))
 	require.NoError(t, err)
 
-	_, err = replica.Set(&schema.SetRequest{KVs: []*schema.KeyValue{{Key: []byte("key1"), Value: []byte("value1")}}})
+	_, err = replica.Set(context.Background(), &schema.SetRequest{KVs: []*schema.KeyValue{{Key: []byte("key1"), Value: []byte("value1")}}})
 	require.Equal(t, ErrIsReplica, err)
 
-	_, err = replica.ExecAll(&schema.ExecAllRequest{
+	_, err = replica.ExecAll(context.Background(), &schema.ExecAllRequest{
 		Operations: []*schema.Op{
 			{
 				Operation: &schema.Op_Kv{
@@ -57,32 +58,32 @@ func TestReadOnlyReplica(t *testing.T) {
 	)
 	require.Equal(t, ErrIsReplica, err)
 
-	_, err = replica.SetReference(&schema.ReferenceRequest{
+	_, err = replica.SetReference(context.Background(), &schema.ReferenceRequest{
 		Key:           []byte("key"),
 		ReferencedKey: []byte("refkey"),
 	})
 	require.Equal(t, ErrIsReplica, err)
 
-	_, err = replica.ZAdd(&schema.ZAddRequest{
+	_, err = replica.ZAdd(context.Background(), &schema.ZAddRequest{
 		Set:   []byte("set"),
 		Score: 1,
 		Key:   []byte("key"),
 	})
 	require.Equal(t, ErrIsReplica, err)
 
-	_, _, err = replica.SQLExec(&schema.SQLExecRequest{Sql: "CREATE TABLE mytable(id INTEGER, title VARCHAR, PRIMARY KEY id)"}, nil)
+	_, _, err = replica.SQLExec(context.Background(), nil, &schema.SQLExecRequest{Sql: "CREATE TABLE mytable(id INTEGER, title VARCHAR, PRIMARY KEY id)"})
 	require.Equal(t, ErrIsReplica, err)
 
-	_, err = replica.SQLQuery(&schema.SQLQueryRequest{Sql: "SELECT * FROM mytable"}, nil)
+	_, err = replica.SQLQuery(context.Background(), nil, &schema.SQLQueryRequest{Sql: "SELECT * FROM mytable"})
 	require.Equal(t, ErrSQLNotReady, err)
 
-	_, err = replica.ListTables(nil)
+	_, err = replica.ListTables(context.Background(), nil)
 	require.Equal(t, ErrSQLNotReady, err)
 
-	_, err = replica.DescribeTable("mytable", nil)
+	_, err = replica.DescribeTable(context.Background(), nil, "mytable")
 	require.Equal(t, ErrSQLNotReady, err)
 
-	_, err = replica.VerifiableSQLGet(&schema.VerifiableSQLGetRequest{
+	_, err = replica.VerifiableSQLGet(context.Background(), &schema.VerifiableSQLGetRequest{
 		SqlGetRequest: &schema.SQLGetRequest{
 			Table:    "mytable",
 			PkValues: []*schema.SQLValue{{Value: &schema.SQLValue_N{N: 1}}},
@@ -98,10 +99,10 @@ func TestSwitchToReplica(t *testing.T) {
 
 	replica := makeDbWith(t, "db", options)
 
-	_, _, err := replica.SQLExec(&schema.SQLExecRequest{Sql: "CREATE TABLE mytable(id INTEGER, title VARCHAR, PRIMARY KEY id)"}, nil)
+	_, _, err := replica.SQLExec(context.Background(), nil, &schema.SQLExecRequest{Sql: "CREATE TABLE mytable(id INTEGER, title VARCHAR, PRIMARY KEY id)"})
 	require.NoError(t, err)
 
-	_, _, err = replica.SQLExec(&schema.SQLExecRequest{Sql: "INSERT INTO mytable(id, title) VALUES (1, 'TITLE1')"}, nil)
+	_, _, err = replica.SQLExec(context.Background(), nil, &schema.SQLExecRequest{Sql: "INSERT INTO mytable(id, title) VALUES (1, 'TITLE1')"})
 	require.NoError(t, err)
 
 	replica.AsReplica(true, false, 0)
@@ -112,16 +113,16 @@ func TestSwitchToReplica(t *testing.T) {
 	err = replica.DiscardPrecommittedTxsSince(state.TxId)
 	require.Error(t, err, store.ErrIllegalArguments)
 
-	_, err = replica.ListTables(nil)
+	_, err = replica.ListTables(context.Background(), nil)
 	require.NoError(t, err)
 
-	_, err = replica.DescribeTable("mytable", nil)
+	_, err = replica.DescribeTable(context.Background(), nil, "mytable")
 	require.NoError(t, err)
 
-	_, err = replica.SQLQuery(&schema.SQLQueryRequest{Sql: "SELECT * FROM mytable"}, nil)
+	_, err = replica.SQLQuery(context.Background(), nil, &schema.SQLQueryRequest{Sql: "SELECT * FROM mytable"})
 	require.NoError(t, err)
 
-	_, err = replica.VerifiableSQLGet(&schema.VerifiableSQLGetRequest{
+	_, err = replica.VerifiableSQLGet(context.Background(), &schema.VerifiableSQLGetRequest{
 		SqlGetRequest: &schema.SQLGetRequest{
 			Table:    "mytable",
 			PkValues: []*schema.SQLValue{{Value: &schema.SQLValue_N{N: 1}}},
