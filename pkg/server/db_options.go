@@ -68,6 +68,7 @@ type dbOptions struct {
 	WriteBufferSize int `json:"writeBufferSize"`
 
 	TxLogCacheSize          int `json:"txLogCacheSize"`
+	VLogCacheSize           int `json:"vLogCacheSize"`
 	VLogMaxOpenedFiles      int `json:"vLogMaxOpenedFiles"`
 	TxLogMaxOpenedFiles     int `json:"txLogMaxOpenedFiles"`
 	CommitLogMaxOpenedFiles int `json:"commitLogMaxOpenedFiles"`
@@ -85,6 +86,9 @@ type dbOptions struct {
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedBy string    `json:"updatedBy"`
 	UpdatedAt time.Time `json:"updatedAt"`
+
+	RetentionPeriod     Milliseconds `json:"retentionPeriod"`
+	TruncationFrequency Milliseconds `json:"truncationFrequency"` // ms
 }
 
 type featureState int
@@ -145,6 +149,7 @@ func (s *ImmuServer) defaultDBOptions(dbName string) *dbOptions {
 		MaxIOConcurrency:        store.DefaultMaxIOConcurrency,
 		WriteBufferSize:         store.DefaultWriteBufferSize,
 		TxLogCacheSize:          store.DefaultTxLogCacheSize,
+		VLogCacheSize:           store.DefaultVLogCacheSize,
 		VLogMaxOpenedFiles:      store.DefaultVLogMaxOpenedFiles,
 		TxLogMaxOpenedFiles:     store.DefaultTxLogMaxOpenedFiles,
 		CommitLogMaxOpenedFiles: store.DefaultCommitLogMaxOpenedFiles,
@@ -157,7 +162,8 @@ func (s *ImmuServer) defaultDBOptions(dbName string) *dbOptions {
 
 		Autoload: unspecifiedState,
 
-		CreatedAt: time.Now(),
+		CreatedAt:           time.Now(),
+		TruncationFrequency: Milliseconds(database.DefaultTruncationFrequency.Milliseconds()),
 	}
 
 	if dbName == s.Options.systemAdminDBName || dbName == s.Options.defaultDBName {
@@ -218,7 +224,9 @@ func (s *ImmuServer) databaseOptionsFrom(opts *dbOptions) *database.Options {
 		AsReplica(opts.Replica).
 		WithSyncReplication(opts.SyncReplication).
 		WithSyncAcks(opts.SyncAcks).
-		WithReadTxPoolSize(opts.ReadTxPoolSize)
+		WithReadTxPoolSize(opts.ReadTxPoolSize).
+		WithRetentionPeriod(time.Millisecond * time.Duration(opts.RetentionPeriod)).
+		WithTruncationFrequency(time.Millisecond * time.Duration(opts.TruncationFrequency))
 }
 
 func (opts *dbOptions) storeOptions() *store.Options {
@@ -264,6 +272,7 @@ func (opts *dbOptions) storeOptions() *store.Options {
 		WithMaxIOConcurrency(opts.MaxIOConcurrency).
 		WithWriteBufferSize(opts.WriteBufferSize).
 		WithTxLogCacheSize(opts.TxLogCacheSize).
+		WithVLogCacheSize(opts.VLogCacheSize).
 		WithVLogMaxOpenedFiles(opts.VLogMaxOpenedFiles).
 		WithTxLogMaxOpenedFiles(opts.TxLogMaxOpenedFiles).
 		WithCommitLogMaxOpenedFiles(opts.CommitLogMaxOpenedFiles).
@@ -313,6 +322,7 @@ func (opts *dbOptions) databaseNullableSettings() *schema.DatabaseNullableSettin
 		WriteBufferSize: &schema.NullableUint32{Value: uint32(opts.WriteBufferSize)},
 
 		TxLogCacheSize:          &schema.NullableUint32{Value: uint32(opts.TxLogCacheSize)},
+		VLogCacheSize:           &schema.NullableUint32{Value: uint32(opts.VLogCacheSize)},
 		VLogMaxOpenedFiles:      &schema.NullableUint32{Value: uint32(opts.VLogMaxOpenedFiles)},
 		TxLogMaxOpenedFiles:     &schema.NullableUint32{Value: uint32(opts.TxLogMaxOpenedFiles)},
 		CommitLogMaxOpenedFiles: &schema.NullableUint32{Value: uint32(opts.CommitLogMaxOpenedFiles)},
@@ -345,6 +355,11 @@ func (opts *dbOptions) databaseNullableSettings() *schema.DatabaseNullableSettin
 		Autoload: &schema.NullableBool{Value: opts.Autoload.isEnabled()},
 
 		ReadTxPoolSize: &schema.NullableUint32{Value: uint32(opts.ReadTxPoolSize)},
+
+		TruncationSettings: &schema.TruncationNullableSettings{
+			RetentionPeriod:     &schema.NullableMilliseconds{Value: int64(opts.RetentionPeriod)},
+			TruncationFrequency: &schema.NullableMilliseconds{Value: int64(opts.TruncationFrequency)},
+		},
 	}
 }
 
@@ -533,6 +548,9 @@ func (s *ImmuServer) overwriteWith(opts *dbOptions, settings *schema.DatabaseNul
 	if settings.TxLogCacheSize != nil {
 		opts.TxLogCacheSize = int(settings.TxLogCacheSize.Value)
 	}
+	if settings.VLogCacheSize != nil {
+		opts.VLogCacheSize = int(settings.VLogCacheSize.Value)
+	}
 	if settings.VLogMaxOpenedFiles != nil {
 		opts.VLogMaxOpenedFiles = int(settings.VLogMaxOpenedFiles.Value)
 	}
@@ -552,6 +570,16 @@ func (s *ImmuServer) overwriteWith(opts *dbOptions, settings *schema.DatabaseNul
 			opts.Autoload = enabledState
 		} else {
 			opts.Autoload = disabledState
+		}
+	}
+
+	if settings.TruncationSettings != nil {
+		if settings.TruncationSettings.RetentionPeriod != nil {
+			opts.RetentionPeriod = Milliseconds(settings.TruncationSettings.RetentionPeriod.Value)
+		}
+
+		if settings.TruncationSettings.TruncationFrequency != nil {
+			opts.TruncationFrequency = Milliseconds(settings.TruncationSettings.TruncationFrequency.Value)
 		}
 	}
 
@@ -726,6 +754,18 @@ func (opts *dbOptions) Validate() error {
 		)
 	}
 
+	if opts.RetentionPeriod < 0 || (opts.RetentionPeriod > 0 && opts.RetentionPeriod < Milliseconds(store.MinimumRetentionPeriod.Milliseconds())) {
+		return fmt.Errorf(
+			"%w: invalid retention period for database '%s'. RetentionPeriod should at least '%v' hours",
+			ErrIllegalArguments, opts.Database, store.MinimumRetentionPeriod.Hours())
+	}
+
+	if opts.TruncationFrequency < 0 || (opts.TruncationFrequency > 0 && opts.TruncationFrequency < Milliseconds(store.MinimumTruncationFrequency.Milliseconds())) {
+		return fmt.Errorf(
+			"%w: invalid truncation frequency for database '%s'. TruncationFrequency should at least '%v' hour",
+			ErrIllegalArguments, opts.Database, store.MinimumTruncationFrequency.Hours())
+	}
+
 	return opts.storeOptions().Validate()
 }
 
@@ -734,6 +774,10 @@ func (opts *dbOptions) isReplicatorRequired() bool {
 		opts.PrimaryDatabase != "" &&
 		opts.PrimaryHost != "" &&
 		opts.PrimaryPort > 0
+}
+
+func (opts *dbOptions) isDataRetentionEnabled() bool {
+	return opts.RetentionPeriod > 0
 }
 
 func (s *ImmuServer) saveDBOptions(options *dbOptions) error {
@@ -819,11 +863,14 @@ func (s *ImmuServer) logDBOptions(database string, opts *dbOptions) {
 	s.Logger.Infof("%s.MaxIOConcurrency: %v", database, opts.MaxIOConcurrency)
 	s.Logger.Infof("%s.WriteBufferSize: %v", database, opts.WriteBufferSize)
 	s.Logger.Infof("%s.TxLogCacheSize: %v", database, opts.TxLogCacheSize)
+	s.Logger.Infof("%s.VLogCacheSize: %v", database, opts.VLogCacheSize)
 	s.Logger.Infof("%s.VLogMaxOpenedFiles: %v", database, opts.VLogMaxOpenedFiles)
 	s.Logger.Infof("%s.TxLogMaxOpenedFiles: %v", database, opts.TxLogMaxOpenedFiles)
 	s.Logger.Infof("%s.CommitLogMaxOpenedFiles: %v", database, opts.CommitLogMaxOpenedFiles)
 	s.Logger.Infof("%s.WriteTxHeaderVersion: %v", database, opts.WriteTxHeaderVersion)
 	s.Logger.Infof("%s.ReadTxPoolSize: %v", database, opts.ReadTxPoolSize)
+	s.Logger.Infof("%s.TruncationFrequency: %v", database, opts.TruncationFrequency)
+	s.Logger.Infof("%s.RetentionPeriod: %v", database, opts.RetentionPeriod)
 	s.Logger.Infof("%s.IndexOptions.FlushThreshold: %v", database, opts.IndexOptions.FlushThreshold)
 	s.Logger.Infof("%s.IndexOptions.SyncThreshold: %v", database, opts.IndexOptions.SyncThreshold)
 	s.Logger.Infof("%s.IndexOptions.FlushBufferSize: %v", database, opts.IndexOptions.FlushBufferSize)

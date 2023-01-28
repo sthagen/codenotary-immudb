@@ -18,6 +18,7 @@ package integration
 
 import (
 	"testing"
+	"time"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/stretchr/testify/require"
@@ -69,6 +70,7 @@ func TestCreateDatabaseV2(t *testing.T) {
 		MaxConcurrency:          &schema.NullableUint32{Value: 10},
 		MaxIOConcurrency:        &schema.NullableUint32{Value: 2},
 		TxLogCacheSize:          &schema.NullableUint32{Value: 2000},
+		VLogCacheSize:           &schema.NullableUint32{Value: 2200},
 		VLogMaxOpenedFiles:      &schema.NullableUint32{Value: 8},
 		TxLogMaxOpenedFiles:     &schema.NullableUint32{Value: 4},
 		CommitLogMaxOpenedFiles: &schema.NullableUint32{Value: 2},
@@ -94,6 +96,10 @@ func TestCreateDatabaseV2(t *testing.T) {
 			SyncThreshold:   &schema.NullableUint32{Value: 10_000},
 			WriteBufferSize: &schema.NullableUint32{Value: 8000},
 		},
+		TruncationSettings: &schema.TruncationNullableSettings{
+			RetentionPeriod:     &schema.NullableMilliseconds{Value: 24 * time.Hour.Milliseconds()},
+			TruncationFrequency: &schema.NullableMilliseconds{Value: 1 * time.Hour.Milliseconds()},
+		},
 	}
 	_, err := client.CreateDatabaseV2(ctx, "db1", dbNullableSettings)
 	require.NoError(t, err)
@@ -114,6 +120,7 @@ func TestCreateDatabaseV2(t *testing.T) {
 	require.Equal(t, dbNullableSettings.MaxConcurrency.Value, res.Settings.MaxConcurrency.Value)
 	require.Equal(t, dbNullableSettings.MaxIOConcurrency.Value, res.Settings.MaxIOConcurrency.Value)
 	require.Equal(t, dbNullableSettings.TxLogCacheSize.Value, res.Settings.TxLogCacheSize.Value)
+	require.Equal(t, dbNullableSettings.VLogCacheSize.Value, res.Settings.VLogCacheSize.Value)
 	require.Equal(t, dbNullableSettings.VLogMaxOpenedFiles.Value, res.Settings.VLogMaxOpenedFiles.Value)
 	require.Equal(t, dbNullableSettings.TxLogMaxOpenedFiles.Value, res.Settings.TxLogMaxOpenedFiles.Value)
 	require.Equal(t, dbNullableSettings.CommitLogMaxOpenedFiles.Value, res.Settings.CommitLogMaxOpenedFiles.Value)
@@ -137,6 +144,9 @@ func TestCreateDatabaseV2(t *testing.T) {
 
 	require.Equal(t, dbNullableSettings.AhtSettings.SyncThreshold.Value, res.Settings.AhtSettings.SyncThreshold.Value)
 	require.Equal(t, dbNullableSettings.AhtSettings.WriteBufferSize.Value, res.Settings.AhtSettings.WriteBufferSize.Value)
+
+	require.Equal(t, dbNullableSettings.TruncationSettings.RetentionPeriod.Value, res.Settings.TruncationSettings.RetentionPeriod.Value)
+	require.Equal(t, dbNullableSettings.TruncationSettings.TruncationFrequency.Value, res.Settings.TruncationSettings.TruncationFrequency.Value)
 
 	_, err = client.UpdateDatabaseV2(ctx, "db1", &schema.DatabaseNullableSettings{})
 	require.NoError(t, err)

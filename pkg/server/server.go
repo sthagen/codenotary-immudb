@@ -31,6 +31,7 @@ import (
 	"unicode"
 
 	"github.com/codenotary/immudb/pkg/server/sessions"
+	"github.com/codenotary/immudb/pkg/truncator"
 
 	"github.com/codenotary/immudb/embedded/remotestorage"
 	"github.com/codenotary/immudb/embedded/store"
@@ -616,6 +617,13 @@ func (s *ImmuServer) loadUserDatabases(dataDir string, remoteStorage remotestora
 			}
 		}
 
+		if dbOpts.isDataRetentionEnabled() {
+			err = s.startTruncatorFor(db, dbOpts)
+			if err != nil {
+				s.Logger.Errorf("Error starting truncation for database '%s'. Reason: %v", db.GetName(), err)
+			}
+		}
+
 		s.dbList.Put(db)
 	}
 
@@ -716,6 +724,8 @@ func (s *ImmuServer) Stop() error {
 	s.SessManager.StopSessionsGuard()
 
 	s.stopReplication()
+
+	s.stopTruncation()
 
 	return s.CloseDatabases()
 }
@@ -932,6 +942,11 @@ func (s *ImmuServer) CreateDatabaseV2(ctx context.Context, req *schema.CreateDat
 		return nil, fmt.Errorf("%w: while starting replication", err)
 	}
 
+	err = s.startTruncatorFor(db, dbOpts)
+	if err != nil && err != ErrTruncatorNotNeeded {
+		return nil, fmt.Errorf("%w: while starting truncation", err)
+	}
+
 	return &schema.CreateDatabaseResponse{
 		Name:     req.Name,
 		Settings: dbOpts.databaseNullableSettings(),
@@ -1006,6 +1021,11 @@ func (s *ImmuServer) LoadDatabase(ctx context.Context, req *schema.LoadDatabaseR
 		}
 	}
 
+	err = s.startTruncatorFor(db, dbOpts)
+	if err != nil && err != ErrTruncatorNotNeeded {
+		return nil, fmt.Errorf("%w: while starting truncation", err)
+	}
+
 	return &schema.LoadDatabaseResponse{
 		Database: req.Database,
 	}, nil
@@ -1066,6 +1086,13 @@ func (s *ImmuServer) UnloadDatabase(ctx context.Context, req *schema.UnloadDatab
 		err = s.stopReplicationFor(req.Database)
 		if err != nil && err != ErrReplicationNotInProgress {
 			return nil, fmt.Errorf("%w: while stopping replication", err)
+		}
+	}
+
+	if dbOpts.isDataRetentionEnabled() {
+		err = s.stopTruncatorFor(req.Database)
+		if err != nil && err != ErrTruncatorNotInProgress {
+			return nil, fmt.Errorf("%w: while stopping truncation", err)
 		}
 	}
 
@@ -1215,6 +1242,13 @@ func (s *ImmuServer) UpdateDatabaseV2(ctx context.Context, req *schema.UpdateDat
 		}
 	}
 
+	if req.Settings.TruncationSettings != nil && !db.IsClosed() {
+		err = s.stopTruncatorFor(req.Database)
+		if err != nil && err != ErrTruncatorNotInProgress {
+			return nil, fmt.Errorf("%w: while stopping truncation", err)
+		}
+	}
+
 	err = s.overwriteWith(dbOpts, req.Settings, true)
 	if err != nil {
 		return nil, err
@@ -1237,6 +1271,13 @@ func (s *ImmuServer) UpdateDatabaseV2(ctx context.Context, req *schema.UpdateDat
 		err = s.startReplicationFor(db, dbOpts)
 		if err != nil && err != ErrReplicatorNotNeeded {
 			return nil, fmt.Errorf("%w: while staring replication", err)
+		}
+	}
+
+	if req.Settings.TruncationSettings != nil && !db.IsClosed() {
+		err = s.startTruncatorFor(db, dbOpts)
+		if err != nil && err != ErrTruncatorNotNeeded {
+			return nil, fmt.Errorf("%w: while starting truncation", err)
 		}
 	}
 
@@ -1585,4 +1626,64 @@ func (s *ImmuServer) mandatoryAuth() bool {
 
 	//systemdb exists but there are no other users created
 	return false
+}
+
+func (s *ImmuServer) TruncateDatabase(ctx context.Context, req *schema.TruncateDatabaseRequest) (res *schema.TruncateDatabaseResponse, err error) {
+	if req == nil {
+		return nil, ErrIllegalArguments
+	}
+
+	s.Logger.Infof("Truncating database '%s'...", req.Database)
+
+	defer func() {
+		if err == nil {
+			s.Logger.Infof("Database '%s' succesfully truncated", req.Database)
+		} else {
+			s.Logger.Infof("Database '%s' could not be truncated. Reason: %v", req.Database, err)
+		}
+	}()
+
+	if !s.Options.GetAuth() {
+		return nil, ErrAuthMustBeEnabled
+	}
+
+	if req.Database == s.Options.defaultDBName || req.Database == s.Options.systemAdminDBName {
+		return nil, ErrReservedDatabase
+	}
+
+	_, user, err := s.getLoggedInUserdataFromCtx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("could not get loggedin user data")
+	}
+
+	//if the requesting user has admin permission on this database
+	if (!user.IsSysAdmin) &&
+		(!user.HasPermission(req.Database, auth.PermissionAdmin)) {
+		return nil, fmt.Errorf("the database '%s' does not exist or you do not have admin permission on this database", req.Database)
+	}
+
+	if req.RetentionPeriod < 0 || (req.RetentionPeriod > 0 && req.RetentionPeriod < store.MinimumRetentionPeriod.Milliseconds()) {
+		return nil, fmt.Errorf(
+			"%w: invalid retention period for database '%s'. RetentionPeriod should at least '%v' hours",
+			ErrIllegalArguments, req.Database, store.MinimumRetentionPeriod)
+	}
+
+	s.dbListMutex.Lock()
+	defer s.dbListMutex.Unlock()
+
+	db, err := s.dbList.GetByName(req.Database)
+	if err != nil {
+		return nil, err
+	}
+
+	rp := time.Duration(req.RetentionPeriod) * time.Millisecond
+	truncator := truncator.NewTruncator(db, rp, 0, s.Logger)
+	err = truncator.Truncate(ctx, rp)
+	if err != nil {
+		return nil, err
+	}
+
+	return &schema.TruncateDatabaseResponse{
+		Database: req.Database,
+	}, nil
 }

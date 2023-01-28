@@ -2032,3 +2032,84 @@ func TestServerMaintenanceMode(t *testing.T) {
 	err = s.StreamExecAll(nil)
 	require.Contains(t, err.Error(), ErrNotAllowedInMaintenanceMode.Error())
 }
+
+func TestServerDatabaseTruncate(t *testing.T) {
+	dir := t.TempDir()
+	opts := DefaultOptions().WithDir(dir)
+
+	s := DefaultServer()
+	s.WithOptions(opts)
+
+	s.Initialize()
+
+	resp, err := s.OpenSession(context.Background(), &schema.OpenSessionRequest{
+		Username:     []byte(auth.SysAdminUsername),
+		Password:     []byte(auth.SysAdminPassword),
+		DatabaseName: DefaultDBName,
+	})
+	require.NoError(t, err)
+	ctx := metadata.NewIncomingContext(context.TODO(), metadata.New(map[string]string{"sessionid": resp.GetSessionID()}))
+
+	t.Run("attempt to delete without retention period should fail", func(t *testing.T) {
+		_, err = s.CreateDatabaseV2(ctx, &schema.CreateDatabaseRequest{
+			Name: "db1",
+		})
+		require.NoError(t, err)
+
+		_, err = s.UseDatabase(ctx, &schema.Database{DatabaseName: "db1"})
+		require.NoError(t, err)
+
+		_, err = s.TruncateDatabase(ctx, &schema.TruncateDatabaseRequest{})
+		require.Error(t, err)
+	})
+
+	t.Run("attempt to delete without database should fail", func(t *testing.T) {
+		_, err = s.TruncateDatabase(ctx, &schema.TruncateDatabaseRequest{})
+		require.Error(t, err)
+	})
+
+	t.Run("attempt to delete with retention period < 0 should fail", func(t *testing.T) {
+		_, err = s.TruncateDatabase(ctx, &schema.TruncateDatabaseRequest{
+			Database:        "db1",
+			RetentionPeriod: -1,
+		})
+		require.Error(t, err)
+	})
+
+	t.Run("attempt to delete with retention period < 1 day should fail", func(t *testing.T) {
+		rp := 23 * time.Hour
+		_, err = s.TruncateDatabase(ctx, &schema.TruncateDatabaseRequest{
+			Database:        "db1",
+			RetentionPeriod: rp.Milliseconds(),
+		})
+		require.Error(t, err)
+	})
+
+	t.Run("attempt to delete with retention period >= 1 day should fail if retention period is not reached", func(t *testing.T) {
+		_, err := s.UseDatabase(ctx, &schema.Database{DatabaseName: "db1"})
+		require.NoError(t, err)
+
+		for i := 0; i < 64; i++ {
+			_, err = s.Set(ctx, &schema.SetRequest{
+				KVs: []*schema.KeyValue{
+					{
+						Key:   []byte(fmt.Sprintf("key%d", i)),
+						Value: []byte(fmt.Sprintf("value%d", i)),
+					},
+				},
+			})
+			require.NoError(t, err)
+		}
+
+		rp := 24 * time.Hour
+
+		_, err = s.TruncateDatabase(ctx, &schema.TruncateDatabaseRequest{
+			Database:        "db1",
+			RetentionPeriod: rp.Milliseconds(),
+		})
+		require.ErrorIs(t, err, database.ErrRetentionPeriodNotReached)
+	})
+
+	_, err = s.CloseSession(ctx, &emptypb.Empty{})
+	require.NoError(t, err)
+}

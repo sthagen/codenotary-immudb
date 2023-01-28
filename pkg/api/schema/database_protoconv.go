@@ -164,7 +164,13 @@ func TxMetadataToProto(md *store.TxMetadata) *TxMetadata {
 		return nil
 	}
 
-	return &TxMetadata{}
+	txmd := &TxMetadata{}
+	if md.HasTruncatedTxID() {
+		txID, _ := md.GetTruncatedTxID()
+		txmd.TruncatedTxID = txID
+	}
+
+	return txmd
 }
 
 func LinearProofToProto(linearProof *store.LinearProof) *LinearProof {
@@ -225,7 +231,12 @@ func TxMetadataFromProto(md *TxMetadata) *store.TxMetadata {
 		return nil
 	}
 
-	return &store.TxMetadata{}
+	txmd := store.NewTxMetadata()
+	if md.TruncatedTxID > 0 {
+		txmd.WithTruncatedTxID(md.TruncatedTxID)
+	}
+
+	return txmd
 }
 
 func LinearProofFromProto(lproof *LinearProof) *store.LinearProof {

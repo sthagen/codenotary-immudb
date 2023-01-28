@@ -354,7 +354,6 @@ func NewDB(dbName string, multidbHandler sql.MultiDBHandler, op *Options, log lo
 	dbi.sqlEngine.SetMultiDBHandler(multidbHandler)
 
 	dbi.Logger.Infof("Database '%s' successfully created {replica = %v}", dbName, op.replica)
-
 	return dbi, nil
 }
 
@@ -1684,4 +1683,10 @@ func logErr(log logger.Logger, formattedMessage string, err error) error {
 		log.Errorf(formattedMessage, err)
 	}
 	return err
+}
+
+// CopyCatalog creates a copy of the sql catalog and returns a transaction
+// that can be used to commit the copy.
+func (d *db) CopyCatalogToTx(ctx context.Context, tx *store.OngoingTx) error {
+	return d.sqlEngine.CopyCatalogToTx(ctx, tx)
 }

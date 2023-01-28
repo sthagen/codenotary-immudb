@@ -2166,3 +2166,54 @@ db := makeDb(t)
 	require.NoError(t, err)
 }
 */
+
+func Test_database_truncate(t *testing.T) {
+	rootPath := t.TempDir()
+
+	options := DefaultOption().WithDBRootPath(rootPath).WithCorruptionChecker(false)
+	options.storeOpts.WithIndexOptions(options.storeOpts.IndexOpts.WithCompactionThld(2)).WithFileSize(6)
+	options.storeOpts.MaxIOConcurrency = 1
+	options.storeOpts.VLogCacheSize = 0
+
+	db := makeDbWith(t, "db", options)
+
+	var queryTime time.Time
+	for i := 2; i <= 20; i++ {
+		kv := &schema.KeyValue{
+			Key:   []byte(fmt.Sprintf("key_%d", i)),
+			Value: []byte(fmt.Sprintf("val_%d", i)),
+		}
+		_, err := db.Set(context.Background(), &schema.SetRequest{KVs: []*schema.KeyValue{kv}})
+		require.NoError(t, err)
+		if i == 10 {
+			queryTime = time.Now()
+		}
+	}
+
+	c := NewVlogTruncator(db)
+	hdr, err := c.Plan(queryTime)
+	require.NoError(t, err)
+	require.LessOrEqual(t, time.Unix(hdr.Ts, 0), queryTime)
+
+	err = c.Truncate(context.TODO(), hdr.ID)
+	require.NoError(t, err)
+
+	for i := hdr.ID; i <= 20; i++ {
+		tx := store.NewTx(db.st.MaxTxEntries(), db.st.MaxKeyLen())
+		err = db.st.ReadTx(i, tx)
+		for _, e := range tx.Entries() {
+			_, err := db.st.ReadValue(e)
+			require.NoError(t, err)
+		}
+	}
+
+	for i := hdr.ID - 1; i > 0; i-- {
+		tx := store.NewTx(db.st.MaxTxEntries(), db.st.MaxKeyLen())
+		err = db.st.ReadTx(i, tx)
+		for _, e := range tx.Entries() {
+			_, err := db.st.ReadValue(e)
+			require.Error(t, err)
+		}
+	}
+
+}

@@ -365,7 +365,10 @@ message TxHeader {
 }
 
 // TxMetadata contains metadata set to whole transaction
-message TxMetadata {}
+message TxMetadata {
+  // Entry expiration information
+  uint64 truncatedTxID = 1;
+}
 
 // LinearProof contains the linear part of the proof (outside the main Merkle Tree)
 message LinearProof {
@@ -1028,6 +1031,12 @@ message DatabaseNullableSettings {
 
   // Limit the number of read entries per transaction
   NullableUint32 mvccReadSetLimit = 27;
+
+  // Size of the LRU cache for value logs
+  NullableUint32 vLogCacheSize = 28;
+
+  // Truncation settings
+  TruncationNullableSettings truncationSettings = 29;
 }
 
 message ReplicationNullableSettings {
@@ -1063,6 +1072,14 @@ message ReplicationNullableSettings {
 
   // Allow precommitted transactions to be discarded if the replica diverges from the primary
   NullableBool AllowTxDiscarding = 11;
+}
+
+message TruncationNullableSettings {
+  // Retention Period for data in the database
+  NullableMilliseconds retentionPeriod = 1;
+
+  // Truncation Frequency for the database
+  NullableMilliseconds truncationFrequency = 2;
 }
 
 message IndexNullableSettings {
@@ -1437,6 +1454,19 @@ message DebugInfo {
 message RetryInfo {
   // Number of milliseconds after which the request can be retried
   int32 retry_delay = 1;
+}
+
+message TruncateDatabaseRequest {
+  // Database name
+  string database = 1;
+
+  // Retention Period of data
+  int64 retentionPeriod = 2;
+}
+
+message TruncateDatabaseResponse {
+  // Database name
+  string database = 1;
 }
 
 // immudb gRPC & REST service
@@ -1854,4 +1884,12 @@ service ImmuService {
       body: "*"
     };
   }
+
+  rpc TruncateDatabase(TruncateDatabaseRequest) returns (TruncateDatabaseResponse) {
+    option (google.api.http) = {
+      post: "/db/truncate"
+      body: "*"
+    };
+  }
+
 }

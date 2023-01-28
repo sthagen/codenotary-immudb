@@ -52,6 +52,8 @@ func addDbUpdateFlags(c *cobra.Command) {
 	c.Flags().Uint32("write-buffer-size", store.DefaultWriteBufferSize, "set the size of in-memory buffers for file abstractions")
 	c.Flags().Uint32("read-tx-pool-size", database.DefaultReadTxPoolSize, "set transaction read pool size (used for reading transaction objects)")
 	c.Flags().Bool("autoload", true, "enable database autoloading")
+	c.Flags().Duration("retention-period", 0, "duration of time to retain data in storage")
+	c.Flags().Duration("truncation-frequency", database.DefaultTruncationFrequency, "set the truncation frequency for the database")
 
 	flagNameMapping := map[string]string{
 		"replication-enabled":           "replication-is-replica",
@@ -76,7 +78,7 @@ func (cl *commandline) database(cmd *cobra.Command) {
 		Short:             "Issue all database commands",
 		Aliases:           []string{"d"},
 		PersistentPostRun: cl.disconnect,
-		ValidArgs:         []string{"list", "create", "load", "unload", "delete", "update", "use", "flush", "compact"},
+		ValidArgs:         []string{"list", "create", "load", "unload", "delete", "update", "use", "flush", "compact", "truncate"},
 	}
 
 	listCmd := &cobra.Command{
@@ -315,6 +317,42 @@ func (cl *commandline) database(cmd *cobra.Command) {
 		Args: cobra.ExactArgs(0),
 	}
 
+	truncateCmd := &cobra.Command{
+		Use:               "truncate",
+		Short:             "Truncate database (unrecoverable operation)",
+		Example:           "truncate --yes-i-know-what-i-am-doing {database_name} --retention-period {retention_period}",
+		PersistentPreRunE: cl.ConfigChain(cl.connect),
+		PersistentPostRun: cl.disconnect,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			safetyFlag, err := cmd.Flags().GetBool("yes-i-know-what-i-am-doing")
+			if err != nil {
+				return err
+			}
+
+			if !safetyFlag {
+				fmt.Fprintf(cmd.OutOrStdout(), "database '%s' was not truncated. Safety flag not set\n", args[0])
+				return nil
+			}
+
+			retentionPeriod, err := cmd.Flags().GetDuration("retention-period")
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "truncating database '%s' up to retention period '%s'...\n", args[0], retentionPeriod.String())
+
+			err = cl.immuClient.TruncateDatabase(cl.context, args[0], retentionPeriod)
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "database '%s' successfully truncated\n", args[0])
+			return nil
+		},
+		Args: cobra.ExactArgs(1),
+	}
+	addDbTruncateFlags(truncateCmd)
+
 	dbCmd.AddCommand(listCmd)
 	dbCmd.AddCommand(createCmd)
 	dbCmd.AddCommand(loadCmd)
@@ -324,6 +362,7 @@ func (cl *commandline) database(cmd *cobra.Command) {
 	dbCmd.AddCommand(updateCmd)
 	dbCmd.AddCommand(flushCmd)
 	dbCmd.AddCommand(compactCmd)
+	dbCmd.AddCommand(truncateCmd)
 
 	cmd.AddCommand(dbCmd)
 }
@@ -469,6 +508,23 @@ func prepareDatabaseNullableSettings(flags *pflag.FlagSet) (*schema.DatabaseNull
 		return nil, err
 	}
 
+	retentionPeriod, err := condDuration("retention-period")
+	if err != nil {
+		return nil, err
+	}
+
+	truncationFrequency, err := condDuration("truncation-frequency")
+	if err != nil {
+		return nil, err
+	}
+
+	if retentionPeriod != nil || truncationFrequency != nil {
+		ret.TruncationSettings = &schema.TruncationNullableSettings{
+			RetentionPeriod:     retentionPeriod,
+			TruncationFrequency: truncationFrequency,
+		}
+	}
+
 	return ret, nil
 }
 
@@ -508,5 +564,23 @@ func databaseNullableSettingsStr(settings *schema.DatabaseNullableSettings) stri
 		propertiesStr = append(propertiesStr, fmt.Sprintf("autoload: %v", settings.Autoload.GetValue()))
 	}
 
+	if settings.TruncationSettings != nil {
+		if settings.TruncationSettings.RetentionPeriod != nil {
+			retDur := time.Duration(settings.TruncationSettings.GetRetentionPeriod().GetValue()) * time.Millisecond
+			propertiesStr = append(propertiesStr, fmt.Sprintf("retention-period: %v", retDur))
+		}
+
+		if settings.TruncationSettings.TruncationFrequency != nil {
+			freq := time.Duration(settings.TruncationSettings.GetTruncationFrequency().GetValue()) * time.Millisecond
+			propertiesStr = append(propertiesStr, fmt.Sprintf("truncation-frequency: %v", freq))
+		}
+	}
+
 	return strings.Join(propertiesStr, ", ")
+}
+
+func addDbTruncateFlags(c *cobra.Command) {
+	c.Flags().Bool("yes-i-know-what-i-am-doing", false, "safety flag to confirm database truncation")
+	c.Flags().Duration("retention-period", 0, "duration of time to retain data in storage")
+	c.MarkFlagRequired("yes-i-know-what-i-am-doing")
 }

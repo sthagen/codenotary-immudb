@@ -98,6 +98,9 @@
     - [SetRequest](#immudb.schema.SetRequest)
     - [Signature](#immudb.schema.Signature)
     - [Table](#immudb.schema.Table)
+    - [TruncateDatabaseRequest](#immudb.schema.TruncateDatabaseRequest)
+    - [TruncateDatabaseResponse](#immudb.schema.TruncateDatabaseResponse)
+    - [TruncationNullableSettings](#immudb.schema.TruncationNullableSettings)
     - [Tx](#immudb.schema.Tx)
     - [TxEntry](#immudb.schema.TxEntry)
     - [TxHeader](#immudb.schema.TxHeader)
@@ -448,6 +451,8 @@ DEPRECATED
 | ahtSettings | [AHTNullableSettings](#immudb.schema.AHTNullableSettings) |  | Settings of Appendable Hash Tree |
 | maxActiveTransactions | [NullableUint32](#immudb.schema.NullableUint32) |  | Maximum number of pre-committed transactions |
 | mvccReadSetLimit | [NullableUint32](#immudb.schema.NullableUint32) |  | Limit the number of read entries per transaction |
+| vLogCacheSize | [NullableUint32](#immudb.schema.NullableUint32) |  | Size of the LRU cache for value logs |
+| truncationSettings | [TruncationNullableSettings](#immudb.schema.TruncationNullableSettings) |  | Truncation settings |
 
 
 
@@ -1730,6 +1735,53 @@ ServerInfoResponse contains information about the server instance.
 
 
 
+<a name="immudb.schema.TruncateDatabaseRequest"></a>
+
+### TruncateDatabaseRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| database | [string](#string) |  | Database name |
+| retentionPeriod | [int64](#int64) |  | Retention Period of data |
+
+
+
+
+
+
+<a name="immudb.schema.TruncateDatabaseResponse"></a>
+
+### TruncateDatabaseResponse
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| database | [string](#string) |  | Database name |
+
+
+
+
+
+
+<a name="immudb.schema.TruncationNullableSettings"></a>
+
+### TruncationNullableSettings
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| retentionPeriod | [NullableMilliseconds](#immudb.schema.NullableMilliseconds) |  | Retention Period for data in the database |
+| truncationFrequency | [NullableMilliseconds](#immudb.schema.NullableMilliseconds) |  | Truncation Frequency for the database |
+
+
+
+
+
+
 <a name="immudb.schema.Tx"></a>
 
 ### Tx
@@ -1809,6 +1861,11 @@ ServerInfoResponse contains information about the server instance.
 
 ### TxMetadata
 TxMetadata contains metadata set to whole transaction
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| truncatedTxID | [uint64](#uint64) |  | Entry expiration information |
 
 
 
@@ -2420,6 +2477,7 @@ immudb gRPC &amp; REST service
 | ListTables | [.google.protobuf.Empty](#google.protobuf.Empty) | [SQLQueryResult](#immudb.schema.SQLQueryResult) |  |
 | DescribeTable | [Table](#immudb.schema.Table) | [SQLQueryResult](#immudb.schema.SQLQueryResult) |  |
 | VerifiableSQLGet | [VerifiableSQLGetRequest](#immudb.schema.VerifiableSQLGetRequest) | [VerifiableSQLEntry](#immudb.schema.VerifiableSQLEntry) |  |
+| TruncateDatabase | [TruncateDatabaseRequest](#immudb.schema.TruncateDatabaseRequest) | [TruncateDatabaseResponse](#immudb.schema.TruncateDatabaseResponse) |  |
 
  
 
