@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -30,7 +31,6 @@ import (
 	"github.com/codenotary/immudb/pkg/client"
 	"github.com/codenotary/immudb/pkg/logger"
 	"github.com/codenotary/immudb/pkg/server"
-	"github.com/codenotary/immudb/pkg/server/servertest"
 	"github.com/codenotary/immudb/test/performance-test-suite/pkg/benchmarks"
 )
 
@@ -47,6 +47,7 @@ type Config struct {
 	KeySize    int
 	ValueSize  int
 	AsyncWrite bool
+	Replica    string
 }
 
 type benchmark struct {
@@ -64,8 +65,9 @@ type benchmark struct {
 
 	m sync.Mutex
 
-	server  *servertest.BufconnServer
-	clients []client.ImmuClient
+	primaryServer *server.ImmuServer
+	replicaServer *server.ImmuServer
+	clients       []client.ImmuClient
 }
 
 type Result struct {
@@ -109,33 +111,113 @@ func (b *benchmark) Name() string {
 }
 
 func (b *benchmark) Warmup() error {
-	const dirName = "tx-test"
-
-	err := os.RemoveAll(dirName)
+	primaryPath, err := os.MkdirTemp("", "tx-test-primary")
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(dirName)
 
-	options := server.
+	defer os.RemoveAll(primaryPath)
+
+	primaryServerOpts := server.
 		DefaultOptions().
-		WithDir(dirName).
-		WithLogFormat(logger.LogFormatJSON)
+		WithDir(primaryPath).
+		WithMetricsServer(false).
+		WithWebServer(false).
+		WithPgsqlServer(false).
+		WithPort(0).
+		WithLogFormat(logger.LogFormatJSON).
+		WithLogfile("./immudb.log")
 
-	b.server = servertest.NewBufconnServer(options)
-	b.server.Server.Srv.WithLogger(logger.NewMemoryLoggerWithLevel(logger.LogDebug))
+	primaryServerReplicaOptions := server.ReplicationOptions{}
 
-	err = b.server.Start()
+	if b.cfg.Replica == "async" {
+		primaryServerOpts.WithReplicationOptions(primaryServerReplicaOptions.WithIsReplica(false))
+	}
+
+	if b.cfg.Replica == "sync" {
+		primaryServerOpts.WithReplicationOptions(primaryServerReplicaOptions.WithIsReplica(false).WithSyncReplication(true).WithSyncAcks(1))
+	}
+
+	b.primaryServer = server.DefaultServer().WithOptions(primaryServerOpts).(*server.ImmuServer)
+
+	err = b.primaryServer.Initialize()
 	if err != nil {
 		return err
+	}
+
+	go func() {
+		b.primaryServer.Start()
+	}()
+
+	time.Sleep(1 * time.Second)
+
+	primaryPort := b.primaryServer.Listener.Addr().(*net.TCPAddr).Port
+
+	if b.cfg.Replica == "async" || b.cfg.Replica == "sync" {
+		replicaPath, err := os.MkdirTemp("", fmt.Sprintf("%s-tx-test-replica", b.cfg.Replica))
+		if err != nil {
+			return err
+		}
+
+		defer os.RemoveAll(replicaPath)
+
+		replicaServerOptions := server.
+			DefaultOptions().
+			WithDir(replicaPath).
+			WithPort(0).
+			WithLogFormat(logger.LogFormatJSON).
+			WithLogfile("./replica.log")
+
+		replicaServerOptions.PgsqlServer = false
+		replicaServerOptions.MetricsServer = false
+		replicaServerOptions.WebServer = false
+
+		replicaServerReplicaOptions := server.ReplicationOptions{}
+
+		replicaServerReplicaOptions.PrimaryHost = "127.0.0.1"
+		replicaServerReplicaOptions.PrimaryPort = primaryPort
+		replicaServerReplicaOptions.PrimaryUsername = "immudb"
+		replicaServerReplicaOptions.PrimaryPassword = "immudb"
+		replicaServerReplicaOptions.PrefetchTxBufferSize = 1000
+		replicaServerReplicaOptions.ReplicationCommitConcurrency = 30
+
+		if b.cfg.Replica == "async" {
+			replicaServerOptions.WithReplicationOptions(replicaServerReplicaOptions.WithIsReplica(true))
+		}
+
+		if b.cfg.Replica == "sync" {
+			replicaServerReplicaOptions = *replicaServerReplicaOptions.WithIsReplica(true).WithSyncReplication(true)
+
+			replicaServerOptions.WithReplicationOptions(&replicaServerReplicaOptions)
+		}
+
+		b.replicaServer = server.DefaultServer().WithOptions(replicaServerOptions).(*server.ImmuServer)
+
+		err = b.replicaServer.Initialize()
+		if err != nil {
+			return err
+		}
+
+		go func() {
+			b.replicaServer.Start()
+		}()
+
+		time.Sleep(1 * time.Second)
 	}
 
 	b.clients = []client.ImmuClient{}
 	for i := 0; i < b.cfg.Workers; i++ {
-		c, err := b.server.NewAuthenticatedClient(client.DefaultOptions())
+		path, err := os.MkdirTemp("", "immudb_client")
 		if err != nil {
 			return err
 		}
+		c := client.NewClient().WithOptions(client.DefaultOptions().WithPort(primaryPort).WithDir(path))
+
+		err = c.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "defaultdb")
+		if err != nil {
+			return err
+		}
+
 		b.clients = append(b.clients, c)
 	}
 
@@ -151,7 +233,10 @@ func (b *benchmark) Cleanup() error {
 		}
 	}
 
-	return b.server.Stop()
+	b.primaryServer.Stop()
+	b.replicaServer.Stop()
+
+	return nil
 }
 
 func (b *benchmark) Run(duration time.Duration, seed uint64) (interface{}, error) {

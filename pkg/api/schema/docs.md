@@ -9,6 +9,7 @@
     - [ChangePasswordRequest](#immudb.schema.ChangePasswordRequest)
     - [ChangePermissionRequest](#immudb.schema.ChangePermissionRequest)
     - [Chunk](#immudb.schema.Chunk)
+    - [Chunk.MetadataEntry](#immudb.schema.Chunk.MetadataEntry)
     - [Column](#immudb.schema.Column)
     - [CommittedSQLTx](#immudb.schema.CommittedSQLTx)
     - [CommittedSQLTx.FirstInsertedPKsEntry](#immudb.schema.CommittedSQLTx.FirstInsertedPKsEntry)
@@ -227,6 +228,23 @@ DEPRECATED
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | content | [bytes](#bytes) |  |  |
+| metadata | [Chunk.MetadataEntry](#immudb.schema.Chunk.MetadataEntry) | repeated |  |
+
+
+
+
+
+
+<a name="immudb.schema.Chunk.MetadataEntry"></a>
+
+### Chunk.MetadataEntry
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| key | [string](#string) |  |  |
+| value | [bytes](#bytes) |  |  |
 
 
 
@@ -754,6 +772,7 @@ DualProof contains inclusion and consistency proofs for dual Merkle-Tree &#43; L
 | tx | [uint64](#uint64) |  | Id of transaction to export |
 | allowPreCommitted | [bool](#bool) |  | If set to true, non-committed transactions can be exported |
 | replicaState | [ReplicaState](#immudb.schema.ReplicaState) |  | Used on synchronous replication to notify the primary about replica state |
+| skipIntegrityCheck | [bool](#bool) |  | If set to true, integrity checks are skipped when reading data |
 
 
 
@@ -1447,7 +1466,9 @@ Only succeed if given key was not modified after given transaction
 | syncAcks | [NullableUint32](#immudb.schema.NullableUint32) |  | Number of confirmations from synchronous replicas required to commit a transaction |
 | prefetchTxBufferSize | [NullableUint32](#immudb.schema.NullableUint32) |  | Maximum number of prefetched transactions |
 | replicationCommitConcurrency | [NullableUint32](#immudb.schema.NullableUint32) |  | Number of concurrent replications |
-| AllowTxDiscarding | [NullableBool](#immudb.schema.NullableBool) |  | Allow precommitted transactions to be discarded if the replica diverges from the primary |
+| allowTxDiscarding | [NullableBool](#immudb.schema.NullableBool) |  | Allow precommitted transactions to be discarded if the replica diverges from the primary |
+| skipIntegrityCheck | [NullableBool](#immudb.schema.NullableBool) |  | Disable integrity check when reading data during replication |
+| waitForIndexing | [NullableBool](#immudb.schema.NullableBool) |  | Wait for indexing to be up to date during replication |
 
 
 
@@ -2472,6 +2493,7 @@ immudb gRPC &amp; REST service
 | streamExecAll | [Chunk](#immudb.schema.Chunk) stream | [TxHeader](#immudb.schema.TxHeader) |  |
 | exportTx | [ExportTxRequest](#immudb.schema.ExportTxRequest) | [Chunk](#immudb.schema.Chunk) stream | Replication |
 | replicateTx | [Chunk](#immudb.schema.Chunk) stream | [TxHeader](#immudb.schema.TxHeader) |  |
+| streamExportTx | [ExportTxRequest](#immudb.schema.ExportTxRequest) stream | [Chunk](#immudb.schema.Chunk) stream |  |
 | SQLExec | [SQLExecRequest](#immudb.schema.SQLExecRequest) | [SQLExecResult](#immudb.schema.SQLExecResult) |  |
 | SQLQuery | [SQLQueryRequest](#immudb.schema.SQLQueryRequest) | [SQLQueryResult](#immudb.schema.SQLQueryResult) |  |
 | ListTables | [.google.protobuf.Empty](#google.protobuf.Empty) | [SQLQueryResult](#immudb.schema.SQLQueryResult) |  |

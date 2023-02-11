@@ -1156,7 +1156,7 @@ func testServerScanError(ctx context.Context, s *ImmuServer, t *testing.T) {
 }
 
 func testServerTxScan(ctx context.Context, s *ImmuServer, t *testing.T) {
-	txmd, err := s.Set(ctx, &schema.SetRequest{KVs: []*schema.KeyValue{kvs[0]}})
+	hdr, err := s.Set(ctx, &schema.SetRequest{KVs: []*schema.KeyValue{kvs[0]}})
 	require.NoError(t, err)
 
 	_, err = s.ZAdd(ctx, &schema.ZAddRequest{
@@ -1177,7 +1177,7 @@ func testServerTxScan(ctx context.Context, s *ImmuServer, t *testing.T) {
 	require.NoError(t, err)
 
 	txls, err := s.TxScan(ctx, &schema.TxScanRequest{
-		InitialTx: txmd.Id,
+		InitialTx: hdr.Id,
 	})
 	require.NoError(t, err)
 	require.Len(t, txls.Txs, 3)
@@ -2048,7 +2048,7 @@ func TestServerDatabaseTruncate(t *testing.T) {
 		DatabaseName: DefaultDBName,
 	})
 	require.NoError(t, err)
-	ctx := metadata.NewIncomingContext(context.TODO(), metadata.New(map[string]string{"sessionid": resp.GetSessionID()}))
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.New(map[string]string{"sessionid": resp.GetSessionID()}))
 
 	t.Run("attempt to delete without retention period should fail", func(t *testing.T) {
 		_, err = s.CreateDatabaseV2(ctx, &schema.CreateDatabaseRequest{

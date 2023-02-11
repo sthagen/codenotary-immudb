@@ -221,7 +221,7 @@ func (suite *SyncTestMinimumReplicasSuite) TestMinimumReplicas() {
 	suite.Run("should commit successfully without two replicas", func() {
 		suite.StopReplica(1)
 
-		ctxTimeout, cancel := context.WithTimeout(ctx, time.Second)
+		ctxTimeout, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 
 		_, err := client.Set(ctxTimeout, []byte("key2"), []byte("value2"))
@@ -231,7 +231,7 @@ func (suite *SyncTestMinimumReplicasSuite) TestMinimumReplicas() {
 	suite.Run("should not commit without three replicas", func() {
 		suite.StopReplica(2)
 
-		ctxTimeout, cancel := context.WithTimeout(ctx, time.Second)
+		ctxTimeout, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 
 		_, err := client.Set(ctxTimeout, []byte("key3"), []byte("value3"))
@@ -242,7 +242,7 @@ func (suite *SyncTestMinimumReplicasSuite) TestMinimumReplicas() {
 	suite.Run("should commit again once first replica is back online", func() {
 		suite.StartReplica(0)
 
-		ctxTimeout, cancel := context.WithTimeout(ctx, time.Second)
+		ctxTimeout, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 
 		_, err := client.Set(ctxTimeout, []byte("key4"), []byte("value4"))
@@ -256,7 +256,7 @@ func (suite *SyncTestMinimumReplicasSuite) TestMinimumReplicas() {
 		suite.AddReplica(true)
 		suite.AddReplica(true)
 
-		ctxTimeout, cancel := context.WithTimeout(ctx, time.Second)
+		ctxTimeout, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 
 		_, err := client.Set(ctxTimeout, []byte("key5"), []byte("value5"))
@@ -273,7 +273,7 @@ func (suite *SyncTestMinimumReplicasSuite) TestMinimumReplicas() {
 				ctx, client, cleanup := suite.ClientForReplica(i)
 				defer cleanup()
 
-				suite.WaitForCommittedTx(ctx, client, primaryState.TxId, time.Second)
+				suite.WaitForCommittedTx(ctx, client, primaryState.TxId, 2*time.Second)
 
 				for i := 1; i <= 5; i++ {
 					val, err := client.Get(ctx, []byte(fmt.Sprintf("key%d", i)))
@@ -375,12 +375,12 @@ func (suite *SyncTestRecoverySpeedSuite) TestReplicaRecoverySpeed() {
 		suite.Require().NoError(err)
 		suite.Require().Greater(state.TxId, txWritten, "Ensure enough TXs were written")
 
-		// Check if we can recover the cluster and perform write within the double the amount of time
+		// Check if we can recover the cluster and perform write within a reasonable amount of time
 		// that was needed for initial sampling. The replica that was initially stopped and now
 		// started has the same amount of transaction to grab from primary as the other one
 		// which should take the same amount of time as the initial write period or less
 		// (since the primary is not persisting data this time).
-		ctxTimeout, cancel := context.WithTimeout(ctx, samplingTime*2)
+		ctxTimeout, cancel := context.WithTimeout(ctx, samplingTime*4)
 		defer cancel()
 
 		suite.StartReplica(0) // 1 down

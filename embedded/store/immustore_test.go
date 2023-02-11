@@ -174,7 +174,7 @@ func TestImmudbStoreConcurrentCommits(t *testing.T) {
 				}
 				require.NoError(t, err)
 
-				err = immuStore.ReadTx(hdr.ID, txHolder)
+				err = immuStore.ReadTx(hdr.ID, false, txHolder)
 				require.NoError(t, err)
 
 				for _, e := range txHolder.Entries() {
@@ -199,7 +199,7 @@ func TestImmudbStoreOnClosedStore(t *testing.T) {
 	immuStore, err := Open(t.TempDir(), DefaultOptions().WithMaxConcurrency(1))
 	require.NoError(t, err)
 
-	err = immuStore.ReadTx(1, nil)
+	err = immuStore.ReadTx(1, false, nil)
 	require.ErrorIs(t, err, ErrTxNotFound)
 
 	err = immuStore.Close()
@@ -216,10 +216,10 @@ func TestImmudbStoreOnClosedStore(t *testing.T) {
 
 	_, err = immuStore.commit(context.Background(), &OngoingTx{entries: []*EntrySpec{
 		{Key: []byte("key1")},
-	}}, nil, false)
+	}}, nil, false, false)
 	require.ErrorIs(t, err, ErrAlreadyClosed)
 
-	err = immuStore.ReadTx(1, nil)
+	err = immuStore.ReadTx(1, false, nil)
 	require.ErrorIs(t, err, ErrAlreadyClosed)
 
 	_, err = immuStore.NewTxReader(1, false, nil)
@@ -1619,7 +1619,7 @@ func TestImmudbStoreCommitWith(t *testing.T) {
 	require.NoError(t, err)
 	defer immuStore.releaseAllocTx(tx)
 
-	immuStore.ReadTx(hdr.ID, tx)
+	immuStore.ReadTx(hdr.ID, false, tx)
 
 	entry, err := tx.EntryOf([]byte(fmt.Sprintf("keyInsertedAtTx%d", hdr.ID)))
 	require.NoError(t, err)
@@ -1690,7 +1690,7 @@ func TestImmudbStoreHistoricalValues(t *testing.T) {
 
 							tx := tempTxHolder(t, immuStore)
 
-							err = immuStore.ReadTx(txID, tx)
+							err = immuStore.ReadTx(txID, false, tx)
 							require.NoError(t, err)
 
 							entry, err := tx.EntryOf(k)
@@ -1810,7 +1810,7 @@ func TestImmudbStoreInclusionProof(t *testing.T) {
 			require.Equal(t, j, ki)
 
 			value := make([]byte, txEntries[j].vLen)
-			_, err = immuStore.readValueAt(value, txEntries[j].VOff(), txEntries[j].HVal())
+			_, err = immuStore.readValueAt(value, txEntries[j].VOff(), txEntries[j].HVal(), false)
 			require.NoError(t, err)
 
 			k := make([]byte, 8)
@@ -1884,7 +1884,7 @@ func TestLeavesMatchesAHTSync(t *testing.T) {
 	tx := tempTxHolder(t, immuStore)
 
 	for i := 0; i < txCount; i++ {
-		err := immuStore.ReadTx(uint64(i+1), tx)
+		err := immuStore.ReadTx(uint64(i+1), false, tx)
 		require.NoError(t, err)
 		require.Equal(t, uint64(i+1), tx.header.ID)
 
@@ -1931,7 +1931,7 @@ func TestLeavesMatchesAHTASync(t *testing.T) {
 	tx := tempTxHolder(t, immuStore)
 
 	for i := 0; i < txCount; i++ {
-		err := immuStore.ReadTx(uint64(i+1), tx)
+		err := immuStore.ReadTx(uint64(i+1), false, tx)
 		require.NoError(t, err)
 		require.Equal(t, uint64(i+1), tx.header.ID)
 
@@ -1983,14 +1983,14 @@ func TestImmudbStoreConsistencyProof(t *testing.T) {
 	for i := 0; i < txCount; i++ {
 		sourceTxID := uint64(i + 1)
 
-		err := immuStore.ReadTx(sourceTxID, sourceTx)
+		err := immuStore.ReadTx(sourceTxID, false, sourceTx)
 		require.NoError(t, err)
 		require.Equal(t, uint64(i+1), sourceTx.header.ID)
 
 		for j := i; j < txCount; j++ {
 			targetTxID := uint64(j + 1)
 
-			err := immuStore.ReadTx(targetTxID, targetTx)
+			err := immuStore.ReadTx(targetTxID, false, targetTx)
 			require.NoError(t, err)
 			require.Equal(t, uint64(j+1), targetTx.header.ID)
 
@@ -2039,14 +2039,14 @@ func TestImmudbStoreConsistencyProofAgainstLatest(t *testing.T) {
 	targetTx := tempTxHolder(t, immuStore)
 
 	targetTxID := uint64(txCount)
-	err = immuStore.ReadTx(targetTxID, targetTx)
+	err = immuStore.ReadTx(targetTxID, false, targetTx)
 	require.NoError(t, err)
 	require.Equal(t, uint64(txCount), targetTx.header.ID)
 
 	for i := 0; i < txCount-1; i++ {
 		sourceTxID := uint64(i + 1)
 
-		err := immuStore.ReadTx(sourceTxID, sourceTx)
+		err := immuStore.ReadTx(sourceTxID, false, sourceTx)
 		require.NoError(t, err)
 		require.Equal(t, uint64(i+1), sourceTx.header.ID)
 
@@ -2129,14 +2129,14 @@ func TestImmudbStoreConsistencyProofReopened(t *testing.T) {
 	for i := 0; i < txCount; i++ {
 		sourceTxID := uint64(i + 1)
 
-		err := immuStore.ReadTx(sourceTxID, sourceTx)
+		err := immuStore.ReadTx(sourceTxID, false, sourceTx)
 		require.NoError(t, err)
 		require.Equal(t, uint64(i+1), sourceTx.header.ID)
 
 		for j := i + 1; j < txCount; j++ {
 			targetTxID := uint64(j + 1)
 
-			err := immuStore.ReadTx(targetTxID, targetTx)
+			err := immuStore.ReadTx(targetTxID, false, targetTx)
 			require.NoError(t, err)
 			require.Equal(t, uint64(j+1), targetTx.header.ID)
 
@@ -2341,7 +2341,7 @@ func TestUncommittedTxOverwriting(t *testing.T) {
 			require.NoError(t, err)
 
 			value := make([]byte, txe.vLen)
-			_, err = immuStore.readValueAt(value, txe.vOff, txe.hVal)
+			_, err = immuStore.readValueAt(value, txe.vOff, txe.hVal, false)
 			require.NoError(t, err)
 
 			e := &EntrySpec{Key: txe.key(), Value: value}
@@ -2387,17 +2387,17 @@ func TestExportAndReplicateTx(t *testing.T) {
 
 	txholder := tempTxHolder(t, primaryStore)
 
-	etx, err := primaryStore.ExportTx(1, false, txholder)
+	etx, err := primaryStore.ExportTx(1, false, false, txholder)
 	require.NoError(t, err)
 
-	rhdr, err := replicaStore.ReplicateTx(context.Background(), etx, false)
+	rhdr, err := replicaStore.ReplicateTx(context.Background(), etx, false, false)
 	require.NoError(t, err)
 	require.NotNil(t, rhdr)
 
 	require.Equal(t, hdr.ID, rhdr.ID)
 	require.Equal(t, hdr.Alh(), rhdr.Alh())
 
-	_, err = replicaStore.ReplicateTx(context.Background(), nil, false)
+	_, err = replicaStore.ReplicateTx(context.Background(), nil, false, false)
 	require.ErrorIs(t, err, ErrIllegalArguments)
 }
 
@@ -2429,7 +2429,7 @@ func TestExportAndReplicateTxCornerCases(t *testing.T) {
 	txholder := tempTxHolder(t, primaryStore)
 
 	t.Run("prevent replicating broken data", func(t *testing.T) {
-		etx, err := primaryStore.ExportTx(1, false, txholder)
+		etx, err := primaryStore.ExportTx(1, false, false, txholder)
 		require.NoError(t, err)
 
 		for i := range etx {
@@ -2445,7 +2445,7 @@ func TestExportAndReplicateTxCornerCases(t *testing.T) {
 				copy(brokenEtx, etx)
 				brokenEtx[i]++
 
-				_, err = replicaStore.ReplicateTx(context.Background(), brokenEtx, false)
+				_, err = replicaStore.ReplicateTx(context.Background(), brokenEtx, false, false)
 				require.Error(t, err)
 
 				if !errors.Is(err, ErrIllegalArguments) &&
@@ -2490,7 +2490,7 @@ func TestExportAndReplicateTxSimultaneousWriters(t *testing.T) {
 			require.NotNil(t, hdr)
 
 			txholder := tempTxHolder(t, replicaStore)
-			etx, err := primaryStore.ExportTx(hdr.ID, false, txholder)
+			etx, err := primaryStore.ExportTx(hdr.ID, false, false, txholder)
 			require.NoError(t, err)
 
 			// Replicate the same transactions concurrently, only one must succeed
@@ -2500,7 +2500,7 @@ func TestExportAndReplicateTxSimultaneousWriters(t *testing.T) {
 				wg.Add(1)
 				go func(j int) {
 					defer wg.Done()
-					_, errors[j] = replicaStore.ReplicateTx(context.Background(), etx, false)
+					_, errors[j] = replicaStore.ReplicateTx(context.Background(), etx, false, false)
 				}(j)
 			}
 			wg.Wait()
@@ -2552,7 +2552,7 @@ func TestExportAndReplicateTxDisorderedReplication(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, hdr)
 
-		etx, err := primaryStore.ExportTx(hdr.ID, false, txholder)
+		etx, err := primaryStore.ExportTx(hdr.ID, false, false, txholder)
 		require.NoError(t, err)
 
 		etxs <- etx
@@ -2573,7 +2573,7 @@ func TestExportAndReplicateTxDisorderedReplication(t *testing.T) {
 			for etx := range etxs {
 				time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
 
-				_, err = replicaStore.ReplicateTx(context.Background(), etx, false)
+				_, err = replicaStore.ReplicateTx(context.Background(), etx, false, false)
 				require.NoError(t, err)
 			}
 		}(r)
@@ -2965,6 +2965,49 @@ func BenchmarkAsyncAppendWithExtCommitAllowance(b *testing.B) {
 	}
 }
 
+func BenchmarkExportTx(b *testing.B) {
+	opts := DefaultOptions().WithSynced(false)
+
+	immuStore, _ := Open(b.TempDir(), opts)
+
+	txCount := 1_000
+	eCount := 1_000
+	keyLen := 40
+	valLen := 256
+
+	for i := 0; i < txCount; i++ {
+		tx, err := immuStore.NewWriteOnlyTx(context.Background())
+		require.NoError(b, err)
+
+		for j := 0; j < eCount; j++ {
+			k := make([]byte, keyLen)
+			binary.BigEndian.PutUint64(k, uint64(i*eCount+j))
+
+			v := make([]byte, valLen)
+			binary.BigEndian.PutUint64(v, uint64(j))
+
+			err = tx.Set(k, nil, v)
+			require.NoError(b, err)
+		}
+
+		_, err = tx.Commit(context.Background())
+		require.NoError(b, err)
+	}
+
+	tx, err := immuStore.fetchAllocTx()
+	require.NoError(b, err)
+	defer immuStore.releaseAllocTx(tx)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		for i := 0; i < txCount; i++ {
+			_, err := immuStore.ExportTx(uint64(i+1), false, false, tx)
+			require.NoError(b, err)
+		}
+	}
+}
+
 func TestImmudbStoreIncompleteCommitWrite(t *testing.T) {
 	dir := t.TempDir()
 
@@ -3334,10 +3377,10 @@ func TestBlTXOrdering(t *testing.T) {
 
 		for i := uint64(1); i < maxTxID; i++ {
 
-			srcTxHeader, err := immuStore.ReadTxHeader(i, false)
+			srcTxHeader, err := immuStore.ReadTxHeader(i, false, false)
 			require.NoError(t, err)
 
-			dstTxHeader, err := immuStore.ReadTxHeader(i+1, false)
+			dstTxHeader, err := immuStore.ReadTxHeader(i+1, false, false)
 			require.NoError(t, err)
 
 			require.LessOrEqual(t, srcTxHeader.BlTxID, dstTxHeader.BlTxID)
@@ -4250,31 +4293,35 @@ func TestImmudbStoreWithoutVLogCache(t *testing.T) {
 }
 
 func TestImmudbStoreTruncateUptoTx_WithMultipleIOConcurrency(t *testing.T) {
+	fileSize := 1024
+
 	opts := DefaultOptions().
-		WithFileSize(6).
+		WithFileSize(fileSize).
 		WithMaxConcurrency(100).
 		WithMaxIOConcurrency(5)
 
 	st, err := Open(t.TempDir(), opts)
 	require.NoError(t, err)
 	require.NotNil(t, st)
+
 	defer immustoreClose(t, st)
 
-	ctx := context.TODO()
 	for i := 1; i <= 20; i++ {
-		key := []byte(fmt.Sprintf("key_%d", i))
-		value := []byte(fmt.Sprintf("val_%d", i))
-		tx, err := st.NewWriteOnlyTx(ctx)
+		tx, err := st.NewWriteOnlyTx(context.Background())
 		require.NoError(t, err)
+
+		key := []byte(fmt.Sprintf("key_%d", i))
+		value := make([]byte, fileSize)
 
 		err = tx.Set(key, nil, value)
 		require.NoError(t, err)
 
-		hdr, err := tx.Commit(ctx)
+		hdr, err := tx.Commit(context.Background())
 		require.NoError(t, err)
 
 		readTx := NewTx(st.MaxTxEntries(), st.MaxKeyLen())
-		err = st.ReadTx(hdr.ID, readTx)
+
+		err = st.ReadTx(hdr.ID, false, readTx)
 		require.NoError(t, err)
 
 		for _, e := range readTx.Entries() {
@@ -4284,13 +4331,16 @@ func TestImmudbStoreTruncateUptoTx_WithMultipleIOConcurrency(t *testing.T) {
 	}
 
 	deletePointTx := uint64(15)
-	hdr, err := st.ReadTxHeader(deletePointTx, false)
+
+	hdr, err := st.ReadTxHeader(deletePointTx, false, false)
 	require.NoError(t, err)
+
 	require.NoError(t, st.TruncateUptoTx(hdr.ID))
 
 	for i := deletePointTx; i <= 20; i++ {
 		tx := NewTx(st.MaxTxEntries(), st.MaxKeyLen())
-		err = st.ReadTx(i, tx)
+
+		err = st.ReadTx(i, false, tx)
 		require.NoError(t, err)
 
 		for _, e := range tx.Entries() {
@@ -4301,37 +4351,45 @@ func TestImmudbStoreTruncateUptoTx_WithMultipleIOConcurrency(t *testing.T) {
 }
 
 func TestImmudbStoreTruncateUptoTx_WithSingleIOConcurrency(t *testing.T) {
+	fileSize := 1024
+
 	opts := DefaultOptions().
-		WithFileSize(6).
+		WithFileSize(fileSize).
 		WithMaxIOConcurrency(1)
 
 	st, err := Open(t.TempDir(), opts)
 	require.NoError(t, err)
 	require.NotNil(t, st)
+
 	defer immustoreClose(t, st)
 
-	ctx := context.TODO()
 	for i := 1; i <= 10; i++ {
-		key := []byte(fmt.Sprintf("key_%d", i))
-		value := []byte(fmt.Sprintf("val_%d", i))
-		tx, err := st.NewWriteOnlyTx(ctx)
+		tx, err := st.NewWriteOnlyTx(context.Background())
 		require.NoError(t, err)
+
+		key := []byte(fmt.Sprintf("key_%d", i))
+		value := make([]byte, fileSize)
 
 		err = tx.Set(key, nil, value)
 		require.NoError(t, err)
 
-		_, err = tx.Commit(ctx)
+		_, err = tx.Commit(context.Background())
 		require.NoError(t, err)
 	}
 
 	deletePointTx := uint64(5)
-	hdr, err := st.ReadTxHeader(deletePointTx, false)
+
+	hdr, err := st.ReadTxHeader(deletePointTx, false, false)
 	require.NoError(t, err)
+
 	require.NoError(t, st.TruncateUptoTx(hdr.ID))
 
 	for i := deletePointTx; i <= 10; i++ {
 		tx := NewTx(st.MaxTxEntries(), st.MaxKeyLen())
-		err = st.ReadTx(i, tx)
+
+		err = st.ReadTx(i, false, tx)
+		require.NoError(t, err)
+
 		for _, e := range tx.Entries() {
 			_, err := st.ReadValue(e)
 			require.NoError(t, err)
@@ -4340,7 +4398,10 @@ func TestImmudbStoreTruncateUptoTx_WithSingleIOConcurrency(t *testing.T) {
 
 	for i := deletePointTx - 1; i > 0; i-- {
 		tx := NewTx(st.MaxTxEntries(), st.MaxKeyLen())
-		err = st.ReadTx(i, tx)
+
+		err = st.ReadTx(i, false, tx)
+		require.NoError(t, err)
+
 		for _, e := range tx.Entries() {
 			_, err := st.ReadValue(e)
 			require.Error(t, err)
@@ -4349,8 +4410,10 @@ func TestImmudbStoreTruncateUptoTx_WithSingleIOConcurrency(t *testing.T) {
 }
 
 func TestImmudbStoreTruncateUptoTx_ForIdempotency(t *testing.T) {
+	fileSize := 1024
+
 	opts := DefaultOptions().
-		WithFileSize(6).
+		WithFileSize(fileSize).
 		WithMaxIOConcurrency(1)
 
 	st, err := Open(t.TempDir(), opts)
@@ -4358,22 +4421,23 @@ func TestImmudbStoreTruncateUptoTx_ForIdempotency(t *testing.T) {
 	require.NotNil(t, st)
 	defer immustoreClose(t, st)
 
-	ctx := context.TODO()
 	for i := 1; i <= 10; i++ {
-		key := []byte(fmt.Sprintf("key_%d", i))
-		value := []byte(fmt.Sprintf("val_%d", i))
-		tx, err := st.NewWriteOnlyTx(ctx)
+		tx, err := st.NewWriteOnlyTx(context.Background())
 		require.NoError(t, err)
+
+		key := []byte(fmt.Sprintf("key_%d", i))
+		value := make([]byte, fileSize)
 
 		err = tx.Set(key, nil, value)
 		require.NoError(t, err)
 
-		_, err = tx.Commit(ctx)
+		_, err = tx.Commit(context.Background())
 		require.NoError(t, err)
 	}
 
 	deletePointTx := uint64(5)
-	hdr, err := st.ReadTxHeader(deletePointTx, false)
+
+	hdr, err := st.ReadTxHeader(deletePointTx, false, false)
 	require.NoError(t, err)
 
 	// TruncateUptoTx should be idempotent
@@ -4383,7 +4447,10 @@ func TestImmudbStoreTruncateUptoTx_ForIdempotency(t *testing.T) {
 
 	for i := deletePointTx; i <= 10; i++ {
 		tx := NewTx(st.MaxTxEntries(), st.MaxKeyLen())
-		err = st.ReadTx(i, tx)
+
+		err = st.ReadTx(i, false, tx)
+		require.NoError(t, err)
+
 		for _, e := range tx.Entries() {
 			_, err := st.ReadValue(e)
 			require.NoError(t, err)
@@ -4392,7 +4459,10 @@ func TestImmudbStoreTruncateUptoTx_ForIdempotency(t *testing.T) {
 
 	for i := deletePointTx - 1; i > 0; i-- {
 		tx := NewTx(st.MaxTxEntries(), st.MaxKeyLen())
-		err = st.ReadTx(i, tx)
+
+		err = st.ReadTx(i, false, tx)
+		require.NoError(t, err)
+
 		for _, e := range tx.Entries() {
 			_, err := st.ReadValue(e)
 			require.Error(t, err)
@@ -4402,47 +4472,57 @@ func TestImmudbStoreTruncateUptoTx_ForIdempotency(t *testing.T) {
 }
 
 func TestImmudbStore_WithConcurrentWritersOnMultipleIO(t *testing.T) {
+	fileSize := 1024
+
 	opts := DefaultOptions().
-		WithFileSize(6).
+		WithFileSize(fileSize).
 		WithMaxConcurrency(100).
 		WithMaxIOConcurrency(3)
 
 	st, err := Open(t.TempDir(), opts)
 	require.NoError(t, err)
 	require.NotNil(t, st)
+
 	defer immustoreClose(t, st)
 
-	ctx := context.TODO()
-
 	wg := sync.WaitGroup{}
+
 	for i := 1; i <= 3; i++ {
 		wg.Add(1)
+
 		go func(j int) {
 			defer wg.Done()
+
 			for k := 1*(j-1)*10 + 1; k < (j*10)+1; k++ {
-				key := []byte(fmt.Sprintf("key_%d", k))
-				value := []byte(fmt.Sprintf("val_%d", k))
-				tx, err := st.NewWriteOnlyTx(ctx)
+				tx, err := st.NewWriteOnlyTx(context.Background())
 				require.NoError(t, err)
+
+				key := []byte(fmt.Sprintf("key_%d", k))
+				value := make([]byte, fileSize)
 
 				err = tx.Set(key, nil, value)
 				require.NoError(t, err)
 
-				_, err = tx.Commit(ctx)
+				_, err = tx.Commit(context.Background())
 				require.NoError(t, err)
 			}
 		}(i)
 	}
+
 	wg.Wait()
 
 	deletePointTx := uint64(15)
-	hdr, err := st.ReadTxHeader(deletePointTx, false)
+
+	hdr, err := st.ReadTxHeader(deletePointTx, false, false)
 	require.NoError(t, err)
 	require.NoError(t, st.TruncateUptoTx(hdr.ID))
 
 	for i := deletePointTx; i <= 30; i++ {
 		tx := NewTx(st.MaxTxEntries(), st.MaxKeyLen())
-		err = st.ReadTx(i, tx)
+
+		err = st.ReadTx(i, false, tx)
+		require.NoError(t, err)
+
 		for _, e := range tx.Entries() {
 			_, err := st.ReadValue(e)
 			require.NoError(t, err)
@@ -4451,29 +4531,32 @@ func TestImmudbStore_WithConcurrentWritersOnMultipleIO(t *testing.T) {
 }
 
 func TestImmudbStore_WithConcurrentTruncate(t *testing.T) {
+	fileSize := 1024
+
 	opts := DefaultOptions().
-		WithFileSize(6).
+		WithFileSize(fileSize).
 		WithMaxIOConcurrency(1)
 
 	st, err := Open(t.TempDir(), opts)
 	require.NoError(t, err)
 	require.NotNil(t, st)
+
 	defer immustoreClose(t, st)
 
 	waitCh := make(chan struct{})
 	doneCh := make(chan struct{})
-	ctx := context.TODO()
 
 	for i := 1; i <= 20; i++ {
-		key := []byte(fmt.Sprintf("key_%d", i))
-		value := []byte(fmt.Sprintf("val_%d", i))
-		tx, err := st.NewWriteOnlyTx(ctx)
+		tx, err := st.NewWriteOnlyTx(context.Background())
 		require.NoError(t, err)
+
+		key := []byte(fmt.Sprintf("key_%d", i))
+		value := make([]byte, fileSize)
 
 		err = tx.Set(key, nil, value)
 		require.NoError(t, err)
 
-		_, err = tx.Commit(ctx)
+		_, err = tx.Commit(context.Background())
 		require.NoError(t, err)
 
 		if i == 10 {
@@ -4485,16 +4568,22 @@ func TestImmudbStore_WithConcurrentTruncate(t *testing.T) {
 
 	go func() {
 		<-waitCh
-		hdr, err := st.ReadTxHeader(deletePointTx, false)
+
+		hdr, err := st.ReadTxHeader(deletePointTx, false, false)
 		require.NoError(t, err)
 		require.NoError(t, st.TruncateUptoTx(hdr.ID))
+
 		close(doneCh)
 	}()
 
 	<-doneCh
+
 	for i := deletePointTx; i <= 20; i++ {
 		tx := NewTx(st.MaxTxEntries(), st.MaxKeyLen())
-		err = st.ReadTx(i, tx)
+
+		err = st.ReadTx(i, false, tx)
+		require.NoError(t, err)
+
 		for _, e := range tx.Entries() {
 			_, err := st.ReadValue(e)
 			require.NoError(t, err)
@@ -4503,7 +4592,10 @@ func TestImmudbStore_WithConcurrentTruncate(t *testing.T) {
 
 	for i := deletePointTx - 1; i > 0; i-- {
 		tx := NewTx(st.MaxTxEntries(), st.MaxKeyLen())
-		err = st.ReadTx(i, tx)
+
+		err = st.ReadTx(i, false, tx)
+		require.NoError(t, err)
+
 		for _, e := range tx.Entries() {
 			_, err := st.ReadValue(e)
 			require.Error(t, err)
@@ -4512,8 +4604,10 @@ func TestImmudbStore_WithConcurrentTruncate(t *testing.T) {
 }
 
 func TestExportTxWithTruncation(t *testing.T) {
+	fileSize := 1024
+
 	opts := DefaultOptions().
-		WithFileSize(6).
+		WithFileSize(fileSize).
 		WithMaxIOConcurrency(1)
 
 	// Create a master store
@@ -4528,36 +4622,42 @@ func TestExportTxWithTruncation(t *testing.T) {
 	require.NoError(t, err)
 	defer immustoreClose(t, replicaStore)
 
-	ctx := context.TODO()
 	t.Run("validate replication post truncation on master", func(t *testing.T) {
 		hdrs := make([]*TxHeader, 0, 5)
 
 		// Add 10 transactions on master store
 		for i := 1; i <= 10; i++ {
-			key := []byte(fmt.Sprintf("key_%d", i))
-			value := []byte(fmt.Sprintf("val_%d", i))
-			tx, err := masterStore.NewWriteOnlyTx(ctx)
+			tx, err := masterStore.NewWriteOnlyTx(context.Background())
 			require.NoError(t, err)
+
+			key := []byte(fmt.Sprintf("key_%d", i))
+			value := make([]byte, fileSize)
 
 			err = tx.Set(key, nil, value)
 			require.NoError(t, err)
 
-			hdr, err := tx.Commit(ctx)
+			hdr, err := tx.Commit(context.Background())
 			require.NoError(t, err)
 			require.NotNil(t, hdr)
+
 			hdrs = append(hdrs, hdr)
 		}
 
 		// Truncate upto 5th transaction on master store
 		deletePointTx := uint64(5)
-		hdr, err := masterStore.ReadTxHeader(deletePointTx, false)
+
+		hdr, err := masterStore.ReadTxHeader(deletePointTx, false, false)
 		require.NoError(t, err)
+
 		require.NoError(t, masterStore.TruncateUptoTx(hdr.ID))
 
 		// Validate that the values are not accessible for transactions that are truncated
 		for i := deletePointTx - 1; i > 0; i-- {
 			tx := NewTx(masterStore.MaxTxEntries(), masterStore.MaxKeyLen())
-			err = masterStore.ReadTx(i, tx)
+
+			err = masterStore.ReadTx(i, false, tx)
+			require.NoError(t, err)
+
 			for _, e := range tx.Entries() {
 				_, err := masterStore.ReadValue(e)
 				require.Error(t, err)
@@ -4568,10 +4668,10 @@ func TestExportTxWithTruncation(t *testing.T) {
 		for i := uint64(1); i <= 10; i++ {
 			txholder := tempTxHolder(t, masterStore)
 
-			etx, err := masterStore.ExportTx(i, false, txholder)
+			etx, err := masterStore.ExportTx(i, false, false, txholder)
 			require.NoError(t, err)
 
-			rhdr, err := replicaStore.ReplicateTx(ctx, etx, false)
+			rhdr, err := replicaStore.ReplicateTx(context.Background(), etx, false, false)
 			require.NoError(t, err)
 			require.NotNil(t, rhdr)
 		}
@@ -4579,7 +4679,9 @@ func TestExportTxWithTruncation(t *testing.T) {
 		// Validate that the alh is matching with master when data is exported to replica
 		for i := uint64(1); i <= 10; i++ {
 			tx := NewTx(replicaStore.MaxTxEntries(), replicaStore.MaxKeyLen())
-			err = replicaStore.ReadTx(i, tx)
+
+			err = replicaStore.ReadTx(i, false, tx)
+			require.NoError(t, err)
 
 			hdr := hdrs[i-1]
 			require.Equal(t, hdr.ID, tx.header.ID)
@@ -4589,7 +4691,10 @@ func TestExportTxWithTruncation(t *testing.T) {
 		// Validate that the values are not copied on replica for truncated transaction on master
 		for i := deletePointTx - 1; i > 0; i-- {
 			tx := NewTx(replicaStore.MaxTxEntries(), replicaStore.MaxKeyLen())
-			err = replicaStore.ReadTx(i, tx)
+
+			err = replicaStore.ReadTx(i, false, tx)
+			require.NoError(t, err)
+
 			for _, e := range tx.Entries() {
 				val, err := replicaStore.ReadValue(e)
 				require.NoError(t, err)
@@ -4600,7 +4705,10 @@ func TestExportTxWithTruncation(t *testing.T) {
 		// Validate that the values are copied on replica for non truncated transaction on master
 		for i := deletePointTx; i <= 10; i++ {
 			tx := NewTx(replicaStore.MaxTxEntries(), replicaStore.MaxKeyLen())
-			err = replicaStore.ReadTx(i, tx)
+
+			err = replicaStore.ReadTx(i, false, tx)
+			require.NoError(t, err)
+
 			for _, e := range tx.Entries() {
 				val, err := replicaStore.ReadValue(e)
 				require.NoError(t, err)
@@ -4616,9 +4724,8 @@ func TestImmudbStoreTxMetadata(t *testing.T) {
 	immuStore, err := Open(t.TempDir(), opts)
 	require.NoError(t, err)
 
-	ctx := context.TODO()
 	t.Run("test tx metadata with truncation header", func(t *testing.T) {
-		tx, err := immuStore.NewTx(ctx, DefaultTxOptions())
+		tx, err := immuStore.NewTx(context.Background(), DefaultTxOptions())
 		require.NoError(t, err)
 		require.NotNil(t, tx)
 
@@ -4627,7 +4734,7 @@ func TestImmudbStoreTxMetadata(t *testing.T) {
 		err = tx.Set([]byte{1, 2, 3}, nil, []byte{3, 2, 1})
 		require.NoError(t, err)
 
-		_, err = tx.Commit(ctx)
+		_, err = tx.Commit(context.Background())
 		require.NoError(t, err)
 
 		valRef, err := immuStore.Get([]byte{1, 2, 3})
@@ -4644,15 +4751,16 @@ func TestImmudbStoreTxMetadata(t *testing.T) {
 	})
 
 	t.Run("test tx metadata with no truncation header", func(t *testing.T) {
-		tx, err := immuStore.NewTx(ctx, DefaultTxOptions())
+		tx, err := immuStore.NewTx(context.Background(), DefaultTxOptions())
 		require.NoError(t, err)
 		require.NotNil(t, tx)
 
 		err = tx.Set([]byte{1, 2, 3}, nil, []byte{1, 1, 1})
 		require.NoError(t, err)
 
-		_, err = tx.Commit(ctx)
+		_, err = tx.Commit(context.Background())
 		require.NoError(t, err)
+
 		valRef, err := immuStore.Get([]byte{1, 2, 3})
 		require.NoError(t, err)
 		require.Equal(t, uint64(2), valRef.Tx())
@@ -4671,49 +4779,57 @@ func TestImmudbStoreTxMetadata(t *testing.T) {
 }
 
 func TestImmudbStoreTruncateUptoTx_WithDataPostTruncationPoint(t *testing.T) {
+	fileSize := 1024
+
 	opts := DefaultOptions().
-		WithFileSize(6).
+		WithFileSize(fileSize).
 		WithMaxIOConcurrency(1)
 
 	st, err := Open(t.TempDir(), opts)
 	require.NoError(t, err)
 	require.NotNil(t, st)
+
 	defer immustoreClose(t, st)
 
-	ctx := context.TODO()
 	for i := 1; i <= 10; i++ {
-		key := []byte(fmt.Sprintf("key_%d", i))
-		value := []byte(fmt.Sprintf("val_%d", i))
-		tx, err := st.NewWriteOnlyTx(ctx)
+		tx, err := st.NewWriteOnlyTx(context.Background())
 		require.NoError(t, err)
+
+		key := []byte(fmt.Sprintf("key_%d", i))
+		value := make([]byte, fileSize)
 
 		err = tx.Set(key, nil, value)
 		require.NoError(t, err)
 
-		_, err = tx.Commit(ctx)
+		_, err = tx.Commit(context.Background())
 		require.NoError(t, err)
 	}
 
 	deletePointTx := uint64(1)
-	hdr, err := st.ReadTxHeader(deletePointTx, false)
+
+	hdr, err := st.ReadTxHeader(deletePointTx, false, false)
 	require.NoError(t, err)
 
 	require.NoError(t, st.TruncateUptoTx(hdr.ID))
 
 	for i := 11; i <= 20; i++ {
-		key := []byte(fmt.Sprintf("key_%d", i))
-		value := []byte(fmt.Sprintf("val_%d", i))
-		tx, err := st.NewWriteOnlyTx(ctx)
+		tx, err := st.NewWriteOnlyTx(context.Background())
 		require.NoError(t, err)
+
+		key := []byte(fmt.Sprintf("key_%d", i))
+		value := make([]byte, fileSize)
 
 		err = tx.Set(key, nil, value)
 		require.NoError(t, err)
 
-		hdr, err = tx.Commit(ctx)
+		hdr, err = tx.Commit(context.Background())
 		require.NoError(t, err)
 
 		rtx := NewTx(st.MaxTxEntries(), st.MaxKeyLen())
-		err = st.ReadTx(hdr.ID, rtx)
+
+		err = st.ReadTx(hdr.ID, false, rtx)
+		require.NoError(t, err)
+
 		for _, e := range rtx.Entries() {
 			_, err := st.ReadValue(e)
 			require.NoError(t, err)

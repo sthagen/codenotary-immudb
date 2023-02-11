@@ -839,7 +839,7 @@ func TestInsertIntoEdgeCases(t *testing.T) {
 	_, _, err := engine.Exec(context.Background(), nil, "CREATE TABLE table1 (id INTEGER, title VARCHAR[10], active BOOLEAN, payload BLOB[2], PRIMARY KEY id)", nil)
 	require.NoError(t, err)
 
-	_, _, err = engine.Exec(context.Background(), nil, "CREATE INDEX ON table1 (title)", nil)
+	_, _, err = engine.Exec(context.Background(), nil, "CREATE UNIQUE INDEX ON table1 (title)", nil)
 	require.NoError(t, err)
 
 	_, _, err = engine.Exec(context.Background(), nil, "CREATE INDEX ON table1 (active)", nil)
@@ -861,6 +861,23 @@ func TestInsertIntoEdgeCases(t *testing.T) {
 		require.Len(t, ctxs, 1)
 		require.Zero(t, ctxs[0].UpdatedRows())
 		require.Nil(t, ctxs[0].TxHeader())
+	})
+
+	t.Run("on conflict case with multiple rows", func(t *testing.T) {
+		ntx, ctxs, err := engine.Exec(context.Background(), nil, `
+			INSERT INTO table1 (id, title, active, payload)
+			VALUES
+				(1, 'title1', true, x'00A1'),
+				(11, 'title11', true, x'00B1')
+			ON CONFLICT DO NOTHING`, nil)
+		require.NoError(t, err)
+		require.Nil(t, ntx)
+		require.Len(t, ctxs, 1)
+		require.Equal(t, 1, ctxs[0].UpdatedRows())
+		require.NotNil(t, ctxs[0].TxHeader())
+
+		_, _, err = engine.Exec(context.Background(), nil, "INSERT INTO table1 (id, title, active, payload) VALUES (1, 'title11', true, x'00B1')", nil)
+		require.ErrorIs(t, err, store.ErrKeyAlreadyExists)
 	})
 
 	t.Run("varchar key cases", func(t *testing.T) {
@@ -5903,42 +5920,43 @@ func setupCommonTestWithOptions(t *testing.T, sopts *store.Options) (*Engine, *s
 	require.NoError(t, err)
 	t.Cleanup(func() { closeStore(t, st) })
 
-	ctx := context.TODO()
 	engine, err := NewEngine(st, DefaultOptions().WithPrefix(sqlPrefix))
 	require.NoError(t, err)
 
-	_, _, err = engine.Exec(ctx, nil, "CREATE DATABASE db1;", nil)
+	_, _, err = engine.Exec(context.Background(), nil, "CREATE DATABASE db1;", nil)
 	require.NoError(t, err)
 
-	_, _, err = engine.Exec(ctx, nil, "USE DATABASE db1;", nil)
+	_, _, err = engine.Exec(context.Background(), nil, "USE DATABASE db1;", nil)
 	require.NoError(t, err)
 
 	return engine, st
 }
 
 func TestCopyCatalogToTx(t *testing.T) {
+	fileSize := 1024
+
 	opts := store.DefaultOptions()
-	opts.WithIndexOptions(opts.IndexOpts.WithMaxActiveSnapshots(10)).WithFileSize(6)
+	opts.WithIndexOptions(opts.IndexOpts.WithMaxActiveSnapshots(10)).WithFileSize(fileSize)
+
 	engine, st := setupCommonTestWithOptions(t, opts)
 
-	ctx := context.TODO()
 	exec := func(t *testing.T, stmt string) *SQLTx {
-		ret, _, err := engine.Exec(ctx, nil, stmt, nil)
+		ret, _, err := engine.Exec(context.Background(), nil, stmt, nil)
 		require.NoError(t, err)
 		return ret
 	}
 
 	query := func(t *testing.T, stmt string, expectedRows ...*Row) {
-		reader, err := engine.Query(ctx, nil, stmt, nil)
+		reader, err := engine.Query(context.Background(), nil, stmt, nil)
 		require.NoError(t, err)
 
 		for _, expectedRow := range expectedRows {
-			row, err := reader.Read(ctx)
+			row, err := reader.Read(context.Background())
 			require.NoError(t, err)
 			require.EqualValues(t, expectedRow, row)
 		}
 
-		_, err = reader.Read(ctx)
+		_, err = reader.Read(context.Background())
 		require.ErrorIs(t, err, ErrNoMoreRows)
 
 		err = reader.Close()
@@ -6000,23 +6018,25 @@ func TestCopyCatalogToTx(t *testing.T) {
 	query(t, "SELECT * FROM table2")
 
 	t.Run("should fail due to unique index", func(t *testing.T) {
-		_, _, err := engine.Exec(ctx, nil, "INSERT INTO table1 (name, amount) VALUES ('name1', 10), ('name1', 10)", nil)
+		_, _, err := engine.Exec(context.Background(), nil, "INSERT INTO table1 (name, amount) VALUES ('name1', 10), ('name1', 10)", nil)
 		require.ErrorIs(t, err, store.ErrKeyAlreadyExists)
 	})
 
 	// insert some data
 	var deleteUptoTx *store.TxHeader
+
 	t.Run("insert few transactions", func(t *testing.T) {
 		for i := 1; i <= 5; i++ {
-			key := []byte(fmt.Sprintf("key_%d", i))
-			value := []byte(fmt.Sprintf("val_%d", i))
-			tx, err := st.NewWriteOnlyTx(ctx)
+			tx, err := st.NewWriteOnlyTx(context.Background())
 			require.NoError(t, err)
+
+			key := []byte(fmt.Sprintf("key_%d", i))
+			value := make([]byte, fileSize)
 
 			err = tx.Set(key, nil, value)
 			require.NoError(t, err)
 
-			deleteUptoTx, err = tx.Commit(ctx)
+			deleteUptoTx, err = tx.Commit(context.Background())
 			require.NoError(t, err)
 		}
 	})
@@ -6034,12 +6054,13 @@ func TestCopyCatalogToTx(t *testing.T) {
 
 	// copy current catalog for recreating the catalog for database/table
 	t.Run("succeed copying catalog for db", func(t *testing.T) {
-		tx, err := engine.store.NewTx(ctx, store.DefaultTxOptions())
+		tx, err := engine.store.NewTx(context.Background(), store.DefaultTxOptions())
 		require.NoError(t, err)
 
 		err = engine.CopyCatalogToTx(context.Background(), tx)
 		require.NoError(t, err)
-		hdr, err := tx.Commit(ctx)
+
+		hdr, err := tx.Commit(context.Background())
 		require.NoError(t, err)
 		// ensure that the last committed txn is the one we just committed
 		require.Equal(t, hdr.ID, st.LastCommittedTxID())
@@ -6047,7 +6068,7 @@ func TestCopyCatalogToTx(t *testing.T) {
 
 	// delete txns in the store upto a certain txn
 	t.Run("succeed truncating sql catalog", func(t *testing.T) {
-		hdr, err := st.ReadTxHeader(deleteUptoTx.ID, false)
+		hdr, err := st.ReadTxHeader(deleteUptoTx.ID, false, false)
 		require.NoError(t, err)
 		require.NoError(t, st.TruncateUptoTx(hdr.ID))
 	})
@@ -6083,15 +6104,15 @@ func TestCopyCatalogToTx(t *testing.T) {
 	})
 
 	t.Run("indexing should work with new catalogue", func(t *testing.T) {
-		_, _, err := engine.Exec(ctx, nil, "INSERT INTO table1 (name, amount) VALUES ('name1', 10), ('name1', 10)", nil)
+		_, _, err := engine.Exec(context.Background(), nil, "INSERT INTO table1 (name, amount) VALUES ('name1', 10), ('name1', 10)", nil)
 		require.ErrorIs(t, err, store.ErrKeyAlreadyExists)
 
 		// should fail due non-available index
-		_, err = engine.Query(ctx, nil, "SELECT * FROM table1 ORDER BY amount DESC", nil)
+		_, err = engine.Query(context.Background(), nil, "SELECT * FROM table1 ORDER BY amount DESC", nil)
 		require.ErrorIs(t, err, ErrNoAvailableIndex)
 
 		// should use primary index by default
-		r, err := engine.Query(ctx, nil, "SELECT * FROM table1", nil)
+		r, err := engine.Query(context.Background(), nil, "SELECT * FROM table1", nil)
 		require.NoError(t, err)
 
 		orderBy := r.OrderBy()
@@ -6108,6 +6129,89 @@ func TestCopyCatalogToTx(t *testing.T) {
 
 		err = r.Close()
 		require.NoError(t, err)
-
 	})
+}
+
+func BenchmarkInsertInto(b *testing.B) {
+	workerCount := 100
+
+	opts := store.DefaultOptions().
+		WithSynced(false).
+		WithMaxConcurrency(workerCount)
+
+	st, err := store.Open(b.TempDir(), opts)
+	if err != nil {
+		b.Fail()
+	}
+
+	defer st.Close()
+
+	engine, err := NewEngine(st, DefaultOptions().WithPrefix(sqlPrefix))
+	if err != nil {
+		b.Fail()
+	}
+
+	_, _, err = engine.Exec(context.Background(), nil, "CREATE DATABASE db1;", nil)
+	if err != nil {
+		b.Fail()
+	}
+
+	_, _, err = engine.Exec(context.Background(), nil, "USE DATABASE db1;", nil)
+	if err != nil {
+		b.Fail()
+	}
+
+	_, _, err = engine.Exec(context.Background(), nil, "CREATE TABLE mytable1(id VARCHAR[30], title VARCHAR[50], PRIMARY KEY id);", nil)
+	if err != nil {
+		b.Fail()
+	}
+
+	time.Sleep(1 * time.Second)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		var wg sync.WaitGroup
+		wg.Add(workerCount)
+
+		for w := 0; w < workerCount; w++ {
+			go func(r, w int) {
+				txCount := 50
+				eCount := 10
+
+				for i := 0; i < txCount; i++ {
+					txOpts := DefaultTxOptions().
+						WithExplicitClose(true).
+						WithSnapshotRenewalPeriod(1000 * time.Millisecond).
+						WithSnapshotMustIncludeTxID(nil)
+
+					tx, err := engine.NewTx(context.Background(), txOpts)
+					if err != nil {
+						b.Fail()
+					}
+
+					for j := 0; j < eCount; j++ {
+						params := map[string]interface{}{
+							"id":    fmt.Sprintf("id_%d_%d_%d_%d", r, w, i, j),
+							"title": fmt.Sprintf("title_%d_%d_%d_%d", r, w, i, j),
+						}
+
+						_, _, err = engine.Exec(context.Background(), tx, "INSERT INTO mytable1(id, title) VALUES (@id, @title);", params)
+						if err != nil {
+							b.Fail()
+						}
+					}
+
+					err = tx.Commit(context.Background())
+					if err != nil {
+						b.Fail()
+					}
+				}
+
+				wg.Done()
+			}(i, w)
+		}
+
+		wg.Wait()
+	}
 }

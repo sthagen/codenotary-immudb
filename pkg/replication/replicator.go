@@ -64,12 +64,17 @@ type TxReplicator struct {
 
 	streamSrvFactory stream.ServiceFactory
 
+	exportTxStream         schema.ImmuService_StreamExportTxClient
+	exportTxStreamReceiver stream.MsgReceiver
+
 	lastTx uint64
 
 	prefetchTxBuffer       chan prefetchTxEntry // buffered channel of exported txs
 	replicationConcurrency int
 
-	allowTxDiscarding bool
+	allowTxDiscarding  bool
+	skipIntegrityCheck bool
+	waitForIndexing    bool
 
 	delayer             Delayer
 	consecutiveFailures int
@@ -96,6 +101,8 @@ func NewTxReplicator(uuid xid.ID, db database.DB, opts *Options, logger logger.L
 		prefetchTxBuffer:       make(chan prefetchTxEntry, opts.prefetchTxBufferSize),
 		replicationConcurrency: opts.replicationCommitConcurrency,
 		allowTxDiscarding:      opts.allowTxDiscarding,
+		skipIntegrityCheck:     opts.skipIntegrityCheck,
+		waitForIndexing:        opts.waitForIndexing,
 		delayer:                opts.delayer,
 		metrics:                metricsForDb(db.GetName()),
 	}, nil
@@ -203,7 +210,7 @@ func (txr *TxReplicator) replicateSingleTx(data []byte) bool {
 
 	// replication must be retried as many times as necessary
 	for {
-		_, err := txr.db.ReplicateTx(txr.context, data)
+		_, err := txr.db.ReplicateTx(txr.context, data, txr.skipIntegrityCheck, txr.waitForIndexing)
 		if err == nil {
 			break // transaction successfully replicated
 		}
@@ -234,6 +241,7 @@ func (txr *TxReplicator) replicationFailureDelay(consecutiveFailures int) bool {
 	defer txr.metrics.replicatorsInRetryDelay.Dec()
 
 	timer := time.NewTimer(txr.delayer.DelayAfter(consecutiveFailures))
+
 	select {
 	case <-txr.context.Done():
 		timer.Stop()
@@ -257,6 +265,7 @@ func (txr *TxReplicator) connect() error {
 		WithAddress(txr.opts.primaryHost).
 		WithPort(txr.opts.primaryPort).
 		WithDisableIdentityCheck(true)
+
 	txr.client = client.NewClient().WithOptions(opts)
 
 	err := txr.client.OpenSession(
@@ -270,6 +279,13 @@ func (txr *TxReplicator) connect() error {
 		txr.opts.primaryPort,
 		txr.db.GetName())
 
+	txr.exportTxStream, err = txr.client.StreamExportTx(txr.context)
+	if err != nil {
+		return err
+	}
+
+	txr.exportTxStreamReceiver = txr.streamSrvFactory.NewMsgReceiver(txr.exportTxStream)
+
 	return nil
 }
 
@@ -280,8 +296,12 @@ func (txr *TxReplicator) disconnect() {
 
 	txr.logger.Infof("Disconnecting from '%s':'%d' for database '%s'...", txr.opts.primaryHost, txr.opts.primaryPort, txr.db.GetName())
 
-	txr.client.CloseSession(txr.context)
+	if txr.exportTxStream != nil {
+		txr.exportTxStream.CloseSend()
+		txr.exportTxStream = nil
+	}
 
+	txr.client.CloseSession(txr.context)
 	txr.client = nil
 
 	txr.logger.Infof("Disconnected from '%s':'%d' for database '%s'", txr.opts.primaryHost, txr.opts.primaryPort, txr.db.GetName())
@@ -295,7 +315,7 @@ func (txr *TxReplicator) fetchNextTx() error {
 		return ErrAlreadyStopped
 	}
 
-	if txr.client == nil {
+	if txr.exportTxStream == nil {
 		err := txr.connect()
 		if err != nil {
 			return err
@@ -327,17 +347,19 @@ func (txr *TxReplicator) fetchNextTx() error {
 		}
 	}
 
-	exportTxStream, err := txr.client.ExportTx(txr.context, &schema.ExportTxRequest{
-		Tx:                nextTx,
-		ReplicaState:      state,
-		AllowPreCommitted: syncReplicationEnabled,
-	})
+	req := &schema.ExportTxRequest{
+		Tx:                 nextTx,
+		ReplicaState:       state,
+		AllowPreCommitted:  syncReplicationEnabled,
+		SkipIntegrityCheck: txr.skipIntegrityCheck,
+	}
 	if err != nil {
 		return err
 	}
 
-	receiver := txr.streamSrvFactory.NewMsgReceiver(exportTxStream)
-	etx, err := receiver.ReadFully()
+	txr.exportTxStream.Send(req)
+
+	etx, emd, err := txr.exportTxStreamReceiver.ReadFully()
 
 	if err != nil && !errors.Is(err, io.EOF) {
 		if strings.Contains(err.Error(), "commit state diverged from") {
@@ -370,25 +392,32 @@ func (txr *TxReplicator) fetchNextTx() error {
 	}
 
 	if syncReplicationEnabled {
-		md := exportTxStream.Trailer()
-
-		if len(md.Get("may-commit-up-to-txid-bin")) == 0 ||
-			len(md.Get("may-commit-up-to-alh-bin")) == 0 ||
-			len(md.Get("committed-txid-bin")) == 0 {
+		bMayCommitUpToTxID, ok := emd["may-commit-up-to-txid-bin"]
+		if !ok {
 			return ErrNoSynchronousReplicationOnPrimary
 		}
 
-		if len(md.Get("may-commit-up-to-txid-bin")[0]) != 8 ||
-			len(md.Get("may-commit-up-to-alh-bin")[0]) != sha256.Size ||
-			len(md.Get("committed-txid-bin")[0]) != 8 {
+		bmayCommitUpToAlh, ok := emd["may-commit-up-to-alh-bin"]
+		if !ok {
+			return ErrNoSynchronousReplicationOnPrimary
+		}
+
+		bCommittedTxID, ok := emd["committed-txid-bin"]
+		if !ok {
+			return ErrNoSynchronousReplicationOnPrimary
+		}
+
+		if len(bMayCommitUpToTxID) != 8 ||
+			len(bmayCommitUpToAlh) != sha256.Size ||
+			len(bCommittedTxID) != 8 {
 			return ErrInvalidReplicationMetadata
 		}
 
-		mayCommitUpToTxID := binary.BigEndian.Uint64([]byte(md.Get("may-commit-up-to-txid-bin")[0]))
-		committedTxID := binary.BigEndian.Uint64([]byte(md.Get("committed-txid-bin")[0]))
+		mayCommitUpToTxID := binary.BigEndian.Uint64(bMayCommitUpToTxID)
+		committedTxID := binary.BigEndian.Uint64(bCommittedTxID)
 
 		var mayCommitUpToAlh [sha256.Size]byte
-		copy(mayCommitUpToAlh[:], []byte(md.Get("may-commit-up-to-alh-bin")[0]))
+		copy(mayCommitUpToAlh[:], bmayCommitUpToAlh)
 
 		txr.metrics.primaryCommittedTxID.Set(float64(committedTxID))
 		txr.metrics.allowCommitUpToTxID.Set(float64(mayCommitUpToTxID))

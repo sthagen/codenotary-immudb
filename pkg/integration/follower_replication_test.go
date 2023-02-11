@@ -18,16 +18,20 @@ package integration
 
 import (
 	"context"
+	"encoding/binary"
 	"net"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/auth"
 	ic "github.com/codenotary/immudb/pkg/client"
+	"github.com/codenotary/immudb/pkg/replication"
 	"github.com/codenotary/immudb/pkg/server"
+	"github.com/codenotary/immudb/pkg/stream"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc/metadata"
 )
 
 func TestReplication(t *testing.T) {
@@ -81,18 +85,19 @@ func TestReplication(t *testing.T) {
 
 	// init primary client
 	primaryPort := primaryServer.Listener.Addr().(*net.TCPAddr).Port
-	primaryClient, err := ic.NewImmuClient(ic.DefaultOptions().WithDir(t.TempDir()).WithPort(primaryPort))
-	require.NoError(t, err)
-	require.NotNil(t, primaryClient)
 
-	mlr, err := primaryClient.Login(context.TODO(), []byte(`immudb`), []byte(`immudb`))
+	primaryOpts := ic.DefaultOptions().
+		WithDir(t.TempDir()).
+		WithPort(primaryPort)
+
+	primaryClient := ic.NewClient().WithOptions(primaryOpts)
 	require.NoError(t, err)
 
-	mmd := metadata.Pairs("authorization", mlr.Token)
-	pctx := metadata.NewOutgoingContext(context.Background(), mmd)
+	err = primaryClient.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "defaultdb")
+	require.NoError(t, err)
 
 	// create database as primarydb in primary server
-	_, err = primaryClient.CreateDatabaseV2(pctx, "primarydb", &schema.DatabaseNullableSettings{
+	_, err = primaryClient.CreateDatabaseV2(context.Background(), "primarydb", &schema.DatabaseNullableSettings{
 		ReplicationSettings: &schema.ReplicationNullableSettings{
 			SyncReplication: &schema.NullableBool{Value: true},
 			SyncAcks:        &schema.NullableUint32{Value: 1},
@@ -100,33 +105,35 @@ func TestReplication(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	mdb, err := primaryClient.UseDatabase(pctx, &schema.Database{DatabaseName: "primarydb"})
-	require.NoError(t, err)
-	require.NotNil(t, mdb)
-
-	mmd = metadata.Pairs("authorization", mdb.Token)
-	pctx = metadata.NewOutgoingContext(context.Background(), mmd)
-
-	err = primaryClient.CreateUser(pctx, []byte("replicator"), []byte("replicator1Pwd!"), auth.PermissionAdmin, "primarydb")
+	err = primaryClient.CloseSession(context.Background())
 	require.NoError(t, err)
 
-	err = primaryClient.SetActiveUser(pctx, &schema.SetActiveUserRequest{Active: true, Username: "replicator"})
+	err = primaryClient.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "primarydb")
+	require.NoError(t, err)
+
+	defer primaryClient.CloseSession(context.Background())
+
+	err = primaryClient.CreateUser(context.Background(), []byte("replicator"), []byte("replicator1Pwd!"), auth.PermissionAdmin, "primarydb")
+	require.NoError(t, err)
+
+	err = primaryClient.SetActiveUser(context.Background(), &schema.SetActiveUserRequest{Active: true, Username: "replicator"})
 	require.NoError(t, err)
 
 	// init replica client
 	replicaPort := replicaServer.Listener.Addr().(*net.TCPAddr).Port
-	replicaClient, err := ic.NewImmuClient(ic.DefaultOptions().WithDir(t.TempDir()).WithPort(replicaPort))
-	require.NoError(t, err)
-	require.NotNil(t, replicaClient)
 
-	flr, err := replicaClient.Login(context.TODO(), []byte(`immudb`), []byte(`immudb`))
+	replicaOpts := ic.DefaultOptions().
+		WithDir(t.TempDir()).
+		WithPort(replicaPort)
+
+	replicaClient := ic.NewClient().WithOptions(replicaOpts)
 	require.NoError(t, err)
 
-	fmd := metadata.Pairs("authorization", flr.Token)
-	rctx := metadata.NewOutgoingContext(context.Background(), fmd)
+	err = replicaClient.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "defaultdb")
+	require.NoError(t, err)
 
 	// create database as replica in replica server
-	_, err = replicaClient.CreateDatabaseV2(rctx, "replicadb", &schema.DatabaseNullableSettings{
+	_, err = replicaClient.CreateDatabaseV2(context.Background(), "replicadb", &schema.DatabaseNullableSettings{
 		ReplicationSettings: &schema.ReplicationNullableSettings{
 			Replica:         &schema.NullableBool{Value: true},
 			SyncReplication: &schema.NullableBool{Value: true},
@@ -141,50 +148,51 @@ func TestReplication(t *testing.T) {
 
 	time.Sleep(1 * time.Second)
 
-	_, err = replicaClient.UpdateDatabaseV2(rctx, "replicadb", &schema.DatabaseNullableSettings{
+	_, err = replicaClient.UpdateDatabaseV2(context.Background(), "replicadb", &schema.DatabaseNullableSettings{
 		ReplicationSettings: &schema.ReplicationNullableSettings{
 			PrimaryPassword: &schema.NullableString{Value: "replicator1Pwd!"},
 		},
 	})
 	require.NoError(t, err)
 
-	fdb, err := replicaClient.UseDatabase(rctx, &schema.Database{DatabaseName: "replicadb"})
+	err = replicaClient.CloseSession(context.Background())
 	require.NoError(t, err)
-	require.NotNil(t, fdb)
 
-	fmd = metadata.Pairs("authorization", fdb.Token)
-	rctx = metadata.NewOutgoingContext(context.Background(), fmd)
+	err = replicaClient.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "replicadb")
+	require.NoError(t, err)
 
 	t.Run("key1 should not exist", func(t *testing.T) {
-		_, err = replicaClient.Get(rctx, []byte("key1"))
+		_, err = replicaClient.Get(context.Background(), []byte("key1"))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "key not found")
 	})
 
-	_, err = primaryClient.Set(pctx, []byte("key1"), []byte("value1"))
+	_, err = primaryClient.Set(context.Background(), []byte("key1"), []byte("value1"))
 	require.NoError(t, err)
 
-	_, err = primaryClient.Set(pctx, []byte("key2"), []byte("value2"))
+	_, err = primaryClient.Set(context.Background(), []byte("key2"), []byte("value2"))
 	require.NoError(t, err)
 
 	time.Sleep(1 * time.Second)
 
 	t.Run("key1 should exist in replicadb@replica", func(t *testing.T) {
-		_, err = replicaClient.Get(rctx, []byte("key1"))
+		_, err = replicaClient.Get(context.Background(), []byte("key1"))
 		require.NoError(t, err)
 	})
 
-	fdb, err = replicaClient.UseDatabase(rctx, &schema.Database{DatabaseName: "defaultdb"})
+	err = replicaClient.CloseSession(context.Background())
 	require.NoError(t, err)
-	require.NotNil(t, fdb)
 
-	fmd = metadata.Pairs("authorization", fdb.Token)
-	rctx = metadata.NewOutgoingContext(context.Background(), fmd)
+	err = replicaClient.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "defaultdb")
+	require.NoError(t, err)
 
 	t.Run("key1 should not exist in defaultdb@replica", func(t *testing.T) {
-		_, err = replicaClient.Get(rctx, []byte("key1"))
+		_, err = replicaClient.Get(context.Background(), []byte("key1"))
 		require.Contains(t, err.Error(), "key not found")
 	})
+
+	err = replicaClient.CloseSession(context.Background())
+	require.NoError(t, err)
 }
 
 func TestSystemDBAndDefaultDBReplication(t *testing.T) {
@@ -213,11 +221,17 @@ func TestSystemDBAndDefaultDBReplication(t *testing.T) {
 
 	// init primary client
 	primaryPort := primaryServer.Listener.Addr().(*net.TCPAddr).Port
-	primaryClient := ic.NewClient().WithOptions(ic.DefaultOptions().WithDir(t.TempDir()).WithPort(primaryPort))
-	require.NotNil(t, primaryClient)
+
+	primaryClientOpts := ic.DefaultOptions().
+		WithDir(t.TempDir()).
+		WithPort(primaryPort)
+
+	primaryClient := ic.NewClient().WithOptions(primaryClientOpts)
+	require.NoError(t, err)
 
 	err = primaryClient.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "defaultdb")
 	require.NoError(t, err)
+
 	defer primaryClient.CloseSession(context.Background())
 
 	// init replica server
@@ -232,6 +246,7 @@ func TestSystemDBAndDefaultDBReplication(t *testing.T) {
 		PrefetchTxBufferSize:         100,
 		ReplicationCommitConcurrency: 1,
 	}
+
 	replicaServerOpts := server.DefaultOptions().
 		WithMetricsServer(false).
 		WithWebServer(false).
@@ -255,11 +270,17 @@ func TestSystemDBAndDefaultDBReplication(t *testing.T) {
 
 	// init replica client
 	replicaPort := replicaServer.Listener.Addr().(*net.TCPAddr).Port
-	replicaClient := ic.NewClient().WithOptions(ic.DefaultOptions().WithDir(t.TempDir()).WithPort(replicaPort))
-	require.NotNil(t, replicaClient)
+
+	replicaClientOpts := ic.DefaultOptions().
+		WithDir(t.TempDir()).
+		WithPort(replicaPort)
+
+	replicaClient := ic.NewClient().WithOptions(replicaClientOpts)
+	require.NoError(t, err)
 
 	err = replicaClient.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "defaultdb")
 	require.NoError(t, err)
+
 	defer replicaClient.CloseSession(context.Background())
 
 	t.Run("key1 should not exist", func(t *testing.T) {
@@ -280,4 +301,356 @@ func TestSystemDBAndDefaultDBReplication(t *testing.T) {
 
 	_, err = replicaClient.Set(context.Background(), []byte("key2"), []byte("value2"))
 	require.Contains(t, err.Error(), "database is read-only because it's a replica")
+}
+
+func BenchmarkExportTx(b *testing.B) {
+	//init  server
+	serverOpts := server.DefaultOptions().
+		WithMetricsServer(false).
+		WithWebServer(false).
+		WithPgsqlServer(false).
+		WithPort(0).
+		WithMaxRecvMsgSize(204939000).
+		WithSynced(false).
+		WithDir(b.TempDir())
+
+	serverOpts.SessionsOptions.WithMaxSessions(200)
+
+	srv := server.DefaultServer().WithOptions(serverOpts).(*server.ImmuServer)
+
+	err := srv.Initialize()
+	if err != nil {
+		panic(err)
+	}
+
+	go func() {
+		srv.Start()
+	}()
+
+	defer func() {
+		srv.Stop()
+	}()
+
+	time.Sleep(1 * time.Second)
+
+	// init primary client
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+
+	opts := ic.DefaultOptions().
+		WithDir(b.TempDir()).
+		WithPort(port)
+
+	client := ic.NewClient().WithOptions(opts)
+
+	err = client.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "defaultdb")
+	if err != nil {
+		panic(err)
+	}
+
+	// create database as primarydb in primary server
+	_, err = client.CreateDatabaseV2(context.Background(), "db1", &schema.DatabaseNullableSettings{
+		MaxConcurrency: &schema.NullableUint32{Value: 200},
+		VLogCacheSize:  &schema.NullableUint32{Value: 0}, // disable vLogCache
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	err = client.CloseSession(context.Background())
+	if err != nil {
+		panic(err)
+	}
+
+	err = client.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "db1")
+	if err != nil {
+		panic(err)
+	}
+	defer client.CloseSession(context.Background())
+
+	// commit some transactions
+	workers := 10
+	txsPerWorker := 100
+	entriesPerTx := 100
+	keyLen := 40
+	valLen := 256
+
+	kvs := make([]*schema.KeyValue, entriesPerTx)
+
+	for i := 0; i < entriesPerTx; i++ {
+		kvs[i] = &schema.KeyValue{
+			Key:   make([]byte, keyLen),
+			Value: make([]byte, valLen),
+		}
+
+		binary.BigEndian.PutUint64(kvs[i].Key, uint64(i))
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for i := 0; i < workers; i++ {
+		go func() {
+			for j := 0; j < txsPerWorker; j++ {
+				_, err := client.SetAll(context.Background(), &schema.SetRequest{
+					KVs: kvs,
+				})
+				if err != nil {
+					panic(err)
+				}
+			}
+
+			wg.Done()
+		}()
+	}
+
+	wg.Wait()
+
+	replicators := 1
+	txsPerReplicator := workers * txsPerWorker / replicators
+
+	clientReplicators := make([]ic.ImmuClient, replicators)
+
+	for r := 0; r < replicators; r++ {
+		opts := ic.DefaultOptions().
+			WithDir(b.TempDir()).
+			WithPort(port)
+
+		client := ic.NewClient().WithOptions(opts)
+
+		err = client.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "db1")
+		if err != nil {
+			panic(err)
+		}
+		defer client.CloseSession(context.Background())
+
+		clientReplicators[r] = client
+	}
+
+	streamServiceFactory := stream.NewStreamServiceFactory(replication.DefaultChunkSize)
+
+	b.ResetTimer()
+
+	// measure exportTx performance
+	for i := 0; i < b.N; i++ {
+		var wg sync.WaitGroup
+		wg.Add(replicators)
+
+		for r := 0; r < replicators; r++ {
+			go func(r int) {
+				defer wg.Done()
+
+				client := clientReplicators[r]
+
+				for tx := 1; tx <= txsPerReplicator; tx++ {
+					exportTxStream, err := client.ExportTx(context.Background(), &schema.ExportTxRequest{
+						Tx:                 uint64(1 + r*txsPerReplicator + tx),
+						AllowPreCommitted:  false,
+						SkipIntegrityCheck: true,
+					})
+					if err != nil {
+						panic(err)
+					}
+
+					receiver := streamServiceFactory.NewMsgReceiver(exportTxStream)
+					_, _, err = receiver.ReadFully()
+					if err != nil {
+						panic(err)
+					}
+				}
+			}(r)
+		}
+
+		wg.Wait()
+	}
+}
+
+func BenchmarkStreamExportTx(b *testing.B) {
+	//init  server
+	serverOpts := server.DefaultOptions().
+		WithMetricsServer(false).
+		WithWebServer(false).
+		WithPgsqlServer(false).
+		WithPort(0).
+		WithMaxRecvMsgSize(204939000).
+		WithSynced(false).
+		WithDir(b.TempDir())
+
+	serverOpts.SessionsOptions.WithMaxSessions(200)
+
+	srv := server.DefaultServer().WithOptions(serverOpts).(*server.ImmuServer)
+
+	err := srv.Initialize()
+	if err != nil {
+		panic(err)
+	}
+
+	go func() {
+		srv.Start()
+	}()
+
+	defer func() {
+		srv.Stop()
+	}()
+
+	time.Sleep(1 * time.Second)
+
+	// init primary client
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+
+	opts := ic.DefaultOptions().
+		WithDir(b.TempDir()).
+		WithPort(port)
+
+	client := ic.NewClient().WithOptions(opts)
+
+	err = client.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "defaultdb")
+	if err != nil {
+		panic(err)
+	}
+
+	// create database as primarydb in primary server
+	_, err = client.CreateDatabaseV2(context.Background(), "db1", &schema.DatabaseNullableSettings{
+		MaxConcurrency: &schema.NullableUint32{Value: 200},
+		VLogCacheSize:  &schema.NullableUint32{Value: 0}, // disable vLogCache
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	err = client.CloseSession(context.Background())
+	if err != nil {
+		panic(err)
+	}
+
+	err = client.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "db1")
+	if err != nil {
+		panic(err)
+	}
+	defer client.CloseSession(context.Background())
+
+	// commit some transactions
+	workers := 10
+	txsPerWorker := 100
+	entriesPerTx := 100
+	keyLen := 40
+	valLen := 256
+
+	kvs := make([]*schema.KeyValue, entriesPerTx)
+
+	for i := 0; i < entriesPerTx; i++ {
+		kvs[i] = &schema.KeyValue{
+			Key:   make([]byte, keyLen),
+			Value: make([]byte, valLen),
+		}
+
+		binary.BigEndian.PutUint64(kvs[i].Key, uint64(i))
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for i := 0; i < workers; i++ {
+		go func() {
+			for j := 0; j < txsPerWorker; j++ {
+				_, err := client.SetAll(context.Background(), &schema.SetRequest{
+					KVs: kvs,
+				})
+				if err != nil {
+					panic(err)
+				}
+			}
+
+			wg.Done()
+		}()
+	}
+
+	wg.Wait()
+
+	replicators := 1
+	txsPerReplicator := workers * txsPerWorker / replicators
+
+	clientReplicators := make([]ic.ImmuClient, replicators)
+
+	for r := 0; r < replicators; r++ {
+		opts := ic.DefaultOptions().
+			WithDir(b.TempDir()).
+			WithPort(port)
+
+		client := ic.NewClient().WithOptions(opts)
+
+		err = client.OpenSession(context.Background(), []byte(`immudb`), []byte(`immudb`), "db1")
+		if err != nil {
+			panic(err)
+		}
+		defer client.CloseSession(context.Background())
+
+		clientReplicators[r] = client
+	}
+
+	b.ResetTimer()
+
+	// measure exportTx performance
+	for i := 0; i < b.N; i++ {
+		var wg sync.WaitGroup
+		wg.Add(replicators)
+
+		for r := 0; r < replicators; r++ {
+			go func(r int) {
+				defer wg.Done()
+
+				client := clientReplicators[r]
+
+				streamExportTxClient, err := client.StreamExportTx(context.Background())
+				if err != nil {
+					panic(err)
+				}
+
+				streamSrvFactory := stream.NewStreamServiceFactory(opts.StreamChunkSize)
+				exportTxStreamReceiver := streamSrvFactory.NewMsgReceiver(streamExportTxClient)
+
+				doneCh := make(chan struct{})
+				recvTxCount := 0
+
+				go func() {
+					for {
+						_, _, err := exportTxStreamReceiver.ReadFully()
+						if err != nil {
+							if strings.Contains(err.Error(), "EOF") {
+								doneCh <- struct{}{}
+								return
+							}
+
+							panic(err)
+						}
+
+						recvTxCount++
+					}
+				}()
+
+				for tx := 1; tx <= txsPerReplicator; tx++ {
+					err = streamExportTxClient.Send(&schema.ExportTxRequest{
+						Tx:                 uint64(1 + r*txsPerReplicator + tx),
+						AllowPreCommitted:  false,
+						SkipIntegrityCheck: true,
+					})
+					if err != nil {
+						panic(err)
+					}
+				}
+
+				err = streamExportTxClient.CloseSend()
+				if err != nil {
+					panic(err)
+				}
+
+				<-doneCh
+
+				if recvTxCount != txsPerReplicator {
+					panic("recvTxCount != txsPerReplicator")
+				}
+			}(r)
+		}
+
+		wg.Wait()
+	}
 }

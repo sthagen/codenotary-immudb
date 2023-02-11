@@ -26,6 +26,7 @@ import (
 	"github.com/codenotary/immudb/pkg/server/servertest"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func TestRegisterConnConfig(t *testing.T) {
@@ -40,7 +41,7 @@ func TestRegisterConnConfig(t *testing.T) {
 	opts.Password = "immudb"
 	opts.Database = "defaultdb"
 
-	opts.WithDialOptions([]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithInsecure()})
+	opts.WithDialOptions([]grpc.DialOption{grpc.WithContextDialer(bs.Dialer), grpc.WithTransportCredentials(insecure.NewCredentials())})
 
 	db := OpenDB(opts)
 	defer db.Close()
@@ -49,7 +50,7 @@ func TestRegisterConnConfig(t *testing.T) {
 	defer UnregisterConnConfig(connStr)
 
 	db = Open(connStr)
-	_, err := db.ExecContext(context.TODO(), fmt.Sprintf("CREATE TABLE %s (id INTEGER, amount INTEGER, total INTEGER, title VARCHAR, content BLOB, isPresent BOOLEAN, PRIMARY KEY id)", "myTable"))
+	_, err := db.ExecContext(context.Background(), fmt.Sprintf("CREATE TABLE %s (id INTEGER, amount INTEGER, total INTEGER, title VARCHAR, content BLOB, isPresent BOOLEAN, PRIMARY KEY id)", "myTable"))
 	require.NoError(t, err)
 
 }

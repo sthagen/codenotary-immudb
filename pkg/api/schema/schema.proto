@@ -842,6 +842,8 @@ message ExportTxRequest {
 	bool allowPreCommitted = 2;
   // Used on synchronous replication to notify the primary about replica state
 	ReplicaState replicaState = 3;
+  // If set to true, integrity checks are skipped when reading data
+  bool skipIntegrityCheck = 4;
 }
 
 message ReplicaState {
@@ -1071,7 +1073,13 @@ message ReplicationNullableSettings {
   NullableUint32 replicationCommitConcurrency = 10;
 
   // Allow precommitted transactions to be discarded if the replica diverges from the primary
-  NullableBool AllowTxDiscarding = 11;
+  NullableBool allowTxDiscarding = 11;
+
+  // Disable integrity check when reading data during replication
+  NullableBool skipIntegrityCheck = 12;
+
+  // Wait for indexing to be up to date during replication
+  NullableBool waitForIndexing = 13;
 }
 
 message TruncationNullableSettings {
@@ -1318,6 +1326,7 @@ message DatabaseWithSettings {
 
 message Chunk {
   bytes content = 1;
+  map<string, bytes> metadata = 2;
 }
 
 message UseSnapshotRequest {
@@ -1850,6 +1859,8 @@ service ImmuService {
   rpc exportTx(ExportTxRequest) returns (stream Chunk) {}
 
   rpc replicateTx(stream Chunk) returns (TxHeader) {}
+
+  rpc streamExportTx(stream ExportTxRequest) returns (stream Chunk) {}
 
   rpc SQLExec(SQLExecRequest) returns (SQLExecResult) {
     option (google.api.http) = {
