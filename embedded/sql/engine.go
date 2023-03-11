@@ -192,6 +192,7 @@ func (e *Engine) NewTx(ctx context.Context, opts *TxOptions) (*SQLTx, error) {
 		Mode:                    mode,
 		SnapshotMustIncludeTxID: opts.SnapshotMustIncludeTxID,
 		SnapshotRenewalPeriod:   opts.SnapshotRenewalPeriod,
+		UnsafeMVCC:              opts.UnsafeMVCC,
 	}
 
 	e.mutex.RLock()

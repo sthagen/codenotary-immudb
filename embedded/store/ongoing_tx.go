@@ -30,8 +30,11 @@ import (
 type OngoingTx struct {
 	st *ImmuStore
 
-	snap     *Snapshot
-	readOnly bool // MVCC validations are not needed for read-only transactions
+	snap       *Snapshot
+	readOnly   bool // MVCC validations are not needed for read-only transactions
+	unsafeMVCC bool
+
+	requireMVCCOnFollowingTxs bool
 
 	entries      []*EntrySpec
 	entriesByKey map[[sha256.Size]byte]int
@@ -92,6 +95,7 @@ func newOngoingTx(ctx context.Context, s *ImmuStore, opts *TxOptions) (*OngoingT
 		st:           s,
 		entriesByKey: make(map[[sha256.Size]byte]int),
 		ts:           time.Now(),
+		unsafeMVCC:   opts.UnsafeMVCC,
 	}
 
 	if opts.Mode == WriteOnlyTx {
@@ -416,6 +420,10 @@ func (tx *OngoingTx) NewKeyReader(spec KeyReaderSpec) (KeyReader, error) {
 	}
 
 	return newOngoingTxKeyReader(tx, spec)
+}
+
+func (tx *OngoingTx) RequireMVCCOnFollowingTxs(requireMVCCOnFollowingTxs bool) {
+	tx.requireMVCCOnFollowingTxs = requireMVCCOnFollowingTxs
 }
 
 func (tx *OngoingTx) Commit(ctx context.Context) (*TxHeader, error) {

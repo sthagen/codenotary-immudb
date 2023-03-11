@@ -159,6 +159,8 @@ type ImmuStore struct {
 
 	precommittedTxLogSize int64
 
+	mandatoryMVCCUpToTxID uint64
+
 	commitStateRWMutex sync.RWMutex
 
 	readOnly              bool
@@ -1268,8 +1270,16 @@ func (s *ImmuStore) precommit(ctx context.Context, otx *OngoingTx, hdr *TxHeader
 	}
 
 	if otx.hasPreconditions() {
-		// Preconditions must be executed with up-to-date tree
-		err = s.WaitForIndexingUpto(ctx, currPrecomittedTxID)
+		var waitForIndexingUpto uint64
+
+		if otx.unsafeMVCC && s.mandatoryMVCCUpToTxID > 0 {
+			waitForIndexingUpto = s.mandatoryMVCCUpToTxID
+		} else {
+			// Preconditions must be executed with up-to-date tree
+			waitForIndexingUpto = currPrecomittedTxID
+		}
+
+		err = s.WaitForIndexingUpto(ctx, waitForIndexingUpto)
 		if err != nil {
 			return nil, err
 		}
@@ -1287,6 +1297,10 @@ func (s *ImmuStore) precommit(ctx context.Context, otx *OngoingTx, hdr *TxHeader
 	err = s.performPrecommit(tx, ts, blTxID)
 	if err != nil {
 		return nil, err
+	}
+
+	if otx.requireMVCCOnFollowingTxs {
+		s.mandatoryMVCCUpToTxID = tx.header.ID
 	}
 
 	return tx.Header(), err

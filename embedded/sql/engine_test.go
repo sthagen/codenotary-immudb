@@ -6134,9 +6134,12 @@ func TestCopyCatalogToTx(t *testing.T) {
 
 func BenchmarkInsertInto(b *testing.B) {
 	workerCount := 100
+	txCount := 10
+	eCount := 100
 
 	opts := store.DefaultOptions().
-		WithSynced(false).
+		WithSynced(true).
+		WithMaxActiveTransactions(100).
 		WithMaxConcurrency(workerCount)
 
 	st, err := store.Open(b.TempDir(), opts)
@@ -6161,12 +6164,10 @@ func BenchmarkInsertInto(b *testing.B) {
 		b.Fail()
 	}
 
-	_, _, err = engine.Exec(context.Background(), nil, "CREATE TABLE mytable1(id VARCHAR[30], title VARCHAR[50], PRIMARY KEY id);", nil)
+	_, ctxs, err := engine.Exec(context.Background(), nil, "CREATE TABLE mytable1(id VARCHAR[30], title VARCHAR[50], PRIMARY KEY id);", nil)
 	if err != nil {
 		b.Fail()
 	}
-
-	time.Sleep(1 * time.Second)
 
 	b.ResetTimer()
 
@@ -6176,14 +6177,11 @@ func BenchmarkInsertInto(b *testing.B) {
 
 		for w := 0; w < workerCount; w++ {
 			go func(r, w int) {
-				txCount := 50
-				eCount := 10
-
 				for i := 0; i < txCount; i++ {
 					txOpts := DefaultTxOptions().
 						WithExplicitClose(true).
-						WithSnapshotRenewalPeriod(1000 * time.Millisecond).
-						WithSnapshotMustIncludeTxID(nil)
+						WithUnsafeMVCC(true).
+						WithSnapshotMustIncludeTxID(func(lastPrecommittedTxID uint64) uint64 { return ctxs[0].txHeader.ID })
 
 					tx, err := engine.NewTx(context.Background(), txOpts)
 					if err != nil {
@@ -6200,6 +6198,7 @@ func BenchmarkInsertInto(b *testing.B) {
 						if err != nil {
 							b.Fail()
 						}
+
 					}
 
 					err = tx.Commit(context.Background())
