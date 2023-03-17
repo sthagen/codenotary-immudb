@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"math"
 
 	"github.com/codenotary/immudb/embedded/store"
@@ -30,7 +31,6 @@ type RowReader interface {
 	Database() string
 	TableAlias() string
 	Parameters() map[string]interface{}
-	SetParameters(params map[string]interface{}) error
 	Read(ctx context.Context) (*Row, error)
 	Close() error
 	Columns(ctx context.Context) ([]ColDescriptor, error)
@@ -93,7 +93,7 @@ func (row *Row) digest(cols []ColDescriptor) (d [sha256.Size]byte, err error) {
 			continue
 		}
 
-		encVal, err := EncodeValue(v.Value(), v.Type(), 0)
+		encVal, err := EncodeValue(v, v.Type(), 0)
 		if err != nil {
 			return d, err
 		}
@@ -221,7 +221,7 @@ func keyReaderSpecFrom(sqlPrefix []byte, table *Table, scanSpecs *ScanSpecs) (sp
 			if colRange.hRange == nil {
 				hiKeyReady = true
 			} else {
-				encVal, err := EncodeAsKey(colRange.hRange.val.Value(), col.colType, col.MaxLen())
+				encVal, err := EncodeValueAsKey(colRange.hRange.val, col.colType, col.MaxLen())
 				if err != nil {
 					return nil, err
 				}
@@ -233,7 +233,7 @@ func keyReaderSpecFrom(sqlPrefix []byte, table *Table, scanSpecs *ScanSpecs) (sp
 			if colRange.lRange == nil {
 				loKeyReady = true
 			} else {
-				encVal, err := EncodeAsKey(colRange.lRange.val.Value(), col.colType, col.MaxLen())
+				encVal, err := EncodeValueAsKey(colRange.lRange.val, col.colType, col.MaxLen())
 				if err != nil {
 					return nil, err
 				}
@@ -337,11 +337,6 @@ func (r *rawRowReader) InferParameters(ctx context.Context, params map[string]SQ
 	return nil
 }
 
-func (r *rawRowReader) SetParameters(params map[string]interface{}) (err error) {
-	r.params, err = normalizeParams(params)
-	return err
-}
-
 func (r *rawRowReader) Parameters() map[string]interface{} {
 	return r.params
 }
@@ -358,7 +353,7 @@ func (r *rawRowReader) reduceTxRange() (err error) {
 
 	if r.period.start != nil {
 		txRange.initialTxID, err = r.period.start.instant.resolve(r.tx, r.params, true, r.period.start.inclusive)
-		if err == store.ErrTxNotFound {
+		if errors.Is(err, store.ErrTxNotFound) {
 			txRange.initialTxID = uint64(math.MaxUint64)
 		}
 		if err != nil && err != store.ErrTxNotFound {
@@ -368,7 +363,7 @@ func (r *rawRowReader) reduceTxRange() (err error) {
 
 	if r.period.end != nil {
 		txRange.finalTxID, err = r.period.end.instant.resolve(r.tx, r.params, false, r.period.end.inclusive)
-		if err == store.ErrTxNotFound {
+		if errors.Is(err, store.ErrTxNotFound) {
 			txRange.finalTxID = uint64(0)
 		}
 		if err != nil && err != store.ErrTxNotFound {

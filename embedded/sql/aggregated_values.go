@@ -44,7 +44,7 @@ func (v *CountValue) IsNull() bool {
 	return false
 }
 
-func (v *CountValue) Value() interface{} {
+func (v *CountValue) RawValue() interface{} {
 	return v.c
 }
 
@@ -53,7 +53,7 @@ func (v *CountValue) Compare(val TypedValue) (int, error) {
 		return 0, ErrNotComparableValues
 	}
 
-	nv := val.Value().(int64)
+	nv := val.RawValue().(int64)
 
 	if v.c == nv {
 		return 0, nil
@@ -109,7 +109,7 @@ func (v *CountValue) selectorRanges(table *Table, asTable string, params map[str
 }
 
 type SumValue struct {
-	s   int64
+	val TypedValue
 	sel string
 }
 
@@ -122,41 +122,43 @@ func (v *SumValue) ColBounded() bool {
 }
 
 func (v *SumValue) Type() SQLValueType {
-	return IntegerType
+	return v.val.Type()
 }
 
 func (v *SumValue) IsNull() bool {
-	return false
+	return v.val.IsNull()
 }
 
-func (v *SumValue) Value() interface{} {
-	return v.s
+func (v *SumValue) RawValue() interface{} {
+	return v.val.RawValue()
 }
 
 func (v *SumValue) Compare(val TypedValue) (int, error) {
-	if val.Type() != IntegerType {
-		return 0, ErrNotComparableValues
-	}
-
-	nv := val.Value().(int64)
-
-	if v.s == nv {
-		return 0, nil
-	}
-
-	if v.s > nv {
-		return 1, nil
-	}
-
-	return -1, nil
+	return v.val.Compare(val)
 }
 
 func (v *SumValue) updateWith(val TypedValue) error {
-	if val.Type() != IntegerType {
-		return ErrNotComparableValues
+	if val.IsNull() {
+		// Skip NULL values
+		return nil
 	}
 
-	v.s += val.Value().(int64)
+	if !IsNumericType(val.Type()) {
+		return ErrNumericTypeExpected
+	}
+
+	if v.val.IsNull() {
+		// First non-null value
+		v.val = val
+		return nil
+	}
+
+	newVal, err := applyNumOperator(ADDOP, v.val, val)
+	if err != nil {
+		return err
+	}
+
+	v.val = newVal
 
 	return nil
 }
@@ -216,11 +218,11 @@ func (v *MinValue) Type() SQLValueType {
 }
 
 func (v *MinValue) IsNull() bool {
-	return false
+	return v.val.IsNull()
 }
 
-func (v *MinValue) Value() interface{} {
-	return v.val.Value()
+func (v *MinValue) RawValue() interface{} {
+	return v.val.RawValue()
 }
 
 func (v *MinValue) Compare(val TypedValue) (int, error) {
@@ -228,7 +230,13 @@ func (v *MinValue) Compare(val TypedValue) (int, error) {
 }
 
 func (v *MinValue) updateWith(val TypedValue) error {
-	if v.val == nil {
+	if val.IsNull() {
+		// Skip NULL values
+		return nil
+	}
+
+	if v.val.IsNull() {
+		// First non-null value
 		v.val = val
 		return nil
 	}
@@ -248,7 +256,7 @@ func (v *MinValue) updateWith(val TypedValue) error {
 // ValueExp
 
 func (v *MinValue) inferType(cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) (SQLValueType, error) {
-	if v.val == nil {
+	if v.val.IsNull() {
 		return AnyType, ErrUnexpected
 	}
 
@@ -256,7 +264,7 @@ func (v *MinValue) inferType(cols map[string]ColDescriptor, params map[string]SQ
 }
 
 func (v *MinValue) requiresType(t SQLValueType, cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) error {
-	if v.val == nil {
+	if v.val.IsNull() {
 		return ErrUnexpected
 	}
 
@@ -309,11 +317,11 @@ func (v *MaxValue) Type() SQLValueType {
 }
 
 func (v *MaxValue) IsNull() bool {
-	return false
+	return v.val.IsNull()
 }
 
-func (v *MaxValue) Value() interface{} {
-	return v.val.Value()
+func (v *MaxValue) RawValue() interface{} {
+	return v.val.RawValue()
 }
 
 func (v *MaxValue) Compare(val TypedValue) (int, error) {
@@ -321,7 +329,13 @@ func (v *MaxValue) Compare(val TypedValue) (int, error) {
 }
 
 func (v *MaxValue) updateWith(val TypedValue) error {
-	if v.val == nil {
+	if val.IsNull() {
+		// Skip NULL values
+		return nil
+	}
+
+	if v.val.IsNull() {
+		// First non-null value
 		v.val = val
 		return nil
 	}
@@ -341,7 +355,7 @@ func (v *MaxValue) updateWith(val TypedValue) error {
 // ValueExp
 
 func (v *MaxValue) inferType(cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) (SQLValueType, error) {
-	if v.val == nil {
+	if v.val.IsNull() {
 		return AnyType, ErrUnexpected
 	}
 
@@ -349,7 +363,7 @@ func (v *MaxValue) inferType(cols map[string]ColDescriptor, params map[string]SQ
 }
 
 func (v *MaxValue) requiresType(t SQLValueType, cols map[string]ColDescriptor, params map[string]SQLValueType, implicitDB, implicitTable string) error {
-	if v.val == nil {
+	if v.val.IsNull() {
 		return ErrUnexpected
 	}
 
@@ -385,7 +399,7 @@ func (v *MaxValue) selectorRanges(table *Table, asTable string, params map[strin
 }
 
 type AVGValue struct {
-	s   int64
+	s   TypedValue
 	c   int64
 	sel string
 }
@@ -399,44 +413,58 @@ func (v *AVGValue) ColBounded() bool {
 }
 
 func (v *AVGValue) Type() SQLValueType {
-	return IntegerType
+	return v.s.Type()
 }
 
 func (v *AVGValue) IsNull() bool {
-	return false
+	return v.s.IsNull()
 }
 
-func (v *AVGValue) Value() interface{} {
-	return v.s / v.c
+func (v *AVGValue) calculate() TypedValue {
+	if v.s.IsNull() {
+		return nil
+	}
+
+	val, err := applyNumOperator(DIVOP, v.s, &Integer{val: v.c})
+	if err != nil {
+		return &NullValue{t: AnyType}
+	}
+
+	return val
+}
+
+func (v *AVGValue) RawValue() interface{} {
+	return v.calculate().RawValue()
 }
 
 func (v *AVGValue) Compare(val TypedValue) (int, error) {
-	if val.Type() != IntegerType {
-		return 0, ErrNotComparableValues
-	}
-
-	avg := v.s / v.c
-	nv := val.Value().(int64)
-
-	if avg == nv {
-		return 0, nil
-	}
-
-	if avg > nv {
-		return 1, nil
-	}
-
-	return -1, nil
+	return v.calculate().Compare(val)
 }
 
 func (v *AVGValue) updateWith(val TypedValue) error {
-	if val.Type() != IntegerType {
-		return ErrNotComparableValues
+	if val.IsNull() {
+		// Skip NULL values
+		return nil
 	}
 
-	v.s += val.Value().(int64)
-	v.c++
+	if !IsNumericType(val.Type()) {
+		return ErrNumericTypeExpected
+	}
 
+	if v.s.IsNull() {
+		// First non-null value
+		v.s = val
+		v.c++
+		return nil
+	}
+
+	newVal, err := applyNumOperator(ADDOP, v.s, val)
+	if err != nil {
+		return err
+	}
+
+	v.s = newVal
+	v.c++
 	return nil
 }
 
