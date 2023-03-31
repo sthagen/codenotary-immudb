@@ -5,6 +5,7 @@ go 1.17
 require (
 	github.com/fatih/color v1.13.0
 	github.com/gizak/termui/v3 v3.1.0
+	github.com/gogo/protobuf v1.3.2
 	github.com/golang/protobuf v1.5.2
 	github.com/grpc-ecosystem/go-grpc-middleware v1.3.0
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
@@ -25,7 +26,7 @@ require (
 	github.com/pseudomuto/protoc-gen-doc v1.4.1
 	github.com/rakyll/statik v0.1.7
 	github.com/rogpeppe/go-internal v1.9.0
-	github.com/rs/xid v1.3.0
+	github.com/rs/xid v1.4.0
 	github.com/schollz/progressbar/v2 v2.15.0
 	github.com/spf13/cobra v1.6.1
 	github.com/spf13/pflag v1.0.5
@@ -59,7 +60,6 @@ require (
 	github.com/envoyproxy/protoc-gen-validate v0.3.0-java // indirect
 	github.com/fsnotify/fsnotify v1.5.4 // indirect
 	github.com/ghodss/yaml v1.0.0 // indirect
-	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
