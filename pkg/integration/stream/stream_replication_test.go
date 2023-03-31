@@ -77,7 +77,7 @@ func TestImmuClient_ExportAndReplicateTx(t *testing.T) {
 	)
 	rctx := metadata.NewOutgoingContext(context.Background(), rmd)
 
-	for i := uint64(1); i <= 2; i++ {
+	for i := uint64(1); i <= hdr.Id; i++ {
 		exportTxStream, err := client.ExportTx(context.Background(), &schema.ExportTxRequest{
 			Tx:                 i,
 			SkipIntegrityCheck: true,
@@ -112,11 +112,11 @@ func TestImmuClient_ExportAndReplicateTx(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = client.ExportTx(context.Background(), &schema.ExportTxRequest{Tx: 1})
-	require.Equal(t, ic.ErrNotConnected, err)
+	require.ErrorIs(t, err, ic.ErrNotConnected)
 
 	err = rclient.CloseSession(context.Background())
 	require.NoError(t, err)
 
 	_, err = rclient.ReplicateTx(rctx)
-	require.Equal(t, ic.ErrNotConnected, err)
+	require.ErrorIs(t, err, ic.ErrNotConnected)
 }

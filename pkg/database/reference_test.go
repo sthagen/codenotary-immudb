@@ -45,7 +45,7 @@ func TestStoreReference(t *testing.T) {
 		Key:           []byte(`myTag`),
 		ReferencedKey: []byte(`secondKey`),
 	}
-	_, err = db.SetReference(context.Background(), refOpts)
+	txhdr, err = db.SetReference(context.Background(), refOpts)
 	require.ErrorIs(t, err, store.ErrKeyNotFound)
 
 	refOpts = &schema.ReferenceRequest{
@@ -61,7 +61,7 @@ func TestStoreReference(t *testing.T) {
 		Key:           []byte(`firstKey`),
 		ReferencedKey: []byte(`firstKey`),
 	}
-	_, err = db.SetReference(context.Background(), refOpts)
+	txhdr, err = db.SetReference(context.Background(), refOpts)
 	require.ErrorIs(t, err, ErrFinalKeyCannotBeConvertedIntoReference)
 
 	refOpts = &schema.ReferenceRequest{
@@ -70,7 +70,7 @@ func TestStoreReference(t *testing.T) {
 	}
 	txhdr, err = db.SetReference(context.Background(), refOpts)
 	require.NoError(t, err)
-	require.Equal(t, uint64(3), txhdr.Id)
+	require.Equal(t, uint64(2), txhdr.Id)
 
 	keyReq := &schema.KeyRequest{Key: []byte(`myTag`), SinceTx: txhdr.Id}
 
@@ -137,7 +137,7 @@ func TestStoreInvalidReferenceToReference(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = db.SetReference(context.Background(), &schema.ReferenceRequest{Key: []byte(`myTag2`), ReferencedKey: []byte(`myTag1`)})
-	require.Equal(t, ErrReferencedKeyCannotBeAReference, err)
+	require.ErrorIs(t, err, ErrReferencedKeyCannotBeAReference)
 }
 
 func TestStoreReferenceAsyncCommit(t *testing.T) {
@@ -171,7 +171,7 @@ func TestStoreReferenceAsyncCommit(t *testing.T) {
 
 		ref, err := db.SetReference(context.Background(), refOpts)
 		require.NoError(t, err, "n=%d", n)
-		require.Equal(t, n+2+2, ref.Id, "n=%d", n)
+		require.Equal(t, n+1+2, ref.Id, "n=%d", n)
 	}
 
 	for n := uint64(0); n <= 64; n++ {
@@ -215,7 +215,7 @@ func TestStoreMultipleReferenceOnSameKey(t *testing.T) {
 
 	reference1, err := db.SetReference(context.Background(), refOpts1)
 	require.NoError(t, err)
-	require.Exactly(t, uint64(4), reference1.Id)
+	require.Exactly(t, uint64(3), reference1.Id)
 	require.NotEmptyf(t, reference1, "Should not be empty")
 
 	refOpts2 := &schema.ReferenceRequest{
@@ -226,7 +226,7 @@ func TestStoreMultipleReferenceOnSameKey(t *testing.T) {
 	}
 	reference2, err := db.SetReference(context.Background(), refOpts2)
 	require.NoError(t, err)
-	require.Exactly(t, uint64(5), reference2.Id)
+	require.Exactly(t, uint64(4), reference2.Id)
 	require.NotEmptyf(t, reference2, "Should not be empty")
 
 	refOpts3 := &schema.ReferenceRequest{
@@ -237,7 +237,7 @@ func TestStoreMultipleReferenceOnSameKey(t *testing.T) {
 	}
 	reference3, err := db.SetReference(context.Background(), refOpts3)
 	require.NoError(t, err)
-	require.Exactly(t, uint64(6), reference3.Id)
+	require.Exactly(t, uint64(5), reference3.Id)
 	require.NotEmptyf(t, reference3, "Should not be empty")
 
 	firstTagRet, err := db.Get(context.Background(), &schema.KeyRequest{Key: []byte(`myTag1`), SinceTx: reference3.Id})
@@ -285,7 +285,7 @@ func TestStoreIndexReference(t *testing.T) {
 func TestStoreReferenceKeyNotProvided(t *testing.T) {
 	db := makeDb(t)
 	_, err := db.SetReference(context.Background(), &schema.ReferenceRequest{Key: []byte(`myTag1`), AtTx: 123, BoundRef: true})
-	require.Equal(t, store.ErrIllegalArguments, err)
+	require.ErrorIs(t, err, store.ErrIllegalArguments)
 }
 
 func TestStore_GetOnReferenceOnSameKeyReturnsAlwaysLastValue(t *testing.T) {
@@ -325,14 +325,14 @@ func TestStore_ReferencedItemNotFound(t *testing.T) {
 	db := makeDb(t)
 
 	_, err := db.SetReference(context.Background(), &schema.ReferenceRequest{ReferencedKey: []byte(`aaa`), Key: []byte(`notExists`)})
-	require.Equal(t, store.ErrKeyNotFound, err)
+	require.ErrorIs(t, err, store.ErrKeyNotFound)
 }
 
 func TestStoreVerifiableReference(t *testing.T) {
 	db := makeDb(t)
 
 	_, err := db.VerifiableSetReference(context.Background(), nil)
-	require.Equal(t, store.ErrIllegalArguments, err)
+	require.ErrorIs(t, err, store.ErrIllegalArguments)
 
 	req := &schema.SetRequest{KVs: []*schema.KeyValue{{Key: []byte(`firstKey`), Value: []byte(`firstValue`)}}}
 	txhdr, err := db.Set(context.Background(), req)
@@ -342,7 +342,7 @@ func TestStoreVerifiableReference(t *testing.T) {
 		ReferenceRequest: nil,
 		ProveSinceTx:     txhdr.Id,
 	})
-	require.Equal(t, store.ErrIllegalArguments, err)
+	require.ErrorIs(t, err, store.ErrIllegalArguments)
 
 	refReq := &schema.ReferenceRequest{
 		Key:           []byte(`myTag`),
@@ -353,7 +353,7 @@ func TestStoreVerifiableReference(t *testing.T) {
 		ReferenceRequest: refReq,
 		ProveSinceTx:     txhdr.Id + 1,
 	})
-	require.Equal(t, store.ErrIllegalArguments, err)
+	require.ErrorIs(t, err, store.ErrIllegalArguments)
 
 	vtx, err := db.VerifiableSetReference(context.Background(), &schema.VerifiableReferenceRequest{
 		ReferenceRequest: refReq,

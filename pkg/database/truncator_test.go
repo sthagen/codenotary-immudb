@@ -97,7 +97,7 @@ func Test_vlogCompactor_WithMultipleIO(t *testing.T) {
 
 	c := NewVlogTruncator(db)
 
-	require.NoError(t, c.Truncate(context.Background(), hdr.ID))
+	require.NoError(t, c.TruncateUptoTx(context.Background(), hdr.ID))
 
 	for i := deletePointTx; i < 20; i++ {
 		tx := store.NewTx(db.st.MaxTxEntries(), db.st.MaxKeyLen())
@@ -126,7 +126,7 @@ func Test_vlogCompactor_WithSingleIO(t *testing.T) {
 
 	db := makeDbWith(t, "db", options)
 
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 20; i++ {
 		kv := &schema.KeyValue{
 			Key:   []byte(fmt.Sprintf("key_%d", i)),
 			Value: make([]byte, fileSize),
@@ -135,16 +135,16 @@ func Test_vlogCompactor_WithSingleIO(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	deletePointTx := uint64(5)
+	deletePointTx := uint64(15)
 
 	hdr, err := db.st.ReadTxHeader(deletePointTx, false, false)
 	require.NoError(t, err)
 
 	c := NewVlogTruncator(db)
 
-	require.NoError(t, c.Truncate(context.Background(), hdr.ID))
+	require.NoError(t, c.TruncateUptoTx(context.Background(), hdr.ID))
 
-	for i := deletePointTx; i < 10; i++ {
+	for i := deletePointTx; i < 20; i++ {
 		tx := store.NewTx(db.st.MaxTxEntries(), db.st.MaxKeyLen())
 
 		err = db.st.ReadTx(i, false, tx)
@@ -156,7 +156,8 @@ func Test_vlogCompactor_WithSingleIO(t *testing.T) {
 		}
 	}
 
-	for i := deletePointTx - 1; i > 0; i-- {
+	// ensure earlier transactions are deleted
+	for i := uint64(5); i > 0; i-- {
 		tx := store.NewTx(db.st.MaxTxEntries(), db.st.MaxKeyLen())
 
 		err = db.st.ReadTx(i, false, tx)
@@ -211,7 +212,7 @@ func Test_vlogCompactor_WithConcurrentWritersOnSingleIO(t *testing.T) {
 
 	c := NewVlogTruncator(db)
 
-	require.NoError(t, c.Truncate(context.Background(), hdr.ID))
+	require.NoError(t, c.TruncateUptoTx(context.Background(), hdr.ID))
 
 	for i := deletePointTx; i <= 30; i++ {
 		tx := store.NewTx(db.st.MaxTxEntries(), db.st.MaxKeyLen())
@@ -225,7 +226,8 @@ func Test_vlogCompactor_WithConcurrentWritersOnSingleIO(t *testing.T) {
 		}
 	}
 
-	for i := deletePointTx - 1; i > 0; i-- {
+	// ensure earlier transactions are deleted
+	for i := uint64(5); i > 0; i-- {
 		tx := store.NewTx(db.st.MaxTxEntries(), db.st.MaxKeyLen())
 
 		err = db.st.ReadTx(i, false, tx)
@@ -354,7 +356,7 @@ func Test_vlogCompactor_with_sql(t *testing.T) {
 
 		c := NewVlogTruncator(db)
 
-		require.NoError(t, c.Truncate(context.Background(), hdr.ID))
+		require.NoError(t, c.TruncateUptoTx(context.Background(), hdr.ID))
 
 		// should add an extra transaction with catalogue
 		require.Equal(t, lastCommitTx+1, db.st.LastCommittedTxID())
@@ -426,6 +428,7 @@ func Test_vlogCompactor_without_data(t *testing.T) {
 
 	db := makeDbWith(t, "db", options)
 
+	db.Set(context.Background(), &schema.SetRequest{KVs: []*schema.KeyValue{{Key: []byte("key1")}}})
 	require.Equal(t, uint64(1), db.st.LastCommittedTxID())
 
 	deletePointTx := uint64(1)
@@ -435,7 +438,7 @@ func Test_vlogCompactor_without_data(t *testing.T) {
 
 	c := NewVlogTruncator(db)
 
-	require.NoError(t, c.Truncate(context.Background(), hdr.ID))
+	require.NoError(t, c.TruncateUptoTx(context.Background(), hdr.ID))
 
 	// ensure that a transaction is added for the sql catalog commit
 	require.Equal(t, uint64(2), db.st.LastCommittedTxID())
@@ -496,7 +499,7 @@ func Test_vlogCompactor_with_multiple_truncates(t *testing.T) {
 
 		c := NewVlogTruncator(db)
 
-		require.NoError(t, c.Truncate(context.Background(), hdr.ID))
+		require.NoError(t, c.TruncateUptoTx(context.Background(), hdr.ID))
 
 		// should add an extra transaction with catalogue
 		require.Equal(t, lastCommitTx+1, db.st.LastCommittedTxID())
@@ -528,7 +531,7 @@ func Test_vlogCompactor_with_multiple_truncates(t *testing.T) {
 
 		c := NewVlogTruncator(db)
 
-		require.NoError(t, c.Truncate(context.Background(), hdr.ID))
+		require.NoError(t, c.TruncateUptoTx(context.Background(), hdr.ID))
 
 		// should add an extra transaction with catalogue
 		require.Equal(t, lastCommitTx+1, db.st.LastCommittedTxID())
@@ -556,7 +559,7 @@ func Test_vlogCompactor_for_read_conflict(t *testing.T) {
 	options.storeOpts.VLogCacheSize = 0
 
 	db := makeDbWith(t, "db", options)
-	require.Equal(t, uint64(1), db.st.LastCommittedTxID())
+	require.Equal(t, uint64(0), db.st.LastCommittedTxID())
 
 	for i := 1; i <= 10; i++ {
 		kv := &schema.KeyValue{
@@ -596,7 +599,7 @@ func Test_vlogCompactor_for_read_conflict(t *testing.T) {
 
 		c := NewVlogTruncator(db)
 
-		require.NoError(t, c.Truncate(context.Background(), hdr.ID))
+		require.NoError(t, c.TruncateUptoTx(context.Background(), hdr.ID))
 
 		close(doneTruncateCh)
 	}()
