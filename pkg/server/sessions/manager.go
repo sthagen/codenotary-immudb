@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codenotary/immudb/embedded/multierr"
 	"github.com/codenotary/immudb/embedded/sql"
 	"github.com/codenotary/immudb/pkg/auth"
 	"github.com/codenotary/immudb/pkg/database"
@@ -103,7 +104,6 @@ func (sm *manager) NewSession(user *auth.User, db database.DB) (*Session, error)
 	}
 
 	sessionID := base64.URLEncoding.EncodeToString(randomBytes)
-
 	sm.sessions[sessionID] = NewSession(sessionID, user, db, sm.logger)
 	sm.logger.Debugf("created session %s", sessionID)
 
@@ -143,13 +143,19 @@ func (sm *manager) deleteSession(sessionID string) error {
 		return ErrSessionNotFound
 	}
 
-	err := sess.RollbackTransactions()
-	delete(sm.sessions, sessionID)
-	if err != nil {
-		return err
+	merr := multierr.NewMultiErr()
+
+	if err := sess.CloseDocumentReaders(); err != nil {
+		merr.Append(err)
 	}
 
-	return nil
+	if err := sess.RollbackTransactions(); err != nil {
+		merr.Append(err)
+	}
+
+	delete(sm.sessions, sessionID)
+
+	return merr.Reduce()
 }
 
 func (sm *manager) UpdateSessionActivityTime(sessionID string) {

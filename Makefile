@@ -20,6 +20,7 @@ VERSION=1.4.1
 DEFAULT_WEBCONSOLE_VERSION=1.0.18
 SERVICES=immudb immuadmin immuclient
 TARGETS=linux/amd64 windows/amd64 darwin/amd64 linux/s390x linux/arm64 freebsd/amd64 darwin/arm64
+FIPSENABLED?=false
 
 PWD = $(shell pwd)
 GO ?= go
@@ -45,9 +46,15 @@ V_LDFLAGS_FIPS_BUILD = ${V_LDFLAGS_BUILD} \
 				  -X github.com/codenotary/immudb/cmd/version.FIPSEnabled=true
 
 GRPC_GATEWAY_VERSION := $(shell go list -m -versions github.com/grpc-ecosystem/grpc-gateway | awk -F ' ' '{print $$NF}')
+WEBCONSOLE_BUILDTAG=
+FIPS_BUILDTAG=
 ifdef WEBCONSOLE
-IMMUDB_BUILD_TAGS=-tags webconsole
+WEBCONSOLE_BUILDTAG=webconsole
 endif
+ifeq ($(FIPSENABLED),true)
+FIPS_BUILDTAG=fips
+endif
+IMMUDB_BUILD_TAGS=-tags "$(WEBCONSOLE_BUILDTAG) $(FIPS_BUILDTAG)"
 
 .PHONY: all
 all: immudb immuclient immuadmin immutest
@@ -139,43 +146,38 @@ test-client:
 # To view coverage as HTML run: go tool cover -html=coverage.txt
 .PHONY: coverage
 coverage:
-	./scripts/go-acc ./... --covermode=atomic --ignore=test,immuclient,immuadmin,helper,cmdtest,sservice,version
+	go-acc ./... --covermode=atomic --ignore=test,immuclient,immuadmin,helper,cmdtest,sservice,version,tools,webconsole,protomodel,httpclient
 	cat coverage.txt | grep -v "schema.pb" | grep -v "immuclient" | grep -v "immuadmin" | grep -v "helper" | grep -v "cmdtest" | grep -v "sservice" | grep -v "version" > coverage.out
 	$(GO) tool cover -func coverage.out
 
 .PHONY: build/codegen
 build/codegen:
-	$(PWD)/scripts/buf format -w
+	$(PWD)/ext-tools/buf format -w
 
 	$(PROTOC) -I pkg/api/schema/ pkg/api/schema/schema.proto \
 	  -I$(GOPATH)/pkg/mod \
-	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION)/third_party/googleapis \
 	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION) \
+	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION)/third_party/googleapis \
 	  --go_out=paths=source_relative:pkg/api/schema \
-	  --go-grpc_out=require_unimplemented_servers=false,paths=source_relative:pkg/api/schema \
-	  --plugin=protoc-gen-go=$(PWD)/scripts/protoc-gen-go \
-	  --plugin=protoc-gen-go-grpc=$(PWD)/scripts/protoc-gen-go-grpc
+	  --go-grpc_out=require_unimplemented_servers=false,paths=source_relative:pkg/api/schema
+      --grpc-gateway_out=logtostderr=true,paths=source_relative:pkg/api/schema
+	  --doc_out=pkg/api/schema --doc_opt=markdown,docs.md
+	  --swagger_out=logtostderr=true:pkg/api/schema
 
-	$(PROTOC) -I pkg/api/schema/ pkg/api/schema/schema.proto \
-	  -I$(GOPATH)/pkg/mod \
-	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION)/third_party/googleapis \
-	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION) \
-	  --grpc-gateway_out=logtostderr=true,paths=source_relative:pkg/api/schema \
-	  --plugin=protoc-gen-grpc-gateway=$(PWD)/scripts/protoc-gen-grpc-gateway
+.PHONY: build/codegenv2
+build/codegenv2:
+	$(PWD)/ext-tools/buf format -w
 
-	$(PROTOC) -I pkg/api/schema/ pkg/api/schema/schema.proto \
+	$(PROTOC) -I pkg/api/proto/ pkg/api/proto/authorization.proto pkg/api/proto/documents.proto \
+	  -I pkg/api/schema/ \
 	  -I$(GOPATH)/pkg/mod \
-	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION)/third_party/googleapis \
 	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION) \
-	  --swagger_out=logtostderr=true:pkg/api/schema \
-	  --plugin=protoc-gen-swagger=$(PWD)/scripts/protoc-gen-swagger
-
-	$(PROTOC) -I pkg/api/schema/ pkg/api/schema/schema.proto \
-	  -I$(GOPATH)/pkg/mod \
 	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION)/third_party/googleapis \
-	  -I$(GOPATH)/pkg/mod/github.com/grpc-ecosystem/grpc-gateway@$(GRPC_GATEWAY_VERSION) \
-	  --doc_out=pkg/api/schema --doc_opt=markdown,docs.md \
-	  --plugin=protoc-gen-doc=$(PWD)/scripts/protoc-gen-doc
+	  --go_out=paths=source_relative:pkg/api/protomodel \
+	  --go-grpc_out=require_unimplemented_servers=false,paths=source_relative:pkg/api/protomodel \
+	  --grpc-gateway_out=logtostderr=true,paths=source_relative:pkg/api/protomodel \
+	  --doc_out=pkg/api/protomodel --doc_opt=markdown,docs.md \
+	  --swagger_out=logtostderr=true,allow_merge=true,simple_operation_ids=true:pkg/api/openapi \
 
 .PHONY: clean
 clean:

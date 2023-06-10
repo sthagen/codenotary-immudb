@@ -20,38 +20,70 @@ import (
 	"context"
 	"crypto/tls"
 	"net/http"
+	"strings"
 
+	"github.com/codenotary/immudb/pkg/api/protomodel"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/logger"
 	"github.com/codenotary/immudb/webconsole"
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/grpclog"
 )
 
-func StartWebServer(addr string, tlsConfig *tls.Config, s schema.ImmuServiceServer, l logger.Logger) (*http.Server, error) {
-	proxyMux := runtime.NewServeMux()
-	err := schema.RegisterImmuServiceHandlerServer(context.Background(), proxyMux, s)
+func startWebServer(ctx context.Context, grpcAddr string, httpAddr string, tlsConfig *tls.Config, s *ImmuServer, l logger.Logger) (*http.Server, error) {
+	grpcClient, err := grpcClient(ctx, grpcAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	proxyMux := runtime.NewServeMux(
+		runtime.WithIncomingHeaderMatcher(func(key string) (string, bool) {
+			switch strings.ToLower(key) {
+			case "sessionid":
+				return "Sessionid", true
+			default:
+				return runtime.DefaultHeaderMatcher(key)
+			}
+		}),
+	)
+
+	err = schema.RegisterImmuServiceHandler(ctx, proxyMux, grpcClient)
+	if err != nil {
+		return nil, err
+	}
+
+	err = protomodel.RegisterAuthorizationServiceHandler(ctx, proxyMux, grpcClient)
+	if err != nil {
+		return nil, err
+	}
+
+	err = protomodel.RegisterDocumentServiceHandler(ctx, proxyMux, grpcClient)
 	if err != nil {
 		return nil, err
 	}
 
 	webMux := http.NewServeMux()
-	webMux.Handle("/api/", http.StripPrefix("/api", proxyMux))
 
-	err = webconsole.SetupWebconsole(webMux, l, addr)
+	webMux.Handle("/api/", http.StripPrefix("/api", proxyMux))
+	webMux.Handle("/api/v2/", http.StripPrefix("/api/v2", proxyMux))
+
+	err = webconsole.SetupWebconsole(webMux, l, httpAddr)
 	if err != nil {
 		return nil, err
 	}
 
-	httpServer := &http.Server{Addr: addr, Handler: webMux}
+	httpServer := &http.Server{Addr: httpAddr, Handler: webMux}
 	httpServer.TLSConfig = tlsConfig
 
 	go func() {
 		var err error
 		if tlsConfig != nil && len(tlsConfig.Certificates) > 0 {
-			l.Infof("Web API server enabled on %s/api (https)", addr)
+			l.Infof("Web API server enabled on %s/api (https)", httpAddr)
 			err = httpServer.ListenAndServeTLS("", "")
 		} else {
-			l.Infof("Web API server enabled on %s/api (http)", addr)
+			l.Infof("Web API server enabled on %s/api (http)", httpAddr)
 			err = httpServer.ListenAndServe()
 		}
 
@@ -63,4 +95,27 @@ func StartWebServer(addr string, tlsConfig *tls.Config, s schema.ImmuServiceServ
 	}()
 
 	return httpServer, nil
+}
+
+func grpcClient(ctx context.Context, grpcAddr string) (conn *grpc.ClientConn, err error) {
+	conn, err = grpc.Dial(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return conn, err
+	}
+	defer func() {
+		if err != nil {
+			if cerr := conn.Close(); cerr != nil {
+				grpclog.Infof("failed to close conn to %s: %v", grpcAddr, cerr)
+			}
+			return
+		}
+		go func() {
+			<-ctx.Done()
+			if cerr := conn.Close(); cerr != nil {
+				grpclog.Infof("failed to close conn to %s: %v", grpcAddr, cerr)
+			}
+		}()
+	}()
+
+	return conn, nil
 }

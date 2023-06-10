@@ -22,8 +22,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/codenotary/immudb/embedded/document"
 	"github.com/codenotary/immudb/embedded/sql"
 	"github.com/codenotary/immudb/embedded/store"
+	"github.com/codenotary/immudb/pkg/api/protomodel"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/database"
 )
@@ -242,4 +244,58 @@ func (db *closedDB) Close() error {
 
 func (db *closedDB) Truncate(ts time.Duration) error {
 	return store.ErrAlreadyClosed
+}
+
+// CreateCollection creates a new collection
+func (d *closedDB) CreateCollection(ctx context.Context, req *protomodel.CreateCollectionRequest) (*protomodel.CreateCollectionResponse, error) {
+	return nil, store.ErrAlreadyClosed
+}
+
+// GetCollection returns the collection schema
+func (d *closedDB) GetCollection(ctx context.Context, req *protomodel.GetCollectionRequest) (*protomodel.GetCollectionResponse, error) {
+	return nil, store.ErrAlreadyClosed
+}
+
+func (d *closedDB) GetCollections(ctx context.Context, req *protomodel.GetCollectionsRequest) (*protomodel.GetCollectionsResponse, error) {
+	return nil, store.ErrAlreadyClosed
+}
+
+func (d *closedDB) UpdateCollection(ctx context.Context, req *protomodel.UpdateCollectionRequest) (*protomodel.UpdateCollectionResponse, error) {
+	return nil, store.ErrAlreadyClosed
+}
+
+func (d *closedDB) DeleteCollection(ctx context.Context, req *protomodel.DeleteCollectionRequest) (*protomodel.DeleteCollectionResponse, error) {
+	return nil, store.ErrAlreadyClosed
+}
+
+func (d *closedDB) CreateIndex(ctx context.Context, req *protomodel.CreateIndexRequest) (*protomodel.CreateIndexResponse, error) {
+	return nil, store.ErrAlreadyClosed
+}
+
+func (d *closedDB) DeleteIndex(ctx context.Context, req *protomodel.DeleteIndexRequest) (*protomodel.DeleteIndexResponse, error) {
+	return nil, store.ErrAlreadyClosed
+}
+
+func (d *closedDB) InsertDocuments(ctx context.Context, req *protomodel.InsertDocumentsRequest) (*protomodel.InsertDocumentsResponse, error) {
+	return nil, store.ErrAlreadyClosed
+}
+
+func (d *closedDB) ReplaceDocuments(ctx context.Context, req *protomodel.ReplaceDocumentsRequest) (*protomodel.ReplaceDocumentsResponse, error) {
+	return nil, store.ErrAlreadyClosed
+}
+
+func (d *closedDB) AuditDocument(ctx context.Context, req *protomodel.AuditDocumentRequest) (*protomodel.AuditDocumentResponse, error) {
+	return nil, store.ErrAlreadyClosed
+}
+
+func (d *closedDB) SearchDocuments(ctx context.Context, query *protomodel.Query, offset int64) (document.DocumentReader, error) {
+	return nil, store.ErrAlreadyClosed
+}
+
+func (d *closedDB) ProofDocument(ctx context.Context, req *protomodel.ProofDocumentRequest) (*protomodel.ProofDocumentResponse, error) {
+	return nil, store.ErrAlreadyClosed
+}
+
+func (d *closedDB) DeleteDocuments(ctx context.Context, req *protomodel.DeleteDocumentsRequest) (*protomodel.DeleteDocumentsResponse, error) {
+	return nil, store.ErrAlreadyClosed
 }

@@ -29,12 +29,14 @@ import (
 	"github.com/codenotary/immudb/embedded/store"
 )
 
+// Catalog represents a database catalog containing metadata for all tables in the database.
 type Catalog struct {
 	prefix []byte
 
 	tables       []*Table
 	tablesByID   map[uint32]*Table
 	tablesByName map[string]*Table
+	tableCount   uint32 // The tableCount variable is used to assign unique ids to new tables as they are created.
 }
 
 type Table struct {
@@ -50,6 +52,7 @@ type Table struct {
 	primaryIndex    *Index
 	autoIncrementPK bool
 	maxPK           int64
+	indexCount      uint32
 }
 
 type Index struct {
@@ -159,6 +162,14 @@ func (t *Table) GetColumnByID(id uint32) (*Column, error) {
 	return col, nil
 }
 
+func (t *Table) ColumnsByID() map[uint32]*Column {
+	return t.colsByID
+}
+
+func (t *Table) GetIndexes() []*Index {
+	return t.indexes
+}
+
 func (i *Index) IsPrimary() bool {
 	return i.id == PKIndexID
 }
@@ -209,6 +220,18 @@ func (i *Index) Name() string {
 	return indexName(i.table.name, i.cols)
 }
 
+func (i *Index) ID() uint32 {
+	return i.id
+}
+
+func (t *Table) GetIndexByName(name string) (*Index, error) {
+	idx, exists := t.indexesByName[name]
+	if !exists {
+		return nil, fmt.Errorf("%w (%s)", ErrNoAvailableIndex, name)
+	}
+	return idx, nil
+}
+
 func indexName(tableName string, cols []*Column) string {
 	var buf strings.Builder
 
@@ -239,10 +262,19 @@ func (catlg *Catalog) newTable(name string, colsSpec []*ColSpec) (table *Table, 
 		return nil, fmt.Errorf("%w (%s)", ErrTableAlreadyExists, name)
 	}
 
-	id := len(catlg.tables) + 1
+	// Generate a new ID for the table by incrementing the 'tableCount' variable of the 'catalog' instance.
+	id := (catlg.tableCount + 1)
+
+	// This code is attempting to check if a table with the given id already exists in the Catalog.
+	// If the function returns nil for err, it means that the table already exists and the function
+	// should return an error indicating that the table cannot be created again.
+	_, err = catlg.GetTableByID(id)
+	if err == nil {
+		return nil, fmt.Errorf("%w (%d)", ErrTableAlreadyExists, id)
+	}
 
 	table = &Table{
-		id:             uint32(id),
+		id:             id,
 		catalog:        catlg,
 		name:           name,
 		cols:           make([]*Column, len(colsSpec)),
@@ -287,6 +319,11 @@ func (catlg *Catalog) newTable(name string, colsSpec []*ColSpec) (table *Table, 
 	catlg.tablesByID[table.id] = table
 	catlg.tablesByName[table.name] = table
 
+	// increment table count on successfull table creation.
+	// This ensures that each new table is assigned a unique ID
+	// that has not been used before.
+	catlg.tableCount += 1
+
 	return table, nil
 }
 
@@ -315,7 +352,7 @@ func (t *Table) newIndex(unique bool, colIDs []uint32) (index *Index, err error)
 	}
 
 	index = &Index{
-		id:       uint32(len(t.indexes)),
+		id:       uint32(t.indexCount),
 		table:    t,
 		unique:   unique,
 		cols:     cols,
@@ -339,6 +376,11 @@ func (t *Table) newIndex(unique bool, colIDs []uint32) (index *Index, err error)
 		t.primaryIndex = index
 		t.autoIncrementPK = len(index.cols) == 1 && index.cols[0].autoIncrement
 	}
+
+	// increment table count on successfull table creation.
+	// This ensures that each new table is assigned a unique ID
+	// that has not been used before.
+	t.indexCount += 1
 
 	return index, nil
 }
@@ -426,6 +468,11 @@ func (c *Column) MaxLen() int {
 	case Float64Type:
 		return 8
 	}
+
+	if c.maxLen == 0 {
+		return MaxKeyLen
+	}
+
 	return c.maxLen
 }
 
@@ -455,7 +502,7 @@ func validMaxLenForType(maxLen int, sqlType SQLValueType) bool {
 func (catlg *Catalog) load(tx *store.OngoingTx) error {
 	dbReaderSpec := store.KeyReaderSpec{
 		Prefix:  mapKey(catlg.prefix, catalogTablePrefix, EncodeID(1)),
-		Filters: []store.FilterFn{store.IgnoreExpired, store.IgnoreDeleted},
+		Filters: []store.FilterFn{store.IgnoreExpired},
 	}
 
 	tableReader, err := tx.NewKeyReader(dbReaderSpec)
@@ -480,6 +527,16 @@ func (catlg *Catalog) load(tx *store.OngoingTx) error {
 
 		if dbID != 1 {
 			return ErrCorruptedData
+		}
+
+		// Retrieve the key-value metadata (KVMetadata) of the current version reference (vref).
+		// If the metadata is not nil and the "Deleted" flag of the metadata is set to true,
+		// increment the catalog's table count by 1 and continue to the next iteration.
+		// This implies this is a deleted table and we should not load it.
+		md := vref.KVMetadata()
+		if md != nil && md.Deleted() {
+			catlg.tableCount += 1
+			continue
 		}
 
 		colSpecs, err := loadColSpecs(dbID, tableID, tx, catlg.prefix)
@@ -618,7 +675,7 @@ func (table *Table) loadIndexes(sqlPrefix []byte, tx *store.OngoingTx) error {
 
 	idxReaderSpec := store.KeyReaderSpec{
 		Prefix:  initialKey,
-		Filters: []store.FilterFn{store.IgnoreExpired, store.IgnoreDeleted},
+		Filters: []store.FilterFn{store.IgnoreExpired},
 	}
 
 	idxSpecReader, err := tx.NewKeyReader(idxReaderSpec)
@@ -634,6 +691,16 @@ func (table *Table) loadIndexes(sqlPrefix []byte, tx *store.OngoingTx) error {
 		}
 		if err != nil {
 			return err
+		}
+
+		// Retrieve the key-value metadata (KVMetadata) of the current version reference (vref).
+		// If the metadata is not nil and the "Deleted" flag of the metadata is set to true,
+		// increment the catalog's index count by 1 and continue to the next iteration.
+		// This implies this is a deleted index and we should not load it.
+		md := vref.KVMetadata()
+		if md != nil && md.Deleted() {
+			table.indexCount += 1
+			continue
 		}
 
 		dbID, tableID, indexID, err := unmapIndex(sqlPrefix, mkey)
@@ -803,7 +870,7 @@ func unmapIndexEntry(index *Index, sqlPrefix, mkey []byte) (encPKVals []byte, er
 			off += 1
 
 			maxLen := col.MaxLen()
-			if variableSized(col.colType) {
+			if variableSizedType(col.colType) {
 				maxLen += EncLenLen
 			}
 			if len(enc)-off < maxLen {
@@ -822,7 +889,7 @@ func unmapIndexEntry(index *Index, sqlPrefix, mkey []byte) (encPKVals []byte, er
 	return enc[off:], nil
 }
 
-func variableSized(sqlType SQLValueType) bool {
+func variableSizedType(sqlType SQLValueType) bool {
 	return sqlType == VarcharType || sqlType == BLOBType
 }
 
@@ -867,26 +934,26 @@ const (
 	KeyValPrefixUpperBound byte = 0xFF
 )
 
-func EncodeValueAsKey(val TypedValue, colType SQLValueType, maxLen int) ([]byte, error) {
+func EncodeValueAsKey(val TypedValue, colType SQLValueType, maxLen int) ([]byte, int, error) {
 	return EncodeRawValueAsKey(val.RawValue(), colType, maxLen)
 }
 
 // EncodeRawValueAsKey encodes a value in a b-tree meaningful way.
-func EncodeRawValueAsKey(val interface{}, colType SQLValueType, maxLen int) ([]byte, error) {
+func EncodeRawValueAsKey(val interface{}, colType SQLValueType, maxLen int) ([]byte, int, error) {
 	if maxLen <= 0 {
-		return nil, ErrInvalidValue
+		return nil, 0, ErrInvalidValue
 	}
-	if maxLen > maxKeyLen {
-		return nil, ErrMaxKeyLengthExceeded
+	if maxLen > MaxKeyLen {
+		return nil, 0, ErrMaxKeyLengthExceeded
 	}
 
 	convVal, err := mayApplyImplicitConversion(val, colType)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	if convVal == nil {
-		return []byte{KeyValPrefixNull}, nil
+		return []byte{KeyValPrefixNull}, 0, nil
 	}
 
 	switch colType {
@@ -894,13 +961,13 @@ func EncodeRawValueAsKey(val interface{}, colType SQLValueType, maxLen int) ([]b
 		{
 			strVal, ok := convVal.(string)
 			if !ok {
-				return nil, fmt.Errorf(
+				return nil, 0, fmt.Errorf(
 					"value is not a string: %w", ErrInvalidValue,
 				)
 			}
 
 			if len(strVal) > maxLen {
-				return nil, ErrMaxLengthExceeded
+				return nil, 0, ErrMaxLengthExceeded
 			}
 
 			// notnull + value + padding + len(value)
@@ -909,17 +976,17 @@ func EncodeRawValueAsKey(val interface{}, colType SQLValueType, maxLen int) ([]b
 			copy(encv[1:], []byte(strVal))
 			binary.BigEndian.PutUint32(encv[len(encv)-EncLenLen:], uint32(len(strVal)))
 
-			return encv, nil
+			return encv, len(strVal), nil
 		}
 	case IntegerType:
 		{
 			if maxLen != 8 {
-				return nil, ErrCorruptedData
+				return nil, 0, ErrCorruptedData
 			}
 
 			intVal, ok := convVal.(int64)
 			if !ok {
-				return nil, fmt.Errorf(
+				return nil, 0, fmt.Errorf(
 					"value is not an integer: %w", ErrInvalidValue,
 				)
 			}
@@ -931,17 +998,17 @@ func EncodeRawValueAsKey(val interface{}, colType SQLValueType, maxLen int) ([]b
 			// map to unsigned integer space for lexical sorting order
 			encv[1] ^= 0x80
 
-			return encv[:], nil
+			return encv[:], 8, nil
 		}
 	case BooleanType:
 		{
 			if maxLen != 1 {
-				return nil, ErrCorruptedData
+				return nil, 0, ErrCorruptedData
 			}
 
 			boolVal, ok := convVal.(bool)
 			if !ok {
-				return nil, fmt.Errorf(
+				return nil, 0, fmt.Errorf(
 					"value is not a boolean: %w", ErrInvalidValue,
 				)
 			}
@@ -953,19 +1020,19 @@ func EncodeRawValueAsKey(val interface{}, colType SQLValueType, maxLen int) ([]b
 				encv[1] = 1
 			}
 
-			return encv[:], nil
+			return encv[:], 1, nil
 		}
 	case BLOBType:
 		{
 			blobVal, ok := convVal.([]byte)
 			if !ok {
-				return nil, fmt.Errorf(
+				return nil, 0, fmt.Errorf(
 					"value is not a blob: %w", ErrInvalidValue,
 				)
 			}
 
 			if len(blobVal) > maxLen {
-				return nil, ErrMaxLengthExceeded
+				return nil, 0, ErrMaxLengthExceeded
 			}
 
 			// notnull + value + padding + len(value)
@@ -974,17 +1041,17 @@ func EncodeRawValueAsKey(val interface{}, colType SQLValueType, maxLen int) ([]b
 			copy(encv[1:], []byte(blobVal))
 			binary.BigEndian.PutUint32(encv[len(encv)-EncLenLen:], uint32(len(blobVal)))
 
-			return encv, nil
+			return encv, len(blobVal), nil
 		}
 	case TimestampType:
 		{
 			if maxLen != 8 {
-				return nil, ErrCorruptedData
+				return nil, 0, ErrCorruptedData
 			}
 
 			timeVal, ok := convVal.(time.Time)
 			if !ok {
-				return nil, fmt.Errorf(
+				return nil, 0, fmt.Errorf(
 					"value is not a timestamp: %w", ErrInvalidValue,
 				)
 			}
@@ -996,13 +1063,13 @@ func EncodeRawValueAsKey(val interface{}, colType SQLValueType, maxLen int) ([]b
 			// map to unsigned integer space for lexical sorting order
 			encv[1] ^= 0x80
 
-			return encv[:], nil
+			return encv[:], 8, nil
 		}
 	case Float64Type:
 		{
 			floatVal, ok := convVal.(float64)
 			if !ok {
-				return nil, fmt.Errorf(
+				return nil, 0, fmt.Errorf(
 					"value is not a float: %w", ErrInvalidValue,
 				)
 			}
@@ -1029,11 +1096,11 @@ func EncodeRawValueAsKey(val interface{}, colType SQLValueType, maxLen int) ([]b
 				encv[1] ^= 0x80
 			}
 
-			return encv[:], nil
+			return encv[:], 8, nil
 		}
 	}
 
-	return nil, ErrInvalidValue
+	return nil, 0, ErrInvalidValue
 }
 
 func EncodeValue(val TypedValue, colType SQLValueType, maxLen int) ([]byte, error) {

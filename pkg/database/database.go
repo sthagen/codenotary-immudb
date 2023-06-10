@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codenotary/immudb/embedded/document"
 	"github.com/codenotary/immudb/embedded/sql"
 	"github.com/codenotary/immudb/embedded/store"
 
@@ -134,6 +135,8 @@ type DB interface {
 
 	IsClosed() bool
 	Close() error
+
+	DocumentDatabase
 }
 
 type uuid = string
@@ -147,7 +150,8 @@ type replicaState struct {
 type db struct {
 	st *store.ImmuStore
 
-	sqlEngine *sql.Engine
+	sqlEngine      *sql.Engine
+	documentEngine *document.Engine
 
 	mutex        *instrumentedRWMutex
 	closingMutex sync.Mutex
@@ -215,7 +219,10 @@ func OpenDB(dbName string, multidbHandler sql.MultiDBHandler, op *Options, log l
 		return nil, err
 	}
 
-	dbi.Logger.Infof("SQL Engine ready for database '%s' {replica = %v}", dbName, op.replica)
+	dbi.documentEngine, err = document.NewEngine(dbi.st, document.DefaultOptions().WithPrefix([]byte{DocumentPrefix}))
+	if err != nil {
+		return nil, err
+	}
 
 	txPool, err := dbi.st.NewTxHolderPool(op.readTxPoolSize, false)
 	if err != nil {
@@ -308,6 +315,11 @@ func NewDB(dbName string, multidbHandler sql.MultiDBHandler, op *Options, log lo
 	if err != nil {
 		dbi.Logger.Errorf("Unable to load SQL Engine for database '%s' {replica = %v}. %v", dbName, op.replica, err)
 		return nil, err
+	}
+
+	dbi.documentEngine, err = document.NewEngine(dbi.st, document.DefaultOptions().WithPrefix([]byte{DocumentPrefix}))
+	if err != nil {
+		return nil, logErr(dbi.Logger, "Unable to open database: %s", err)
 	}
 
 	dbi.Logger.Infof("SQL Engine ready for database '%s' {replica = %v}", dbName, op.replica)
@@ -1644,5 +1656,17 @@ func logErr(log logger.Logger, formattedMessage string, err error) error {
 // CopyCatalog creates a copy of the sql catalog and returns a transaction
 // that can be used to commit the copy.
 func (d *db) CopyCatalogToTx(ctx context.Context, tx *store.OngoingTx) error {
-	return d.sqlEngine.CopyCatalogToTx(ctx, tx)
+	// copy the sql catalog
+	err := d.sqlEngine.CopyCatalogToTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+
+	// copy the document store catalog
+	err = d.documentEngine.CopyCatalogToTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

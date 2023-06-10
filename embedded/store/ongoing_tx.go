@@ -75,10 +75,10 @@ type EntrySpec struct {
 	// hashValue is the hash of the value
 	// if the actual value is truncated. This is
 	// used during replication.
-	hashValue [sha256.Size]byte
+	HashValue [sha256.Size]byte
 	// isValueTruncated is true if the value is
 	// truncated. This is used during replication.
-	isValueTruncated bool
+	IsValueTruncated bool
 }
 
 func newOngoingTx(ctx context.Context, s *ImmuStore, opts *TxOptions) (*OngoingTx, error) {
@@ -107,7 +107,13 @@ func newOngoingTx(ctx context.Context, s *ImmuStore, opts *TxOptions) (*OngoingT
 	var snapshotMustIncludeTxID uint64
 
 	if opts.SnapshotMustIncludeTxID != nil {
-		snapshotMustIncludeTxID = opts.SnapshotMustIncludeTxID(s.lastPrecommittedTxID())
+		snapshotMustIncludeTxID = opts.SnapshotMustIncludeTxID(s.LastPrecommittedTxID())
+	}
+
+	mandatoryMVCCUpToTxID := s.MandatoryMVCCUpToTxID()
+
+	if mandatoryMVCCUpToTxID > snapshotMustIncludeTxID {
+		snapshotMustIncludeTxID = mandatoryMVCCUpToTxID
 	}
 
 	snap, err := s.SnapshotMustIncludeTxIDWithRenewalPeriod(ctx, snapshotMustIncludeTxID, opts.SnapshotRenewalPeriod)
@@ -237,8 +243,8 @@ func (tx *OngoingTx) set(key []byte, md *KVMetadata, value []byte, hashValue [sh
 		Key:              key,
 		Metadata:         md,
 		Value:            value,
-		hashValue:        hashValue,
-		isValueTruncated: isValueTruncated,
+		HashValue:        hashValue,
+		IsValueTruncated: isValueTruncated,
 	}
 
 	if isKeyUpdate {
@@ -439,10 +445,6 @@ func (tx *OngoingTx) commit(ctx context.Context, waitForIndexing bool) (*TxHeade
 		return nil, ErrAlreadyClosed
 	}
 
-	if tx.readOnly {
-		return nil, ErrReadOnlyTx
-	}
-
 	if !tx.IsWriteOnly() {
 		err := tx.snap.Close()
 		if err != nil {
@@ -451,6 +453,10 @@ func (tx *OngoingTx) commit(ctx context.Context, waitForIndexing bool) (*TxHeade
 	}
 
 	tx.closed = true
+
+	if tx.readOnly {
+		return nil, ErrReadOnlyTx
+	}
 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -494,7 +500,7 @@ func (tx *OngoingTx) checkPreconditions(st *ImmuStore) error {
 		}
 	}
 
-	if tx.IsWriteOnly() || tx.snap.Ts() > st.lastPrecommittedTxID() {
+	if tx.IsWriteOnly() || tx.snap.Ts() > st.LastPrecommittedTxID() {
 		// read-only transactions or read-write transactions when no other transaction was committed won't be invalidated
 		return nil
 	}

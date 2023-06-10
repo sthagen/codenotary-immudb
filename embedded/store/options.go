@@ -40,6 +40,7 @@ const DefaultFileMode = os.FileMode(0755)
 const DefaultFileSize = multiapp.DefaultFileSize
 const DefaultCompressionFormat = appendable.DefaultCompressionFormat
 const DefaultCompressionLevel = appendable.DefaultCompressionLevel
+const DefaultEmbeddedValues = true
 const DefaultTxLogCacheSize = 1000
 const DefaultVLogCacheSize = 0
 const DefaultMaxWaitees = 1000
@@ -128,6 +129,7 @@ type Options struct {
 	FileSize          int
 	CompressionFormat int
 	CompressionLevel  int
+	EmbeddedValues    bool
 
 	// options below affect indexing
 	IndexOpts *IndexOptions
@@ -228,6 +230,7 @@ func DefaultOptions() *Options {
 		FileSize:          DefaultFileSize,
 		CompressionFormat: DefaultCompressionFormat,
 		CompressionLevel:  DefaultCompressionLevel,
+		EmbeddedValues:    DefaultEmbeddedValues,
 
 		IndexOpts: DefaultIndexOptions(),
 
@@ -287,7 +290,9 @@ func (opts *Options) Validate() error {
 		return fmt.Errorf("%w: invalid MaxConcurrency", ErrInvalidOptions)
 	}
 
-	if opts.MaxIOConcurrency <= 0 || opts.MaxIOConcurrency > MaxParallelIO {
+	if opts.MaxIOConcurrency <= 0 ||
+		opts.MaxIOConcurrency > MaxParallelIO ||
+		(opts.MaxIOConcurrency > 1 && opts.EmbeddedValues) {
 		return fmt.Errorf("%w: invalid MaxIOConcurrency", ErrInvalidOptions)
 	}
 
@@ -548,6 +553,11 @@ func (opts *Options) WithCompressionFormat(compressionFormat int) *Options {
 
 func (opts *Options) WithCompresionLevel(compressionLevel int) *Options {
 	opts.CompressionLevel = compressionLevel
+	return opts
+}
+
+func (opts *Options) WithEmbeddedValues(embeddedValues bool) *Options {
+	opts.EmbeddedValues = embeddedValues
 	return opts
 }
 

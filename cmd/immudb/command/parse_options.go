@@ -82,6 +82,8 @@ func parseOptions() (options *server.Options, err error) {
 
 	pprof := viper.GetBool("pprof")
 
+	grpcReflectionServerEnabled := viper.GetBool("grpc-reflection")
+
 	s3Storage := viper.GetBool("s3-storage")
 	s3Endpoint := viper.GetString("s3-endpoint")
 	s3AccessKeyID := viper.GetString("s3-access-key-id")
@@ -140,7 +142,8 @@ func parseOptions() (options *server.Options, err error) {
 		WithPgsqlServerPort(pgsqlServerPort).
 		WithSessionOptions(sessionOptions).
 		WithPProf(pprof).
-		WithLogFormat(logFormat)
+		WithLogFormat(logFormat).
+		WithGRPCReflectionServerEnabled(grpcReflectionServerEnabled)
 
 	return options, nil
 }

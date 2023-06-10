@@ -283,6 +283,10 @@ type CreateTableStmt struct {
 	pkColNames  []string
 }
 
+func NewCreateTableStmt(table string, ifNotExists bool, colsSpec []*ColSpec, pkColNames []string) *CreateTableStmt {
+	return &CreateTableStmt{table: table, ifNotExists: ifNotExists, colsSpec: colsSpec, pkColNames: pkColNames}
+}
+
 func (stmt *CreateTableStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
 	return nil
 }
@@ -336,11 +340,25 @@ type ColSpec struct {
 	notNull       bool
 }
 
+func NewColSpec(name string, colType SQLValueType, maxLen int, autoIncrement bool, notNull bool) *ColSpec {
+	return &ColSpec{
+		colName:       name,
+		colType:       colType,
+		maxLen:        maxLen,
+		autoIncrement: autoIncrement,
+		notNull:       notNull,
+	}
+}
+
 type CreateIndexStmt struct {
 	unique      bool
 	ifNotExists bool
 	table       string
 	cols        []string
+}
+
+func NewCreateIndexStmt(table string, cols []string, isUnique bool) *CreateIndexStmt {
+	return &CreateIndexStmt{unique: isUnique, table: table, cols: cols}
 }
 
 func (stmt *CreateIndexStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
@@ -363,17 +381,25 @@ func (stmt *CreateIndexStmt) execAt(ctx context.Context, tx *SQLTx, params map[s
 
 	colIDs := make([]uint32, len(stmt.cols))
 
+	indexKeyLen := 0
+
 	for i, colName := range stmt.cols {
 		col, err := table.GetColumnByName(colName)
 		if err != nil {
 			return nil, err
 		}
 
-		if variableSized(col.colType) && (col.MaxLen() == 0 || col.MaxLen() > maxKeyLen) {
-			return nil, ErrLimitedKeyType
+		if variableSizedType(col.colType) && !tx.engine.lazyIndexConstraintValidation && col.MaxLen() > MaxKeyLen {
+			return nil, fmt.Errorf("%w: can not create index using column '%s'. Max key length for variable columns is %d", ErrLimitedKeyType, col.colName, MaxKeyLen)
 		}
 
+		indexKeyLen += col.MaxLen()
+
 		colIDs[i] = col.id
+	}
+
+	if !tx.engine.lazyIndexConstraintValidation && indexKeyLen > MaxKeyLen {
+		return nil, fmt.Errorf("%w: can not create index using columns '%v'. Max key length is %d", ErrLimitedKeyType, stmt.cols, MaxKeyLen)
 	}
 
 	index, err := table.newIndex(stmt.unique, colIDs)
@@ -427,6 +453,10 @@ type AddColumnStmt struct {
 	colSpec *ColSpec
 }
 
+func NewAddColumnStmt(table string, colSpec *ColSpec) *AddColumnStmt {
+	return &AddColumnStmt{table: table, colSpec: colSpec}
+}
+
 func (stmt *AddColumnStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
 	return nil
 }
@@ -456,6 +486,10 @@ type RenameColumnStmt struct {
 	table   string
 	oldName string
 	newName string
+}
+
+func NewRenameColumnStmt(table, oldName, newName string) *RenameColumnStmt {
+	return &RenameColumnStmt{table: table, oldName: oldName, newName: newName}
 }
 
 func (stmt *RenameColumnStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
@@ -491,8 +525,24 @@ type UpsertIntoStmt struct {
 	onConflict *OnConflictDo
 }
 
+func NewUpserIntoStmt(table string, cols []string, rows []*RowSpec, isInsert bool, onConflict *OnConflictDo) *UpsertIntoStmt {
+	return &UpsertIntoStmt{
+		isInsert:   isInsert,
+		tableRef:   newTableRef(table, ""),
+		cols:       cols,
+		rows:       rows,
+		onConflict: onConflict,
+	}
+}
+
 type RowSpec struct {
 	Values []ValueExp
+}
+
+func NewRowSpec(values []ValueExp) *RowSpec {
+	return &RowSpec{
+		Values: values,
+	}
 }
 
 type OnConflictDo struct {
@@ -772,18 +822,30 @@ func (tx *SQLTx) doUpsert(ctx context.Context, pkEncVals []byte, valuesByColID m
 		encodedValues[1] = EncodeID(table.id)
 		encodedValues[2] = EncodeID(index.id)
 
+		indexKeyLen := 0
+
 		for i, col := range index.cols {
 			rval, specified := valuesByColID[col.id]
 			if !specified {
 				rval = &NullValue{t: col.colType}
 			}
 
-			encVal, err := EncodeValueAsKey(rval, col.colType, col.MaxLen())
+			encVal, n, err := EncodeValueAsKey(rval, col.colType, col.MaxLen())
 			if err != nil {
-				return err
+				return fmt.Errorf("%w: index on '%s' and column '%s'", err, index.Name(), col.colName)
 			}
 
+			if n > MaxKeyLen {
+				return fmt.Errorf("%w: can not index entry for column '%s'. Max key length for variable columns is %d", ErrLimitedKeyType, col.colName, MaxKeyLen)
+			}
+
+			indexKeyLen += n
+
 			encodedValues[i+3] = encVal
+		}
+
+		if indexKeyLen > MaxKeyLen {
+			return fmt.Errorf("%w: can not index entry using columns '%v'. Max key length is %d", ErrLimitedKeyType, index.cols, MaxKeyLen)
 		}
 
 		mkey := mapKey(tx.sqlPrefix(), prefix, encodedValues...)
@@ -810,8 +872,14 @@ func (tx *SQLTx) doUpsert(ctx context.Context, pkEncVals []byte, valuesByColID m
 	return nil
 }
 
+func EncodedPK(table *Table, valuesByColID map[uint32]TypedValue) ([]byte, error) {
+	return encodedPK(table, valuesByColID)
+}
+
 func encodedPK(table *Table, valuesByColID map[uint32]TypedValue) ([]byte, error) {
 	valbuf := bytes.Buffer{}
+
+	indexKeyLen := 0
 
 	for _, col := range table.primaryIndex.cols {
 		rval, specified := valuesByColID[col.id]
@@ -819,15 +887,25 @@ func encodedPK(table *Table, valuesByColID map[uint32]TypedValue) ([]byte, error
 			return nil, ErrPKCanNotBeNull
 		}
 
-		encVal, err := EncodeValueAsKey(rval, col.colType, col.MaxLen())
+		encVal, n, err := EncodeValueAsKey(rval, col.colType, col.MaxLen())
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: primary index of table '%s' and column '%s'", err, table.name, col.colName)
 		}
+
+		if n > MaxKeyLen {
+			return nil, fmt.Errorf("%w: invalid primary key entry for column '%s'. Max key length for variable columns is %d", ErrLimitedKeyType, col.colName, MaxKeyLen)
+		}
+
+		indexKeyLen += n
 
 		_, err = valbuf.Write(encVal)
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	if indexKeyLen > MaxKeyLen {
+		return nil, fmt.Errorf("%w: invalid primary key entry using columns '%v'. Max key length is %d", ErrLimitedKeyType, table.primaryIndex.cols, MaxKeyLen)
 	}
 
 	return valbuf.Bytes(), nil
@@ -912,7 +990,7 @@ func (tx *SQLTx) deprecateIndexEntries(
 
 			sameIndexKey = sameIndexKey && r == 0
 
-			encVal, _ := EncodeValueAsKey(currVal, col.colType, col.MaxLen())
+			encVal, _, _ := EncodeValueAsKey(currVal, col.colType, col.MaxLen())
 
 			encodedValues[i+3] = encVal
 		}
@@ -944,10 +1022,26 @@ type UpdateStmt struct {
 	offset   ValueExp
 }
 
+func NewUpdateStmt(table string, where ValueExp, update *colUpdate) *UpdateStmt {
+	return &UpdateStmt{
+		tableRef: newTableRef(table, ""),
+		where:    where,
+		updates:  []*colUpdate{update},
+	}
+}
+
 type colUpdate struct {
 	col string
 	op  CmpOperator
 	val ValueExp
+}
+
+func NewColUpdate(col string, val ValueExp) *colUpdate {
+	return &colUpdate{
+		col: col,
+		op:  EQ,
+		val: val,
+	}
 }
 
 func (stmt *UpdateStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
@@ -1102,14 +1196,25 @@ type DeleteFromStmt struct {
 	tableRef *tableRef
 	where    ValueExp
 	indexOn  []string
+	orderBy  []*OrdCol
 	limit    ValueExp
 	offset   ValueExp
 }
 
+func NewDeleteFromStmt(table string, where ValueExp, orderBy []*OrdCol, limit ValueExp) *DeleteFromStmt {
+	return &DeleteFromStmt{
+		tableRef: newTableRef(table, ""),
+		where:    where,
+		orderBy:  orderBy,
+		limit:    limit,
+	}
+}
+
 func (stmt *DeleteFromStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
 	selectStmt := &SelectStmt{
-		ds:    stmt.tableRef,
-		where: stmt.where,
+		ds:      stmt.tableRef,
+		where:   stmt.where,
+		orderBy: stmt.orderBy,
 	}
 	return selectStmt.inferParameters(ctx, tx, params)
 }
@@ -1119,6 +1224,7 @@ func (stmt *DeleteFromStmt) execAt(ctx context.Context, tx *SQLTx, params map[st
 		ds:      stmt.tableRef,
 		where:   stmt.where,
 		indexOn: stmt.indexOn,
+		orderBy: stmt.orderBy,
 		limit:   stmt.limit,
 		offset:  stmt.offset,
 	}
@@ -1192,7 +1298,7 @@ func (tx *SQLTx) deleteIndexEntries(pkEncVals []byte, valuesByColID map[uint32]T
 				val = &NullValue{t: col.colType}
 			}
 
-			encVal, _ := EncodeValueAsKey(val, col.colType, col.MaxLen())
+			encVal, _, _ := EncodeValueAsKey(val, col.colType, col.MaxLen())
 
 			encodedValues[i+3] = encVal
 		}
@@ -1400,6 +1506,10 @@ type Integer struct {
 	val int64
 }
 
+func NewInteger(val int64) *Integer {
+	return &Integer{val: val}
+}
+
 func (v *Integer) Type() SQLValueType {
 	return IntegerType
 }
@@ -1545,6 +1655,10 @@ type Varchar struct {
 	val string
 }
 
+func NewVarchar(val string) *Varchar {
+	return &Varchar{val: val}
+}
+
 func (v *Varchar) Type() SQLValueType {
 	return VarcharType
 }
@@ -1605,6 +1719,10 @@ func (v *Varchar) Compare(val TypedValue) (int, error) {
 
 type Bool struct {
 	val bool
+}
+
+func NewBool(val bool) *Bool {
+	return &Bool{val: val}
 }
 
 func (v *Bool) Type() SQLValueType {
@@ -1677,6 +1795,10 @@ type Blob struct {
 	val []byte
 }
 
+func NewBlob(val []byte) *Blob {
+	return &Blob{val: val}
+}
+
 func (v *Blob) Type() SQLValueType {
 	return BLOBType
 }
@@ -1737,6 +1859,10 @@ func (v *Blob) Compare(val TypedValue) (int, error) {
 
 type Float64 struct {
 	val float64
+}
+
+func NewFloat64(val float64) *Float64 {
+	return &Float64{val: val}
 }
 
 func (v *Float64) Type() SQLValueType {
@@ -2059,10 +2185,28 @@ type SelectStmt struct {
 	where     ValueExp
 	groupBy   []*ColSelector
 	having    ValueExp
+	orderBy   []*OrdCol
 	limit     ValueExp
 	offset    ValueExp
-	orderBy   []*OrdCol
 	as        string
+}
+
+func NewSelectStmt(
+	selectors []Selector,
+	table string,
+	where ValueExp,
+	orderBy []*OrdCol,
+	limit ValueExp,
+	offset ValueExp,
+) *SelectStmt {
+	return &SelectStmt{
+		selectors: selectors,
+		ds:        newTableRef(table, ""),
+		where:     where,
+		orderBy:   orderBy,
+		limit:     limit,
+		offset:    offset,
+	}
 }
 
 func (stmt *SelectStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
@@ -2201,7 +2345,13 @@ func (stmt *SelectStmt) Resolve(ctx context.Context, tx *SQLTx, params map[strin
 			return nil, fmt.Errorf("%w: invalid limit", err)
 		}
 
-		rowReader = newLimitRowReader(rowReader, limit)
+		if limit < 0 {
+			return nil, fmt.Errorf("%w: invalid limit", ErrIllegalArguments)
+		}
+
+		if limit > 0 {
+			rowReader = newLimitRowReader(rowReader, limit)
+		}
 	}
 
 	return rowReader, nil
@@ -2402,6 +2552,13 @@ func (stmt *UnionStmt) Alias() string {
 	return ""
 }
 
+func newTableRef(table string, as string) *tableRef {
+	return &tableRef{
+		table: table,
+		as:    as,
+	}
+}
+
 type tableRef struct {
 	table  string
 	period period
@@ -2561,6 +2718,13 @@ type OrdCol struct {
 	descOrder bool
 }
 
+func NewOrdCol(table string, col string, descOrder bool) *OrdCol {
+	return &OrdCol{
+		sel:       NewColSelector(table, col),
+		descOrder: descOrder,
+	}
+}
+
 type Selector interface {
 	ValueExp
 	resolve(implicitTable string) (aggFn, table, col string)
@@ -2572,6 +2736,13 @@ type ColSelector struct {
 	table string
 	col   string
 	as    string
+}
+
+func NewColSelector(table, col string) *ColSelector {
+	return &ColSelector{
+		table: table,
+		col:   col,
+	}
 }
 
 func (sel *ColSelector) resolve(implicitTable string) (aggFn, table, col string) {
@@ -2963,6 +3134,14 @@ type LikeBoolExp struct {
 	pattern ValueExp
 }
 
+func NewLikeBoolExp(val ValueExp, notLike bool, pattern ValueExp) *LikeBoolExp {
+	return &LikeBoolExp{
+		val:     val,
+		notLike: notLike,
+		pattern: pattern,
+	}
+}
+
 func (bexp *LikeBoolExp) inferType(cols map[string]ColDescriptor, params map[string]SQLValueType, implicitTable string) (SQLValueType, error) {
 	if bexp.val == nil || bexp.pattern == nil {
 		return AnyType, fmt.Errorf("error in 'LIKE' clause: %w", ErrInvalidCondition)
@@ -3061,6 +3240,26 @@ func (bexp *LikeBoolExp) selectorRanges(table *Table, asTable string, params map
 type CmpBoolExp struct {
 	op          CmpOperator
 	left, right ValueExp
+}
+
+func NewCmpBoolExp(op CmpOperator, left, right ValueExp) *CmpBoolExp {
+	return &CmpBoolExp{
+		op:    op,
+		left:  left,
+		right: right,
+	}
+}
+
+func (bexp *CmpBoolExp) Left() ValueExp {
+	return bexp.left
+}
+
+func (bexp *CmpBoolExp) Right() ValueExp {
+	return bexp.right
+}
+
+func (bexp *CmpBoolExp) OP() CmpOperator {
+	return bexp.op
 }
 
 func (bexp *CmpBoolExp) inferType(cols map[string]ColDescriptor, params map[string]SQLValueType, implicitTable string) (SQLValueType, error) {
@@ -3293,6 +3492,17 @@ type BinBoolExp struct {
 	left, right ValueExp
 }
 
+func NewBinBoolExp(op LogicOperator, lrexp, rrexp ValueExp) *BinBoolExp {
+	bexp := &BinBoolExp{
+		op: op,
+	}
+
+	bexp.left = lrexp
+	bexp.right = rrexp
+
+	return bexp
+}
+
 func (bexp *BinBoolExp) inferType(cols map[string]ColDescriptor, params map[string]SQLValueType, implicitTable string) (SQLValueType, error) {
 	err := bexp.left.requiresType(BooleanType, cols, params, implicitTable)
 	if err != nil {
@@ -3430,7 +3640,7 @@ func (bexp *BinBoolExp) selectorRanges(table *Table, asTable string, params map[
 }
 
 type ExistsBoolExp struct {
-	q *SelectStmt
+	q DataSource
 }
 
 func (bexp *ExistsBoolExp) inferType(cols map[string]ColDescriptor, params map[string]SQLValueType, implicitTable string) (SQLValueType, error) {
@@ -3874,4 +4084,151 @@ func (stmt *FnDataSourceStmt) resolveListIndexes(ctx context.Context, tx *SQLTx,
 	}
 
 	return newValuesRowReader(tx, params, cols, stmt.Alias(), values)
+}
+
+// DropTableStmt represents a statement to delete a table.
+type DropTableStmt struct {
+	table string
+}
+
+func NewDropTableStmt(table string) *DropTableStmt {
+	return &DropTableStmt{table: table}
+}
+
+func (stmt *DropTableStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
+	return nil
+}
+
+/*
+Exec executes the delete table statement.
+It the table exists, if not it does nothing.
+If the table exists, it deletes all the indexes and the table itself.
+Note that this is a soft delete of the index and table key,
+the data is not deleted, but the metadata is updated.
+*/
+func (stmt *DropTableStmt) execAt(ctx context.Context, tx *SQLTx, params map[string]interface{}) (*SQLTx, error) {
+	if !tx.catalog.ExistTable(stmt.table) {
+		return nil, ErrTableDoesNotExist
+	}
+
+	table, err := tx.catalog.GetTableByName(stmt.table)
+	if err != nil {
+		return nil, err
+	}
+
+	// delete indexes
+	indexes := table.GetIndexes()
+	for _, index := range indexes {
+		mappedKey := mapKey(
+			tx.sqlPrefix(),
+			catalogIndexPrefix,
+			EncodeID(1),
+			EncodeID(table.id),
+			EncodeID(index.id),
+		)
+		err = tx.delete(mappedKey)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// delete columns
+	cols := table.ColumnsByID()
+	for _, col := range cols {
+		mappedKey := mapKey(
+			tx.sqlPrefix(),
+			catalogColumnPrefix,
+			EncodeID(1),
+			EncodeID(col.table.id),
+			EncodeID(col.id),
+			[]byte(col.colType),
+		)
+		err = tx.delete(mappedKey)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// delete table
+	mappedKey := mapKey(
+		tx.sqlPrefix(),
+		catalogTablePrefix,
+		EncodeID(1),
+		EncodeID(table.id),
+	)
+	err = tx.delete(mappedKey)
+	if err != nil {
+		return nil, err
+	}
+
+	tx.mutatedCatalog = true
+
+	return tx, nil
+}
+
+// DropIndexStmt represents a statement to delete a table.
+type DropIndexStmt struct {
+	table   string
+	columns []string
+}
+
+func NewDropIndexStmt(table string, columns []string) *DropIndexStmt {
+	return &DropIndexStmt{table: table, columns: columns}
+}
+
+func (stmt *DropIndexStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
+	return nil
+}
+
+/*
+Exec executes the delete index statement.
+If the index exists, it deletes it. Note that this is a soft delete of the index
+the data is not deleted, but the metadata is updated.
+*/
+func (stmt *DropIndexStmt) execAt(ctx context.Context, tx *SQLTx, params map[string]interface{}) (*SQLTx, error) {
+	if !tx.catalog.ExistTable(stmt.table) {
+		return nil, ErrTableDoesNotExist
+	}
+
+	table, err := tx.catalog.GetTableByName(stmt.table)
+	if err != nil {
+		return nil, err
+	}
+
+	cols := make([]*Column, len(stmt.columns))
+
+	for i, colName := range stmt.columns {
+		col, err := table.GetColumnByName(colName)
+		if err != nil {
+			return nil, err
+		}
+
+		cols[i] = col
+	}
+
+	index, err := table.GetIndexByName(indexName(table.name, cols))
+	if err != nil {
+		return nil, err
+	}
+
+	if index.IsPrimary() {
+		return nil, fmt.Errorf("%w: primary key index can NOT be deleted", ErrIllegalArguments)
+	}
+
+	// delete index
+	indexKey := mapKey(
+		tx.sqlPrefix(),
+		catalogIndexPrefix,
+		EncodeID(1),
+		EncodeID(table.id),
+		EncodeID(index.id),
+	)
+	err = tx.delete(indexKey)
+	if err != nil {
+		return nil, err
+	}
+
+	tx.mutatedCatalog = true
+
+	return tx, nil
 }

@@ -94,7 +94,7 @@ var ErrInvalidPreconditionNullKey = fmt.Errorf("%w: %v", ErrInvalidPrecondition,
 var ErrInvalidPreconditionMaxKeyLenExceeded = fmt.Errorf("%w: %v", ErrInvalidPrecondition, ErrMaxKeyLenExceeded)
 var ErrInvalidPreconditionInvalidTxID = fmt.Errorf("%w: invalid transaction ID", ErrInvalidPrecondition)
 
-var ErrSourceTxNewerThanTargetTx = errors.New("source tx is newer than target tx")
+var ErrSourceTxNewerThanTargetTx = fmt.Errorf("%w: source tx is newer than target tx", ErrIllegalArguments)
 
 var ErrCompactionUnsupported = errors.New("compaction is unsupported when remote storage is used")
 
@@ -107,6 +107,8 @@ var ErrUnsupportedTxHeaderVersion = errors.New("missing tx header serialization 
 var ErrIllegalTruncationArgument = fmt.Errorf("%w: invalid truncation info", ErrIllegalArguments)
 var ErrTxNotPresentInMetadata = errors.New("tx not present in metadata")
 
+var ErrInvalidProof = errors.New("invalid proof")
+
 const MaxKeyLen = 1024 // assumed to be not lower than hash size
 const MaxParallelIO = 127
 
@@ -118,15 +120,18 @@ const lszSize = 4
 const sszSize = 2
 const offsetSize = 8
 
-const Version = 1
+// Version 2 includes `metaEmbeddedValues` into clog metadata
+const Version = 2
+
 const MaxTxHeaderVersion = 1
 
 const (
-	metaVersion      = "VERSION"
-	metaMaxTxEntries = "MAX_TX_ENTRIES"
-	metaMaxKeyLen    = "MAX_KEY_LEN"
-	metaMaxValueLen  = "MAX_VALUE_LEN"
-	metaFileSize     = "FILE_SIZE"
+	metaVersion        = "VERSION"
+	metaMaxTxEntries   = "MAX_TX_ENTRIES"
+	metaMaxKeyLen      = "MAX_KEY_LEN"
+	metaMaxValueLen    = "MAX_VALUE_LEN"
+	metaFileSize       = "FILE_SIZE"
+	metaEmbeddedValues = "EMBEDDED_VALUES"
 )
 
 const indexDirname = "index"
@@ -164,6 +169,7 @@ type ImmuStore struct {
 
 	commitStateRWMutex sync.RWMutex
 
+	embeddedValues        bool
 	readOnly              bool
 	synced                bool
 	syncFrequency         time.Duration
@@ -233,6 +239,7 @@ func Open(path string, opts *Options) (*ImmuStore, error) {
 
 	metadata := appendable.NewMetadata(nil)
 	metadata.PutInt(metaVersion, Version)
+	metadata.PutBool(metaEmbeddedValues, opts.EmbeddedValues)
 	metadata.PutInt(metaMaxTxEntries, opts.MaxTxEntries)
 	metadata.PutInt(metaMaxKeyLen, opts.MaxKeyLen)
 	metadata.PutInt(metaMaxValueLen, opts.MaxValueLen)
@@ -272,26 +279,37 @@ func Open(path string, opts *Options) (*ImmuStore, error) {
 
 	}
 
-	vLogs := make([]appendable.Appendable, opts.MaxIOConcurrency)
-	appendableOpts.WithFileExt("val")
-	appendableOpts.WithCompressionFormat(opts.CompressionFormat)
-	appendableOpts.WithCompresionLevel(opts.CompressionLevel)
-	appendableOpts.WithMaxOpenedFiles(opts.VLogMaxOpenedFiles)
+	metadata = appendable.NewMetadata(cLog.Metadata())
 
-	for i := 0; i < opts.MaxIOConcurrency; i++ {
-		vLog, err := appFactory(path, fmt.Sprintf("val_%d", i), appendableOpts)
-		if err != nil {
-			return nil, err
+	embeddedValues, ok := metadata.GetBool(metaEmbeddedValues)
+	if !ok {
+		embeddedValues = false
+	}
+
+	var vLogs []appendable.Appendable
+
+	if !embeddedValues {
+		vLogs = make([]appendable.Appendable, opts.MaxIOConcurrency)
+		appendableOpts.WithFileExt("val")
+		appendableOpts.WithCompressionFormat(opts.CompressionFormat)
+		appendableOpts.WithCompresionLevel(opts.CompressionLevel)
+		appendableOpts.WithMaxOpenedFiles(opts.VLogMaxOpenedFiles)
+
+		for i := 0; i < opts.MaxIOConcurrency; i++ {
+			vLog, err := appFactory(path, fmt.Sprintf("val_%d", i), appendableOpts)
+			if err != nil {
+				return nil, err
+			}
+			vLogs[i] = vLog
 		}
-		vLogs[i] = vLog
 	}
 
 	return OpenWith(path, vLogs, txLog, cLog, opts)
 }
 
 func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable.Appendable, opts *Options) (*ImmuStore, error) {
-	if len(vLogs) == 0 || txLog == nil || cLog == nil {
-		return nil, ErrIllegalArguments
+	if txLog == nil || cLog == nil {
+		return nil, fmt.Errorf("%w: invalid txLog or cLog", ErrIllegalArguments)
 	}
 
 	err := opts.Validate()
@@ -301,25 +319,42 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 
 	metadata := appendable.NewMetadata(cLog.Metadata())
 
+	version, ok := metadata.GetInt(metaVersion)
+	if !ok {
+		return nil, fmt.Errorf("%w: can not read '%s' from metadata", ErrCorruptedCLog, "Version")
+	}
+
+	embeddedValues, ok := metadata.GetBool(metaEmbeddedValues)
+	if !ok {
+		if version >= 2 {
+			return nil, fmt.Errorf("%w: can not read '%s' from metadata", ErrCorruptedCLog, "EmbeddedValues")
+		}
+
+		embeddedValues = false
+	}
+
+	if (len(vLogs) == 0 && !embeddedValues) || (len(vLogs) != 0 && embeddedValues) {
+		return nil, fmt.Errorf("%w: invalid vLogs", ErrIllegalArguments)
+	}
+
 	fileSize, ok := metadata.GetInt(metaFileSize)
 	if !ok {
-		return nil, fmt.Errorf("corrupted commit log metadata (filesize): %w", ErrCorruptedCLog)
+		return nil, fmt.Errorf("%w: can not read '%s' from metadata", ErrCorruptedCLog, "FileSize")
 	}
 
 	maxTxEntries, ok := metadata.GetInt(metaMaxTxEntries)
 	if !ok {
-		return nil, fmt.Errorf("corrupted commit log metadata (max tx entries): %w", ErrCorruptedCLog)
+		return nil, fmt.Errorf("%w: can not read '%s' from metadata", ErrCorruptedCLog, "MaxTxEntries")
 	}
 
 	maxKeyLen, ok := metadata.GetInt(metaMaxKeyLen)
 	if !ok {
-		return nil, fmt.Errorf("corrupted commit log metadata (max key len): %w", ErrCorruptedCLog)
+		return nil, fmt.Errorf("%w: can not read '%s' from metadata", ErrCorruptedCLog, "MaxKeyLen")
 	}
 
 	maxValueLen, ok := metadata.GetInt(metaMaxValueLen)
 	if !ok {
-		return nil, fmt.Errorf("corrupted commit log metadata (max value len): %w", ErrCorruptedCLog)
-
+		return nil, fmt.Errorf("%w: can not read '%s' from metadata", ErrCorruptedCLog, "MaxValueLen")
 	}
 
 	cLogSize, err := cLog.Size()
@@ -503,6 +538,8 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		inmemPrecommittedAlh:  precommittedAlh,
 		precommittedTxLogSize: precommittedTxLogSize,
 
+		embeddedValues: embeddedValues,
+
 		readOnly:              opts.ReadOnly,
 		synced:                opts.Synced,
 		syncFrequency:         opts.SyncFrequency,
@@ -511,9 +548,10 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 		maxWaitees:            opts.MaxWaitees,
 		maxConcurrency:        opts.MaxConcurrency,
 		maxIOConcurrency:      opts.MaxIOConcurrency,
-		maxTxEntries:          maxTxEntries,
-		maxKeyLen:             maxKeyLen,
-		maxValueLen:           maxInt(maxValueLen, opts.MaxValueLen),
+
+		maxTxEntries: maxTxEntries,
+		maxKeyLen:    maxKeyLen,
+		maxValueLen:  maxValueLen,
 
 		writeTxHeaderVersion: opts.WriteTxHeaderVersion,
 
@@ -600,7 +638,7 @@ func OpenWith(path string, vLogs []appendable.Appendable, txLog, cLog appendable
 					// give some time for more transactions to be precommitted
 					time.Sleep(store.syncFrequency / 4)
 
-					latestPrecommitedTx := store.lastPrecommittedTxID()
+					latestPrecommitedTx := store.LastPrecommittedTxID()
 
 					if prevLatestPrecommitedTx == latestPrecommitedTx {
 						// avoid waiting if there are no new transactions
@@ -790,7 +828,7 @@ func (s *ImmuStore) SnapshotMustIncludeTxID(ctx context.Context, txID uint64) (*
 // If txID is 0, any snapshot not older than renewalPeriod may be used.
 // If renewalPeriod is 0, renewal period is not taken into consideration
 func (s *ImmuStore) SnapshotMustIncludeTxIDWithRenewalPeriod(ctx context.Context, txID uint64, renewalPeriod time.Duration) (*Snapshot, error) {
-	if txID > s.lastPrecommittedTxID() {
+	if txID > s.LastPrecommittedTxID() {
 		return nil, fmt.Errorf("%w: txID is greater than the last precommitted transaction", ErrIllegalArguments)
 	}
 
@@ -1042,7 +1080,16 @@ func (s *ImmuStore) fetchAnyVLog() (vLodID byte, vLog appendable.Appendable) {
 	return vLogID, s.vLogs[vLogID-1].vLog
 }
 
-func (s *ImmuStore) fetchVLog(vLogID byte) appendable.Appendable {
+func (s *ImmuStore) fetchVLog(vLogID byte) (appendable.Appendable, error) {
+	if s.embeddedValues {
+		if vLogID > 0 {
+			return nil, fmt.Errorf("%w: attempt to read from a non-embedded vlog while using embedded values", ErrUnexpectedError)
+		}
+
+		s.commitStateRWMutex.Lock()
+		return s.txLog, nil
+	}
+
 	s.vLogsCond.L.Lock()
 	defer s.vLogsCond.L.Unlock()
 
@@ -1053,14 +1100,25 @@ func (s *ImmuStore) fetchVLog(vLogID byte) appendable.Appendable {
 	s.vLogUnlockedList.Remove(s.vLogs[vLogID-1].unlockedRef)
 	s.vLogs[vLogID-1].unlockedRef = nil // locked
 
-	return s.vLogs[vLogID-1].vLog
+	return s.vLogs[vLogID-1].vLog, nil
 }
 
-func (s *ImmuStore) releaseVLog(vLogID byte) {
+func (s *ImmuStore) releaseVLog(vLogID byte) error {
+	if s.embeddedValues {
+		if vLogID > 0 {
+			return fmt.Errorf("%w: attempt to release a non-embedded vlog while using embedded values", ErrUnexpectedError)
+		}
+
+		s.commitStateRWMutex.Unlock()
+		return nil
+	}
+
 	s.vLogsCond.L.Lock()
 	s.vLogs[vLogID-1].unlockedRef = s.vLogUnlockedList.PushBack(vLogID - 1) // unlocked
 	s.vLogsCond.L.Unlock()
 	s.vLogsCond.Signal()
+
+	return nil
 }
 
 type appendableResult struct {
@@ -1068,34 +1126,37 @@ type appendableResult struct {
 	err     error
 }
 
-func (s *ImmuStore) appendData(entries []*EntrySpec, donec chan<- appendableResult) {
-	offsets := make([]int64, len(entries))
-
+func (s *ImmuStore) appendValuesIntoAnyVLog(entries []*EntrySpec) (offsets []int64, err error) {
 	vLogID, vLog := s.fetchAnyVLog()
 	defer s.releaseVLog(vLogID)
+
+	offsets, err = s.appendValuesInto(entries, vLog)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := 0; i < len(offsets); i++ {
+		offsets[i] = encodeOffset(offsets[i], vLogID)
+	}
+
+	return offsets, nil
+}
+
+func (s *ImmuStore) appendValuesInto(entries []*EntrySpec, app appendable.Appendable) (offsets []int64, err error) {
+	offsets = make([]int64, len(entries))
 
 	for i := 0; i < len(offsets); i++ {
 		if len(entries[i].Value) == 0 {
 			continue
 		}
 
-		voff, _, err := vLog.Append(entries[i].Value)
+		offsets[i], _, err = app.Append(entries[i].Value)
 		if err != nil {
-			donec <- appendableResult{nil, err}
-			return
-		}
-		offsets[i] = encodeOffset(voff, vLogID)
-
-		if s.vLogCache != nil {
-			_, _, err = s.vLogCache.Put(offsets[i], entries[i].Value)
-			if err != nil {
-				donec <- appendableResult{nil, err}
-				return
-			}
+			return nil, err
 		}
 	}
 
-	donec <- appendableResult{offsets, nil}
+	return offsets, nil
 }
 
 func (s *ImmuStore) NewWriteOnlyTx(ctx context.Context) (*OngoingTx, error) {
@@ -1162,9 +1223,6 @@ func (s *ImmuStore) precommit(ctx context.Context, otx *OngoingTx, hdr *TxHeader
 	}
 	defer s.releaseAllocTx(tx)
 
-	appendableCh := make(chan appendableResult)
-	go s.appendData(otx.entries, appendableCh)
-
 	if hdr == nil {
 		tx.header.Version = s.writeTxHeaderVersion
 	} else {
@@ -1175,13 +1233,32 @@ func (s *ImmuStore) precommit(ctx context.Context, otx *OngoingTx, hdr *TxHeader
 
 	tx.header.NEntries = len(otx.entries)
 
+	doneWithValuesCh := make(chan appendableResult)
+	defer close(doneWithValuesCh)
+
+	go func() {
+		if s.embeddedValues {
+			// value write is delayed to ensure values are inmediatelly followed by the associated tx header
+			doneWithValuesCh <- appendableResult{nil, nil}
+			return
+		}
+
+		offsets, err := s.appendValuesIntoAnyVLog(otx.entries)
+		if err != nil {
+			doneWithValuesCh <- appendableResult{nil, err}
+			return
+		}
+
+		doneWithValuesCh <- appendableResult{offsets, nil}
+	}()
+
 	for i, e := range otx.entries {
 		txe := tx.entries[i]
 		txe.setKey(e.Key)
 		txe.md = e.Metadata
 		txe.vLen = len(e.Value)
-		if e.isValueTruncated {
-			txe.hVal = e.hashValue
+		if e.IsValueTruncated {
+			txe.hVal = e.HashValue
 		} else {
 			txe.hVal = sha256.Sum256(e.Value)
 		}
@@ -1189,14 +1266,19 @@ func (s *ImmuStore) precommit(ctx context.Context, otx *OngoingTx, hdr *TxHeader
 
 	err = tx.BuildHashTree()
 	if err != nil {
-		<-appendableCh // wait for data to be written
+		<-doneWithValuesCh // wait for data to be written
 		return nil, err
 	}
 
-	r := <-appendableCh // wait for data to be written
-	err = r.err
-	if err != nil {
-		return nil, err
+	valueWritingResult := <-doneWithValuesCh // wait for data to be written
+	if valueWritingResult.err != nil {
+		return nil, valueWritingResult.err
+	}
+
+	if !s.embeddedValues {
+		for i := 0; i < tx.header.NEntries; i++ {
+			tx.entries[i].vOff = valueWritingResult.offsets[i]
+		}
 	}
 
 	if hdr != nil {
@@ -1206,7 +1288,7 @@ func (s *ImmuStore) precommit(ctx context.Context, otx *OngoingTx, hdr *TxHeader
 			return nil, fmt.Errorf("%w: entries hash (Eh) differs", ErrIllegalArguments)
 		}
 
-		lastPreCommittedTxID := s.lastPrecommittedTxID()
+		lastPreCommittedTxID := s.LastPrecommittedTxID()
 
 		if lastPreCommittedTxID >= hdr.ID {
 			return nil, ErrTxAlreadyCommitted
@@ -1295,11 +1377,7 @@ func (s *ImmuStore) precommit(ctx context.Context, otx *OngoingTx, hdr *TxHeader
 		}
 	}
 
-	for i := 0; i < tx.header.NEntries; i++ {
-		tx.entries[i].vOff = r.offsets[i]
-	}
-
-	err = s.performPrecommit(tx, ts, blTxID)
+	err = s.performPrecommit(tx, otx.entries, ts, blTxID)
 	if err != nil {
 		return nil, err
 	}
@@ -1318,26 +1396,27 @@ func (s *ImmuStore) LastCommittedTxID() uint64 {
 	return s.committedTxID
 }
 
-func (s *ImmuStore) lastPrecommittedTxID() uint64 {
+func (s *ImmuStore) LastPrecommittedTxID() uint64 {
 	s.commitStateRWMutex.RLock()
 	defer s.commitStateRWMutex.RUnlock()
 
 	return s.inmemPrecommittedTxID
 }
 
-func (s *ImmuStore) performPrecommit(tx *Tx, ts int64, blTxID uint64) error {
+func (s *ImmuStore) MandatoryMVCCUpToTxID() uint64 {
+	s.commitStateRWMutex.RLock()
+	defer s.commitStateRWMutex.RUnlock()
+
+	return s.mandatoryMVCCUpToTxID
+}
+
+func (s *ImmuStore) performPrecommit(tx *Tx, entries []*EntrySpec, ts int64, blTxID uint64) error {
 	s.commitStateRWMutex.Lock()
 	defer s.commitStateRWMutex.Unlock()
 
 	// limit the maximum number of pre-committed transactions
 	if s.synced && s.committedTxID+uint64(s.maxActiveTransactions) <= s.inmemPrecommittedTxID {
 		return ErrMaxActiveTransactionsLimitExceeded
-	}
-
-	// will overwrite partially written and uncommitted data
-	err := s.txLog.SetOffset(s.precommittedTxLogSize)
-	if err != nil {
-		return fmt.Errorf("commit log: could not set offset: %w", err)
 	}
 
 	tx.header.ID = s.inmemPrecommittedTxID + 1
@@ -1405,6 +1484,41 @@ func (s *ImmuStore) performPrecommit(tx *Tx, ts int64, blTxID uint64) error {
 		}
 	}
 
+	// will overwrite partially written and uncommitted data
+	err := s.txLog.SetOffset(s.precommittedTxLogSize)
+	if err != nil {
+		return fmt.Errorf("%w: could not set offset in txLog", err)
+	}
+
+	// total values length will be prefixed when values are embedded into txLog
+	txPrefixLen := 0
+
+	if s.embeddedValues {
+		embeddedValuesLen := 0
+		for _, e := range entries {
+			embeddedValuesLen += len(e.Value)
+		}
+
+		var embeddedValuesLenBs [sszSize]byte
+		binary.BigEndian.PutUint16(embeddedValuesLenBs[:], uint16(embeddedValuesLen))
+
+		_, _, err := s.txLog.Append(embeddedValuesLenBs[:])
+		if err != nil {
+			return fmt.Errorf("%w: writing transaction values", err)
+		}
+
+		offsets, err := s.appendValuesInto(entries, s.txLog)
+		if err != nil {
+			return fmt.Errorf("%w: writing transaction values", err)
+		}
+
+		for i := 0; i < tx.header.NEntries; i++ {
+			tx.entries[i].vOff = offsets[i]
+		}
+
+		txPrefixLen = sszSize + embeddedValuesLen
+	}
+
 	for i := 0; i < tx.header.NEntries; i++ {
 		txe := tx.entries[i]
 
@@ -1462,7 +1576,7 @@ func (s *ImmuStore) performPrecommit(tx *Tx, ts int64, blTxID uint64) error {
 
 	s.inmemPrecommittedTxID++
 	s.inmemPrecommittedAlh = alh
-	s.precommittedTxLogSize += int64(txSize)
+	s.precommittedTxLogSize += int64(txPrefixLen + txSize)
 
 	s.inmemPrecommitWHub.DoneUpto(s.inmemPrecommittedTxID)
 
@@ -1729,7 +1843,7 @@ func (s *ImmuStore) preCommitWith(ctx context.Context, callback func(txID uint64
 	s.indexer.Pause()
 	defer s.indexer.Resume()
 
-	lastPreCommittedTxID := s.lastPrecommittedTxID()
+	lastPreCommittedTxID := s.LastPrecommittedTxID()
 
 	otx.entries, otx.preconditions, err = callback(lastPreCommittedTxID+1, &unsafeIndex{st: s})
 	if err != nil {
@@ -1773,42 +1887,70 @@ func (s *ImmuStore) preCommitWith(ctx context.Context, callback func(txID uint64
 	}
 	defer s.releaseAllocTx(tx)
 
-	appendableCh := make(chan appendableResult)
-	go s.appendData(otx.entries, appendableCh)
-
 	tx.header.Version = s.writeTxHeaderVersion
 	tx.header.NEntries = len(otx.entries)
+
+	doneWithValuesCh := make(chan appendableResult)
+	defer close(doneWithValuesCh)
+
+	go func() {
+		if s.embeddedValues {
+			// value write is delayed to ensure values are inmediatelly followed by the associated tx header
+			doneWithValuesCh <- appendableResult{nil, nil}
+			return
+		}
+
+		offsets, err := s.appendValuesIntoAnyVLog(otx.entries)
+		if err != nil {
+			doneWithValuesCh <- appendableResult{nil, err}
+			return
+		}
+
+		doneWithValuesCh <- appendableResult{offsets, nil}
+	}()
 
 	for i, e := range otx.entries {
 		txe := tx.entries[i]
 		txe.setKey(e.Key)
 		txe.md = e.Metadata
 		txe.vLen = len(e.Value)
-		txe.hVal = sha256.Sum256(e.Value)
+		if e.IsValueTruncated {
+			txe.hVal = e.HashValue
+		} else {
+			txe.hVal = sha256.Sum256(e.Value)
+		}
 	}
 
 	err = tx.BuildHashTree()
 	if err != nil {
-		<-appendableCh // wait for data to be written
+		<-doneWithValuesCh // wait for data to be written
 		return nil, err
 	}
 
-	r := <-appendableCh // wait for data to be written
-	err = r.err
-	if err != nil {
-		return nil, err
+	valueWritingResult := <-doneWithValuesCh // wait for data to be written
+	if valueWritingResult.err != nil {
+		return nil, valueWritingResult.err
 	}
 
-	for i := 0; i < tx.header.NEntries; i++ {
-		tx.entries[i].vOff = r.offsets[i]
+	if !s.embeddedValues {
+		for i := 0; i < tx.header.NEntries; i++ {
+			tx.entries[i].vOff = valueWritingResult.offsets[i]
+		}
 	}
 
-	err = s.performPrecommit(tx, s.timeFunc().Unix(), s.aht.Size())
+	err = s.performPrecommit(tx, otx.entries, s.timeFunc().Unix(), s.aht.Size())
 	if err != nil {
 		return nil, err
 	}
 
 	return tx.Header(), nil
+}
+
+type DualProofV2 struct {
+	SourceTxHeader   *TxHeader
+	TargetTxHeader   *TxHeader
+	InclusionProof   [][sha256.Size]byte
+	ConsistencyProof [][sha256.Size]byte
 }
 
 type DualProof struct {
@@ -1820,6 +1962,39 @@ type DualProof struct {
 	LastInclusionProof [][sha256.Size]byte
 	LinearProof        *LinearProof
 	LinearAdvanceProof *LinearAdvanceProof
+}
+
+func (s *ImmuStore) DualProofV2(sourceTxHdr, targetTxHdr *TxHeader) (proof *DualProofV2, err error) {
+	if sourceTxHdr == nil || targetTxHdr == nil || sourceTxHdr.ID == 0 {
+		return nil, ErrIllegalArguments
+	}
+
+	if sourceTxHdr.ID > targetTxHdr.ID {
+		return nil, ErrSourceTxNewerThanTargetTx
+	}
+
+	if sourceTxHdr.ID-1 != sourceTxHdr.BlTxID || targetTxHdr.ID-1 != targetTxHdr.BlTxID {
+		return nil, ErrUnexpectedLinkingError
+	}
+
+	proof = &DualProofV2{
+		SourceTxHeader: sourceTxHdr,
+		TargetTxHeader: targetTxHdr,
+	}
+
+	if sourceTxHdr.ID < targetTxHdr.ID {
+		proof.InclusionProof, err = s.aht.InclusionProof(sourceTxHdr.ID, targetTxHdr.BlTxID)
+		if err != nil {
+			return nil, err
+		}
+
+		proof.ConsistencyProof, err = s.aht.ConsistencyProof(maxUint64(1, sourceTxHdr.BlTxID), targetTxHdr.BlTxID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return proof, nil
 }
 
 // DualProof combines linear cryptographic linking i.e. transactions include the linear accumulative hash up to the previous one,
@@ -2314,7 +2489,7 @@ func (s *ImmuStore) ReplicateTx(ctx context.Context, exportedTx []byte, skipInte
 		if isTruncated {
 			err = txSpec.set(e.Key, e.Metadata, nil, byte32(e.Value), isTruncated)
 		} else {
-			err = txSpec.set(e.Key, e.Metadata, e.Value, e.hashValue, isTruncated)
+			err = txSpec.set(e.Key, e.Metadata, e.Value, e.HashValue, isTruncated)
 		}
 		if err != nil {
 			return nil, err
@@ -2615,12 +2790,16 @@ func (s *ImmuStore) ReadValue(entry *TxEntry) ([]byte, error) {
 func (s *ImmuStore) readValueAt(b []byte, off int64, hvalue [sha256.Size]byte, skipIntegrityCheck bool) (n int, err error) {
 	vLogID, offset := decodeOffset(off)
 
-	if vLogID == 0 && len(b) > 0 {
+	if len(b) == 0 && vLogID > 0 {
+		return 0, fmt.Errorf("%w: attempt to read empty value from a non-embedded vlog", ErrCorruptedTxData)
+	}
+
+	if !s.embeddedValues && vLogID == 0 && len(b) > 0 {
 		// it means value was not stored on any vlog i.e. a truncated transaction was replicated
 		return 0, io.EOF
 	}
 
-	if vLogID > 0 {
+	if len(b) > 0 {
 		foundInTheCache := false
 
 		if s.vLogCache != nil {
@@ -2639,11 +2818,14 @@ func (s *ImmuStore) readValueAt(b []byte, off int64, hvalue [sha256.Size]byte, s
 		}
 
 		if !foundInTheCache {
-			vLog := s.fetchVLog(vLogID)
+			vLog, err := s.fetchVLog(vLogID)
+			if err != nil {
+				return 0, err
+			}
 			defer s.releaseVLog(vLogID)
 
 			n, err = vLog.ReadAt(b, offset)
-			if err == multiapp.ErrAlreadyClosed || err == singleapp.ErrAlreadyClosed {
+			if errors.Is(err, multiapp.ErrAlreadyClosed) || errors.Is(err, singleapp.ErrAlreadyClosed) {
 				return n, ErrAlreadyClosed
 			}
 			if err != nil {
@@ -2663,10 +2845,10 @@ func (s *ImmuStore) readValueAt(b []byte, off int64, hvalue [sha256.Size]byte, s
 	}
 
 	// either value was empty (n == 0 && vLogID == 0)
-	// or a non-empty value (n > 0 && vLogID > 0) was read from cache or disk
+	// or a non-empty value (n > 0) was read from cache or disk
 
 	if !skipIntegrityCheck && (len(b) != n || hvalue != sha256.Sum256(b[:n])) {
-		return n, ErrCorruptedData
+		return n, fmt.Errorf("%w: value length or digest mismatch", ErrCorruptedData)
 	}
 
 	return n, nil
@@ -2740,10 +2922,13 @@ func (s *ImmuStore) sync() error {
 	}
 
 	for i := range s.vLogs {
-		vLog := s.fetchVLog(i + 1)
+		vLog, err := s.fetchVLog(i + 1)
+		if err != nil {
+			return err
+		}
 		defer s.releaseVLog(i + 1)
 
-		err := vLog.Flush()
+		err = vLog.Flush()
 		if err != nil {
 			return err
 		}
@@ -2853,12 +3038,14 @@ func (s *ImmuStore) Close() error {
 	merr := multierr.NewMultiErr()
 
 	for i := range s.vLogs {
-		vLog := s.fetchVLog(i + 1)
-
-		err := vLog.Close()
+		vLog, err := s.fetchVLog(i + 1)
 		merr.Append(err)
 
-		s.releaseVLog(i + 1)
+		err = vLog.Close()
+		merr.Append(err)
+
+		err = s.releaseVLog(i + 1)
+		merr.Append(err)
 	}
 
 	err := s.inmemPrecommitWHub.Close()
@@ -3001,6 +3188,11 @@ func (s *ImmuStore) TruncateUptoTx(minTxID uint64) error {
 
 	s.logger.Infof("running truncation up to transaction '%d'", minTxID)
 
+	if s.embeddedValues {
+		s.logger.Infof("truncation with embedded values does not delete any data")
+		return nil
+	}
+
 	// tombstones maintain the minimum offset for each value log file that can be safely deleted.
 	tombstones := make(map[byte]int64)
 
@@ -3075,10 +3267,15 @@ func (s *ImmuStore) TruncateUptoTx(minTxID uint64) error {
 	merr := multierr.NewMultiErr()
 	{
 		for vLogID, offset := range tombstones {
-			vlog := s.fetchVLog(vLogID)
+			vlog, err := s.fetchVLog(vLogID)
+			if err != nil {
+				merr.Append(err)
+				continue
+			}
 			defer s.releaseVLog(vLogID)
+
 			s.logger.Infof("truncating vlog '%d' at offset '%d'", vLogID, offset)
-			err := vlog.DiscardUpto(offset)
+			err = vlog.DiscardUpto(offset)
 			merr.Append(err)
 		}
 	}

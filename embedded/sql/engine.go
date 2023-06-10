@@ -39,7 +39,7 @@ var ErrColumnAlreadyExists = errors.New("column already exists")
 var ErrSameOldAndNewColumnName = errors.New("same old and new column names")
 var ErrColumnNotIndexed = errors.New("column is not indexed")
 var ErrFunctionDoesNotExist = errors.New("function does not exist")
-var ErrLimitedKeyType = errors.New("indexed key of invalid type. Supported types are: INTEGER, VARCHAR[256] OR BLOB[256]")
+var ErrLimitedKeyType = errors.New("indexed key of unsupported type or exceeded length")
 var ErrLimitedAutoIncrement = errors.New("only INTEGER single-column primary keys can be set as auto incremental")
 var ErrLimitedMaxLen = errors.New("only VARCHAR and BLOB types support max length")
 var ErrDuplicatedColumn = errors.New("duplicated column")
@@ -86,7 +86,7 @@ var ErrAmbiguousSelector = errors.New("ambiguous selector")
 var ErrUnsupportedCast = fmt.Errorf("%w: unsupported cast", ErrInvalidValue)
 var ErrColumnMismatchInUnionStmt = errors.New("column mismatch in union statement")
 
-var maxKeyLen = 256
+var MaxKeyLen = 512
 
 const EncIDLen = 4
 const EncLenLen = 4
@@ -96,9 +96,10 @@ const MaxNumberOfColumnsInIndex = 8
 type Engine struct {
 	store *store.ImmuStore
 
-	prefix        []byte
-	distinctLimit int
-	autocommit    bool
+	prefix                        []byte
+	distinctLimit                 int
+	autocommit                    bool
+	lazyIndexConstraintValidation bool
 
 	multidbHandler MultiDBHandler
 }
@@ -121,11 +122,12 @@ func NewEngine(store *store.ImmuStore, opts *Options) (*Engine, error) {
 	}
 
 	e := &Engine{
-		store:          store,
-		prefix:         make([]byte, len(opts.prefix)),
-		distinctLimit:  opts.distinctLimit,
-		autocommit:     opts.autocommit,
-		multidbHandler: opts.multidbHandler,
+		store:                         store,
+		prefix:                        make([]byte, len(opts.prefix)),
+		distinctLimit:                 opts.distinctLimit,
+		autocommit:                    opts.autocommit,
+		lazyIndexConstraintValidation: opts.lazyIndexConstraintValidation,
+		multidbHandler:                opts.multidbHandler,
 	}
 
 	copy(e.prefix, opts.prefix)
@@ -445,4 +447,12 @@ func (e *Engine) CopyCatalogToTx(ctx context.Context, tx *store.OngoingTx) error
 	}
 
 	return nil
+}
+
+func (e *Engine) GetStore() *store.ImmuStore {
+	return e.store
+}
+
+func (e *Engine) GetPrefix() []byte {
+	return e.prefix
 }

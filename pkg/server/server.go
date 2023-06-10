@@ -49,6 +49,7 @@ import (
 
 	"github.com/codenotary/immudb/cmd/helper"
 	"github.com/codenotary/immudb/cmd/version"
+	"github.com/codenotary/immudb/pkg/api/protomodel"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/auth"
 	"github.com/golang/protobuf/ptypes/empty"
@@ -57,6 +58,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 )
 
@@ -239,7 +241,13 @@ func (s *ImmuServer) Initialize() error {
 	)
 
 	s.GrpcServer = grpc.NewServer(grpcSrvOpts...)
+	if s.Options.GRPCReflectionServerEnabled {
+		reflection.Register(s.GrpcServer)
+	}
+
 	schema.RegisterImmuServiceServer(s.GrpcServer, s)
+	protomodel.RegisterDocumentServiceServer(s.GrpcServer, s)
+	protomodel.RegisterAuthorizationServiceServer(s.GrpcServer, &authenticationServiceImp{server: s})
 	grpc_prometheus.Register(s.GrpcServer)
 
 	s.PgsqlSrv = pgsqlsrv.New(pgsqlsrv.Address(s.Options.Address), pgsqlsrv.Port(s.Options.PgsqlServerPort), pgsqlsrv.DatabaseList(s.dbList), pgsqlsrv.SysDb(s.sysDB), pgsqlsrv.TlsConfig(s.Options.TLSConfig), pgsqlsrv.Logger(s.Logger))
@@ -296,7 +304,7 @@ func (s *ImmuServer) Start() (err error) {
 	}
 
 	if s.Options.WebServer {
-		if err := s.setUpWebServer(); err != nil {
+		if err := s.setUpWebServer(context.Background()); err != nil {
 			log.Fatal(fmt.Sprintf("Failed to setup web API/console server: %v", err))
 		}
 		defer func() {
@@ -345,8 +353,10 @@ func (s *ImmuServer) setUpMetricsServer() error {
 	return nil
 }
 
-func (s *ImmuServer) setUpWebServer() error {
-	server, err := StartWebServer(
+func (s *ImmuServer) setUpWebServer(ctx context.Context) error {
+	server, err := startWebServer(
+		ctx,
+		s.Options.Bind(),
 		s.Options.WebBind(),
 		s.Options.TLSConfig,
 		s,
