@@ -69,7 +69,29 @@ func TestCreateCollection(t *testing.T) {
 		require.ErrorIs(t, err, ErrIllegalArguments)
 	})
 
-	collectionName := "mycollection"
+	t.Run("collection creation should fail with invalid collection name", func(t *testing.T) {
+		err := engine.CreateCollection(
+			context.Background(),
+			"collection",
+			"",
+			[]*protomodel.Field{
+				{Name: "number", Type: protomodel.FieldType_DOUBLE},
+				{Name: "name", Type: protomodel.FieldType_STRING},
+				{Name: "pin", Type: protomodel.FieldType_INTEGER},
+				{Name: "country", Type: protomodel.FieldType_STRING},
+			},
+			[]*protomodel.Index{
+				{Fields: []string{"number"}},
+				{Fields: []string{"name"}},
+				{Fields: []string{"pin"}},
+				{Fields: []string{"country"}},
+				{Fields: []string{"address.street"}},
+			},
+		)
+		require.ErrorIs(t, err, ErrReservedName)
+	})
+
+	collectionName := "my-collection"
 
 	t.Run("collection creation should fail with invalid document id field name", func(t *testing.T) {
 		err := engine.CreateCollection(
@@ -91,6 +113,28 @@ func TestCreateCollection(t *testing.T) {
 			},
 		)
 		require.ErrorIs(t, err, ErrIllegalArguments)
+	})
+
+	t.Run("collection creation should fail with invalid document id field name", func(t *testing.T) {
+		err := engine.CreateCollection(
+			context.Background(),
+			collectionName,
+			DocumentBLOBField,
+			[]*protomodel.Field{
+				{Name: "number", Type: protomodel.FieldType_DOUBLE},
+				{Name: "name", Type: protomodel.FieldType_STRING},
+				{Name: "pin", Type: protomodel.FieldType_INTEGER},
+				{Name: "country", Type: protomodel.FieldType_STRING},
+			},
+			[]*protomodel.Index{
+				{Fields: []string{"number"}},
+				{Fields: []string{"name"}},
+				{Fields: []string{"pin"}},
+				{Fields: []string{"country"}},
+				{Fields: []string{"address.street"}},
+			},
+		)
+		require.ErrorIs(t, err, ErrReservedName)
 	})
 
 	t.Run("collection creation should fail with invalid field name", func(t *testing.T) {
@@ -139,19 +183,19 @@ func TestCreateCollection(t *testing.T) {
 	err := engine.CreateCollection(
 		context.Background(),
 		collectionName,
-		"",
+		"doc-id",
 		[]*protomodel.Field{
 			{Name: "number", Type: protomodel.FieldType_DOUBLE},
 			{Name: "name", Type: protomodel.FieldType_STRING},
 			{Name: "pin", Type: protomodel.FieldType_INTEGER},
-			{Name: "country", Type: protomodel.FieldType_STRING},
+			{Name: "country-code", Type: protomodel.FieldType_STRING},
 			{Name: "address.street", Type: protomodel.FieldType_STRING},
 		},
 		[]*protomodel.Index{
 			{Fields: []string{"number"}},
 			{Fields: []string{"name"}},
 			{Fields: []string{"pin"}},
-			{Fields: []string{"country"}},
+			{Fields: []string{"country-code"}},
 			{Fields: []string{"address.street"}},
 		},
 	)
