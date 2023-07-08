@@ -32,6 +32,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+var ErrIllegalArguments = store.ErrIllegalArguments
+
 func VerifyDocument(ctx context.Context,
 	proof *protomodel.ProofDocumentResponse,
 	doc *structpb.Struct,
@@ -40,12 +42,12 @@ func VerifyDocument(ctx context.Context,
 ) (*schema.ImmutableState, error) {
 
 	if proof == nil || doc == nil {
-		return nil, store.ErrIllegalArguments
+		return nil, ErrIllegalArguments
 	}
 
 	docID, ok := doc.Fields[proof.DocumentIdFieldName]
 	if !ok {
-		return nil, fmt.Errorf("%w: missing field '%s'", store.ErrIllegalArguments, proof.DocumentIdFieldName)
+		return nil, fmt.Errorf("%w: missing field '%s'", ErrIllegalArguments, proof.DocumentIdFieldName)
 	}
 
 	encDocKey, err := encodedKeyForDocument(proof.CollectionId, docID.GetStringValue())
@@ -149,15 +151,15 @@ func VerifyDocument(ctx context.Context,
 	sourceAlh := schema.TxHeaderFromProto(proof.VerifiableTx.DualProof.SourceTxHeader).Alh()
 	targetAlh := schema.TxHeaderFromProto(proof.VerifiableTx.DualProof.TargetTxHeader).Alh()
 
-	if txHdr.ID == sourceID {
-		if txHdr.Alh() != sourceAlh {
-			return nil, fmt.Errorf("%w: tx must match source or target tx headers", store.ErrInvalidProof)
-		}
-	} else if txHdr.ID == targetID {
-		if txHdr.Alh() != targetAlh {
-			return nil, fmt.Errorf("%w: tx must match source or target tx headers", store.ErrInvalidProof)
-		}
-	} else {
+	if txHdr.ID != sourceID && txHdr.ID != targetID {
+		return nil, fmt.Errorf("%w: tx must match source or target tx headers", store.ErrInvalidProof)
+	}
+
+	if txHdr.ID == sourceID && txHdr.Alh() != sourceAlh {
+		return nil, fmt.Errorf("%w: tx must match source or target tx headers", store.ErrInvalidProof)
+	}
+
+	if txHdr.ID == targetID && txHdr.Alh() != targetAlh {
 		return nil, fmt.Errorf("%w: tx must match source or target tx headers", store.ErrInvalidProof)
 	}
 
@@ -166,15 +168,15 @@ func VerifyDocument(ctx context.Context,
 			return nil, fmt.Errorf("%w: proof should start from the first transaction when no previous state was specified", store.ErrInvalidProof)
 		}
 	} else {
-		if knownState.TxId == sourceID {
-			if !bytes.Equal(knownState.TxHash, sourceAlh[:]) {
-				return nil, fmt.Errorf("%w: knownState alh must match source or target tx alh", store.ErrInvalidProof)
-			}
-		} else if knownState.TxId == targetID {
-			if !bytes.Equal(knownState.TxHash, targetAlh[:]) {
-				return nil, fmt.Errorf("%w: knownState alh must match source or target tx alh", store.ErrInvalidProof)
-			}
-		} else {
+		if knownState.TxId != sourceID && knownState.TxId != targetID {
+			return nil, fmt.Errorf("%w: knownState alh must match source or target tx alh", store.ErrInvalidProof)
+		}
+
+		if knownState.TxId == sourceID && !bytes.Equal(knownState.TxHash, sourceAlh[:]) {
+			return nil, fmt.Errorf("%w: knownState alh must match source or target tx alh", store.ErrInvalidProof)
+		}
+
+		if knownState.TxId == targetID && !bytes.Equal(knownState.TxHash, targetAlh[:]) {
 			return nil, fmt.Errorf("%w: knownState alh must match source or target tx alh", store.ErrInvalidProof)
 		}
 	}
@@ -198,12 +200,9 @@ func VerifyDocument(ctx context.Context,
 	}
 
 	if serverSigningPubKey != nil {
-		ok, err := state.CheckSignature(serverSigningPubKey)
+		err := state.CheckSignature(serverSigningPubKey)
 		if err != nil {
 			return nil, err
-		}
-		if !ok {
-			return nil, store.ErrInvalidProof
 		}
 	}
 

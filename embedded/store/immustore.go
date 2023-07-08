@@ -42,7 +42,7 @@ import (
 	"github.com/codenotary/immudb/embedded/tbtree"
 	"github.com/codenotary/immudb/embedded/watchers"
 
-	"github.com/codenotary/immudb/pkg/logger"
+	"github.com/codenotary/immudb/embedded/logger"
 )
 
 var ErrIllegalArguments = embedded.ErrIllegalArguments
@@ -1268,8 +1268,8 @@ func (s *ImmuStore) commit(ctx context.Context, otx *OngoingTx, expectedHeader *
 
 	if waitForIndexing {
 		err = s.WaitForIndexingUpto(ctx, hdr.ID)
+		// header is returned because transaction is already committed
 		if err != nil {
-			// header is returned because transaction is already committed
 			return hdr, err
 		}
 	}
@@ -1321,8 +1321,8 @@ func (s *ImmuStore) precommit(ctx context.Context, otx *OngoingTx, hdr *TxHeader
 	defer close(doneWithValuesCh)
 
 	go func() {
+		// value write is delayed to ensure values are inmediatelly followed by the associated tx header
 		if s.embeddedValues {
-			// value write is delayed to ensure values are inmediatelly followed by the associated tx header
 			doneWithValuesCh <- appendableResult{nil, nil}
 			return
 		}
@@ -1729,6 +1729,13 @@ func (s *ImmuStore) DiscardPrecommittedTxsSince(txID uint64) (int, error) {
 		return 0, err
 	}
 
+	defer func() {
+		durablePrecommittedTxID, _, _ := s.durablePrecommitWHub.Status()
+		if durablePrecommittedTxID > s.inmemPrecommittedTxID {
+			s.durablePrecommitWHub.RecedeTo(s.inmemPrecommittedTxID)
+		}
+	}()
+
 	if txID-1 == s.committedTxID {
 		s.inmemPrecommittedTxID = s.committedTxID
 		s.inmemPrecommittedAlh = s.committedAlh
@@ -1826,10 +1833,9 @@ func (s *ImmuStore) mayCommit() error {
 		commitUpToTxAlh = alh
 	}
 
+	// added as a safety fuse but this situation should NOT happen
 	if commitUpToTxID != commitAllowedUpToTxID {
-		// added as a safety fuse but this situation should NOT happen
-		return fmt.Errorf("%w: may commit up to %d but actual transaction to be committed is %d",
-			ErrUnexpectedError, commitAllowedUpToTxID, commitUpToTxID)
+		return fmt.Errorf("%w: may commit up to %d but actual transaction to be committed is %d", ErrUnexpectedError, commitAllowedUpToTxID, commitUpToTxID)
 	}
 
 	err = s.cLog.Flush()
@@ -1867,8 +1873,9 @@ func (s *ImmuStore) CommitWith(ctx context.Context, callback func(txID uint64, i
 
 	if waitForIndexing {
 		err = s.WaitForIndexingUpto(ctx, hdr.ID)
+
+		// header is returned because transaction is already committed
 		if err != nil {
-			// header is returned because transaction is already committed
 			return hdr, err
 		}
 	}
@@ -2272,10 +2279,10 @@ func (s *ImmuStore) txOffsetAndSize(txID uint64) (int64, int, error) {
 	if errors.Is(err, multiapp.ErrAlreadyClosed) || errors.Is(err, singleapp.ErrAlreadyClosed) {
 		return 0, 0, ErrAlreadyClosed
 	}
+	// A partially readable commit record must be discarded -
+	// - it is a result of incomplete commit log write
+	// and will be overwritten on the next commit
 	if errors.Is(err, io.EOF) {
-		// A partially readable commit record must be discarded -
-		// - it is a result of incomplete commit log write
-		// and will be overwritten on the next commit
 		return 0, 0, ErrTxNotFound
 	}
 	if err != nil {
@@ -2382,8 +2389,8 @@ func (s *ImmuStore) ExportTx(txID uint64, allowPrecommitted bool, skipIntegrityC
 		}
 
 		if err == nil {
+			// currently, either all the values are sent or none
 			if isValueTruncated {
-				// currently, either all the values are sent or none
 				return nil, fmt.Errorf("%w: partially truncated transaction", ErrCorruptedData)
 			}
 
@@ -2405,8 +2412,8 @@ func (s *ImmuStore) ExportTx(txID uint64, allowPrecommitted bool, skipIntegrityC
 			// error is eof, the value has been truncated,
 			// value is not available but digest is written instead
 
+			// currently, either all the values are sent or none
 			if !isValueTruncated && i > 0 {
-				// currently, either all the values are sent or none
 				return nil, fmt.Errorf("%w: partially truncated transaction", ErrCorruptedData)
 			}
 
@@ -3067,10 +3074,9 @@ func (s *ImmuStore) sync() error {
 		commitUpToTxAlh = alh
 	}
 
+	// added as a safety fuse but this situation should NOT happen
 	if commitUpToTxID != commitAllowedUpToTxID {
-		// added as a safety fuse but this situation should NOT happen
-		return fmt.Errorf("%w: may commit up to %d but actual transaction to be committed is %d",
-			ErrUnexpectedError, commitAllowedUpToTxID, commitUpToTxID)
+		return fmt.Errorf("%w: may commit up to %d but actual transaction to be committed is %d", ErrUnexpectedError, commitAllowedUpToTxID, commitUpToTxID)
 	}
 
 	err = s.cLog.Flush()

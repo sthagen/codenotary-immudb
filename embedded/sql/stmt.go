@@ -453,10 +453,6 @@ type AddColumnStmt struct {
 	colSpec *ColSpec
 }
 
-func NewAddColumnStmt(table string, colSpec *ColSpec) *AddColumnStmt {
-	return &AddColumnStmt{table: table, colSpec: colSpec}
-}
-
 func (stmt *AddColumnStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
 	return nil
 }
@@ -872,10 +868,6 @@ func (tx *SQLTx) doUpsert(ctx context.Context, pkEncVals []byte, valuesByColID m
 	return nil
 }
 
-func EncodedPK(table *Table, valuesByColID map[uint32]TypedValue) ([]byte, error) {
-	return encodedPK(table, valuesByColID)
-}
-
 func encodedPK(table *Table, valuesByColID map[uint32]TypedValue) ([]byte, error) {
 	valbuf := bytes.Buffer{}
 
@@ -1022,26 +1014,10 @@ type UpdateStmt struct {
 	offset   ValueExp
 }
 
-func NewUpdateStmt(table string, where ValueExp, update *colUpdate) *UpdateStmt {
-	return &UpdateStmt{
-		tableRef: newTableRef(table, ""),
-		where:    where,
-		updates:  []*colUpdate{update},
-	}
-}
-
 type colUpdate struct {
 	col string
 	op  CmpOperator
 	val ValueExp
-}
-
-func NewColUpdate(col string, val ValueExp) *colUpdate {
-	return &colUpdate{
-		col: col,
-		op:  EQ,
-		val: val,
-	}
 }
 
 func (stmt *UpdateStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
@@ -2017,12 +1993,7 @@ func (c *Cast) inferType(cols map[string]ColDescriptor, params map[string]SQLVal
 
 func (c *Cast) requiresType(t SQLValueType, cols map[string]ColDescriptor, params map[string]SQLValueType, implicitTable string) error {
 	if c.t != t {
-		return fmt.Errorf(
-			"%w: can not use value cast to %s as %s",
-			ErrInvalidTypes,
-			c.t,
-			t,
-		)
+		return fmt.Errorf("%w: can not use value cast to %s as %s", ErrInvalidTypes, c.t, t)
 	}
 
 	return nil

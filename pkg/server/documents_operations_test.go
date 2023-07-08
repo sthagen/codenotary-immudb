@@ -44,22 +44,46 @@ func TestV2Authentication(t *testing.T) {
 
 	ctx := context.Background()
 
-	_, err := s.InsertDocuments(ctx, &protomodel.InsertDocumentsRequest{})
+	_, err := s.CreateCollection(ctx, &protomodel.CreateCollectionRequest{})
 	require.ErrorIs(t, err, ErrNotLoggedIn)
 
-	_, err = s.SearchDocuments(ctx, &protomodel.SearchDocumentsRequest{})
+	_, err = s.UpdateCollection(ctx, &protomodel.UpdateCollectionRequest{})
 	require.ErrorIs(t, err, ErrNotLoggedIn)
 
-	_, err = s.CreateCollection(ctx, &protomodel.CreateCollectionRequest{})
-	require.ErrorIs(t, err, ErrNotLoggedIn)
-
-	_, err = s.DeleteCollection(ctx, &protomodel.DeleteCollectionRequest{})
+	_, err = s.GetCollection(ctx, &protomodel.GetCollectionRequest{})
 	require.ErrorIs(t, err, ErrNotLoggedIn)
 
 	_, err = s.GetCollections(ctx, &protomodel.GetCollectionsRequest{})
 	require.ErrorIs(t, err, ErrNotLoggedIn)
 
-	_, err = s.GetCollection(ctx, &protomodel.GetCollectionRequest{})
+	_, err = s.DeleteCollection(ctx, &protomodel.DeleteCollectionRequest{})
+	require.ErrorIs(t, err, ErrNotLoggedIn)
+
+	_, err = s.CreateIndex(ctx, &protomodel.CreateIndexRequest{})
+	require.ErrorIs(t, err, ErrNotLoggedIn)
+
+	_, err = s.DeleteIndex(ctx, &protomodel.DeleteIndexRequest{})
+	require.ErrorIs(t, err, ErrNotLoggedIn)
+
+	_, err = s.InsertDocuments(ctx, &protomodel.InsertDocumentsRequest{})
+	require.ErrorIs(t, err, ErrNotLoggedIn)
+
+	_, err = s.ReplaceDocuments(ctx, &protomodel.ReplaceDocumentsRequest{})
+	require.ErrorIs(t, err, ErrNotLoggedIn)
+
+	_, err = s.AuditDocument(ctx, &protomodel.AuditDocumentRequest{})
+	require.ErrorIs(t, err, ErrNotLoggedIn)
+
+	_, err = s.SearchDocuments(ctx, &protomodel.SearchDocumentsRequest{})
+	require.ErrorIs(t, err, ErrNotLoggedIn)
+
+	_, err = s.CountDocuments(ctx, &protomodel.CountDocumentsRequest{})
+	require.ErrorIs(t, err, ErrNotLoggedIn)
+
+	_, err = s.DeleteDocuments(ctx, &protomodel.DeleteDocumentsRequest{})
+	require.ErrorIs(t, err, ErrNotLoggedIn)
+
+	_, err = s.ProofDocument(ctx, &protomodel.ProofDocumentRequest{})
 	require.ErrorIs(t, err, ErrNotLoggedIn)
 
 	authServiceImp := &authenticationServiceImp{server: s}
@@ -177,6 +201,9 @@ func TestPaginationOnReader(t *testing.T) {
 		})
 		require.ErrorIs(t, err, ErrIllegalArguments)
 	})
+
+	_, err = s.SearchDocuments(ctx, nil)
+	require.ErrorIs(t, err, ErrIllegalArguments)
 
 	t.Run("test with invalid search id should fail", func(t *testing.T) {
 		_, err = s.SearchDocuments(ctx, &protomodel.SearchDocumentsRequest{
@@ -455,6 +482,16 @@ func TestPaginatedReader_NoMoreDocsFound(t *testing.T) {
 		require.NoError(t, err)
 	}
 
+	t.Run("document count without conditions should return the total number of documents", func(t *testing.T) {
+		resp, err := s.CountDocuments(ctx, &protomodel.CountDocumentsRequest{
+			Query: &protomodel.Query{
+				CollectionName: collectionName,
+			},
+		})
+		require.NoError(t, err)
+		require.EqualValues(t, 10, resp.Count)
+	})
+
 	t.Run("test reader with multiple paginated reads", func(t *testing.T) {
 		results := make([]*protomodel.DocumentAtRevision, 0)
 
@@ -559,6 +596,15 @@ func TestPaginatedReader_NoMoreDocsFound(t *testing.T) {
 			require.ErrorIs(t, err, sessions.ErrPaginatedDocumentReaderNotFound)
 		})
 
+	})
+
+	t.Run("document deletion should succeed", func(t *testing.T) {
+		_, err = s.DeleteDocuments(ctx, &protomodel.DeleteDocumentsRequest{
+			Query: &protomodel.Query{
+				CollectionName: collectionName,
+			},
+		})
+		require.NoError(t, err)
 	})
 
 	// close session and ensure that all paginated readers are closed
@@ -864,9 +910,7 @@ func TestDocuments(t *testing.T) {
 			Documents: []*structpb.Struct{
 				{
 					Fields: map[string]*structpb.Value{
-						"pincode": {
-							Kind: &structpb.Value_NumberValue{NumberValue: 123},
-						},
+						"pincode": structpb.NewNumberValue(123),
 					},
 				},
 			},
@@ -891,4 +935,27 @@ func TestDocuments(t *testing.T) {
 			require.Equal(t, docID, rev.Document.Fields["_id"].GetStringValue())
 		}
 	})
+
+	t.Run("should pass when replacing document", func(t *testing.T) {
+		resp, err := s.ReplaceDocuments(ctx, &protomodel.ReplaceDocumentsRequest{
+			Query: &protomodel.Query{
+				CollectionName: collectionName,
+				Limit:          1,
+			},
+			Document: &structpb.Struct{Fields: map[string]*structpb.Value{
+				"pincode": structpb.NewNumberValue(321),
+			}},
+		})
+		require.NoError(t, err)
+		require.Len(t, resp.Revisions, 1)
+	})
+
+	t.Run("should pass when requesting document proof", func(t *testing.T) {
+		_, err := s.ProofDocument(ctx, &protomodel.ProofDocumentRequest{
+			CollectionName: collectionName,
+			DocumentId:     docID,
+		})
+		require.NoError(t, err)
+	})
+
 }

@@ -190,6 +190,73 @@ func TestImmudbStoreConcurrentCommits(t *testing.T) {
 	wg.Wait()
 }
 
+func TestImmudbStoreConcurrentCommitsWithEmbeddedValues(t *testing.T) {
+	opts := DefaultOptions().
+		WithSynced(false).
+		WithMaxConcurrency(5).
+		WithEmbeddedValues(true).
+		WithPreallocFiles(true).
+		WithVLogCacheSize(10)
+
+	immuStore, err := Open(t.TempDir(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, immuStore)
+
+	defer immustoreClose(t, immuStore)
+
+	txCount := 100
+	eCount := 100
+
+	var wg sync.WaitGroup
+	wg.Add(10)
+
+	txs := make([]*Tx, 10)
+	for c := 0; c < 10; c++ {
+		txs[c] = tempTxHolder(t, immuStore)
+	}
+
+	for c := 0; c < 10; c++ {
+		go func(txHolder *Tx) {
+			defer wg.Done()
+
+			for c := 0; c < txCount; {
+				tx, err := immuStore.NewWriteOnlyTx(context.Background())
+				require.NoError(t, err)
+
+				for j := 0; j < eCount; j++ {
+					k := make([]byte, 8)
+					binary.BigEndian.PutUint64(k, uint64(j))
+
+					v := make([]byte, 8)
+					binary.BigEndian.PutUint64(v, uint64(c))
+
+					err = tx.Set(k, nil, v)
+					require.NoError(t, err)
+				}
+
+				hdr, err := tx.AsyncCommit(context.Background())
+				if err == ErrMaxConcurrencyLimitExceeded {
+					time.Sleep(1 * time.Millisecond)
+					continue
+				}
+				require.NoError(t, err)
+
+				err = immuStore.ReadTx(hdr.ID, false, txHolder)
+				require.NoError(t, err)
+
+				for _, e := range txHolder.Entries() {
+					_, err := immuStore.ReadValue(e)
+					require.NoError(t, err)
+				}
+
+				c++
+			}
+		}(txs[c])
+	}
+
+	wg.Wait()
+}
+
 func TestImmudbStoreOpenWithInvalidPath(t *testing.T) {
 	_, err := Open("immustore_test.go", DefaultOptions())
 	require.ErrorIs(t, err, ErrPathIsNotADirectory)
@@ -948,6 +1015,7 @@ func TestImmudbStoreIndexing(t *testing.T) {
 						valRef, err := snap.Get(k)
 						if err != nil {
 							require.ErrorIs(t, err, tbtree.ErrKeyNotFound)
+							continue
 						}
 
 						val, err := valRef.Resolve()
@@ -960,7 +1028,7 @@ func TestImmudbStoreIndexing(t *testing.T) {
 					k := make([]byte, 8)
 					binary.BigEndian.PutUint64(k, uint64(eCount-1))
 
-					valRef1, err := immuStore.Get(k)
+					_, valRef1, err := immuStore.GetWithPrefix(k, nil)
 					require.NoError(t, err)
 
 					v1, err := valRef1.Resolve()
@@ -4355,6 +4423,29 @@ func TestImmudbStoreWithoutVLogCache(t *testing.T) {
 	require.NoError(t, err)
 
 	valRef, err := immuStore.Get([]byte("key1"))
+	require.NoError(t, err)
+
+	val, err := valRef.Resolve()
+	require.NoError(t, err)
+	require.Equal(t, []byte("value1"), val)
+}
+
+func TestImmudbStoreWithVLogCache(t *testing.T) {
+	immuStore, err := Open(t.TempDir(), DefaultOptions().WithVLogCacheSize(10))
+	require.NoError(t, err)
+
+	defer immuStore.Close()
+
+	tx1, err := immuStore.NewTx(context.Background(), DefaultTxOptions())
+	require.NoError(t, err)
+
+	err = tx1.Set([]byte("key1"), nil, []byte("value1"))
+	require.NoError(t, err)
+
+	_, err = tx1.Commit(context.Background())
+	require.NoError(t, err)
+
+	_, valRef, err := immuStore.GetWithPrefix([]byte("key1"), nil)
 	require.NoError(t, err)
 
 	val, err := valRef.Resolve()

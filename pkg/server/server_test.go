@@ -33,13 +33,13 @@ import (
 	"github.com/codenotary/immudb/pkg/stream"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/codenotary/immudb/embedded/logger"
 	"github.com/codenotary/immudb/embedded/store"
 	"github.com/codenotary/immudb/embedded/tbtree"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/auth"
 	"github.com/codenotary/immudb/pkg/database"
 	"github.com/codenotary/immudb/pkg/immuos"
-	"github.com/codenotary/immudb/pkg/logger"
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -1323,7 +1323,8 @@ func TestServerUpdateConfigItem(t *testing.T) {
 	// Config file path empty
 	s.Options.Config = ""
 	err := s.updateConfigItem("key", "key = value", func(string) bool { return false })
-	require.ErrorContains(t, err, "config file does not exist")
+	require.Error(t, err)
+	require.EqualError(t, err, "config file does not exist")
 	s.Options.Config = configFile
 
 	// ReadFile error
@@ -2029,13 +2030,20 @@ func TestServerDatabaseTruncate(t *testing.T) {
 
 	s.Initialize()
 
+	_, err := s.KeepAlive(context.Background(), &emptypb.Empty{})
+	require.Error(t, err)
+
 	resp, err := s.OpenSession(context.Background(), &schema.OpenSessionRequest{
 		Username:     []byte(auth.SysAdminUsername),
 		Password:     []byte(auth.SysAdminPassword),
 		DatabaseName: DefaultDBName,
 	})
 	require.NoError(t, err)
+
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.New(map[string]string{"sessionid": resp.GetSessionID()}))
+
+	_, err = s.KeepAlive(ctx, &emptypb.Empty{})
+	require.NoError(t, err)
 
 	t.Run("attempt to delete without retention period should fail", func(t *testing.T) {
 		_, err = s.CreateDatabaseV2(ctx, &schema.CreateDatabaseRequest{
