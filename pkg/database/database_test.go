@@ -58,7 +58,7 @@ var kvs = []*schema.KeyValue{
 func makeDb(t *testing.T) *db {
 	rootPath := t.TempDir()
 
-	options := DefaultOption().WithDBRootPath(rootPath).WithCorruptionChecker(false)
+	options := DefaultOption().WithDBRootPath(rootPath)
 	options.storeOpts.WithIndexOptions(options.storeOpts.IndexOpts.WithCompactionThld(2))
 
 	return makeDbWith(t, "db", options)
@@ -115,10 +115,11 @@ func TestDefaultDbCreation(t *testing.T) {
 	require.Zero(t, n)
 
 	_, err = db.Count(context.Background(), nil)
-	require.ErrorContains(t, err, "Functionality not yet supported: Count")
+	require.ErrorIs(t, err, ErrIllegalArguments)
 
-	_, err = db.CountAll(context.Background())
-	require.ErrorContains(t, err, "Functionality not yet supported: Count")
+	res, err := db.CountAll(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, res.Count)
 
 	dbPath := path.Join(options.GetDBRootPath(), db.GetName())
 	require.DirExists(t, dbPath)
@@ -1802,7 +1803,6 @@ func TestRevisionGetConsistency(t *testing.T) {
 			require.Len(t, scanResults.Entries, 1)
 			require.Equal(t, []byte("value_0"), scanResults.Entries[0].Value)
 
-			// Found references do not have revision value calculated
 			require.EqualValues(t, 0, entryFromGet.Revision)
 			require.EqualValues(t, 0, scanResults.Entries[0].Revision)
 

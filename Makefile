@@ -157,8 +157,8 @@ test-client:
 # To view coverage as HTML run: go tool cover -html=coverage.txt
 .PHONY: coverage
 coverage:
-	go-acc ./... --covermode=atomic --ignore=test,immuclient,immuadmin,helper,cmdtest,sservice,version,tools,webconsole,protomodel,httpclient
-	cat coverage.txt | grep -v "schema.pb" | grep -v "immuclient" | grep -v "immuadmin" | grep -v "helper" | grep -v "cmdtest" | grep -v "sservice" | grep -v "version" > coverage.out
+	go-acc ./... --covermode=atomic --ignore=test,immuclient,immuadmin,helper,cmdtest,sservice,version,tools,webconsole,protomodel,schema,swagger
+	cat coverage.txt | grep -v "schema" | grep -v "protomodel" | grep -v "swagger" | grep -v "webserver.go" | grep -v "immuclient" | grep -v "immuadmin" | grep -v "helper" | grep -v "cmdtest" | grep -v "sservice" | grep -v "version" > coverage.out
 	$(GO) tool cover -func coverage.out
 
 .PHONY: build/codegen
@@ -221,7 +221,7 @@ man:
 
 .PHONY: prerequisites
 prerequisites:
-	$(GO) mod tidy
+	$(GO) mod tidy -compat=1.17
 	cat tools.go | grep _ | awk -F'"' '{print $$2}' | xargs -tI % go install %
 
 ########################## releases scripts ############################################################################

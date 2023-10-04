@@ -354,6 +354,9 @@ func monotonicInsertions(t *testing.T, tbtree *TBtree, itCount int, kCount int, 
 				require.Equal(t, expectedTs, ts1)
 
 				require.Equal(t, uint64(i), hc)
+
+				_, _, _, err := tbtree.GetBetween(k, 1, ts1)
+				require.NoError(t, err)
 			}
 
 			if j == kCount-1 {
@@ -501,9 +504,9 @@ func randomInsertions(t *testing.T, tbtree *TBtree, kCount int, override bool) {
 			require.Equal(t, uint64(1), hc1)
 		}
 
-		tss, _, err := snapshot.History(k, 0, true, 1)
+		tvs, _, err := snapshot.History(k, 0, true, 1)
 		require.NoError(t, err)
-		require.Equal(t, ts, tss[0])
+		require.Equal(t, ts, tvs[0].Ts)
 
 		err = snapshot.Close()
 		require.NoError(t, err)
@@ -619,6 +622,8 @@ func TestSnapshotRecovery(t *testing.T) {
 	snapc, err = tree.SnapshotCount()
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), snapc)
+
+	require.Equal(t, uint64(3), tree.Ts())
 
 	err = tree.Close()
 	require.NoError(t, err)
@@ -949,6 +954,9 @@ func TestTBTreeInsertionInAscendingOrder(t *testing.T) {
 	_, _, _, err = tbtree.Get([]byte("key"))
 	require.ErrorIs(t, err, ErrAlreadyClosed)
 
+	_, _, _, err = tbtree.GetBetween([]byte("key"), 1, 2)
+	require.ErrorIs(t, err, ErrAlreadyClosed)
+
 	_, _, _, _, err = tbtree.GetWithPrefix([]byte("key"), nil)
 	require.ErrorIs(t, err, ErrAlreadyClosed)
 
@@ -1155,6 +1163,9 @@ func TestTBTreeSelfHealingHistory(t *testing.T) {
 	err = tbtree.Insert([]byte("k0"), []byte("v0"))
 	require.NoError(t, err)
 
+	err = tbtree.Insert([]byte("k0"), []byte("v00"))
+	require.NoError(t, err)
+
 	err = tbtree.Close()
 	require.NoError(t, err)
 
@@ -1163,7 +1174,7 @@ func TestTBTreeSelfHealingHistory(t *testing.T) {
 	tbtree, err = Open(dir, DefaultOptions())
 	require.NoError(t, err)
 
-	_, _, _, err = tbtree.Get([]byte("k0"))
+	_, _, err = tbtree.History([]byte("k0"), 0, true, 2)
 	require.ErrorIs(t, err, ErrKeyNotFound)
 
 	err = tbtree.Close()
@@ -1445,14 +1456,14 @@ func TestLastUpdateBetween(t *testing.T) {
 	require.NotNil(t, leaf)
 	require.GreaterOrEqual(t, len(leaf.values), off)
 
-	_, _, err = leaf.values[off].lastUpdateBetween(nil, 1, 0)
+	_, _, _, err = leaf.values[off].lastUpdateBetween(nil, 1, 0)
 	require.ErrorIs(t, err, ErrIllegalArguments)
 
 	for i := 0; i < keyUpdatesCount; i++ {
 		for f := i; f < keyUpdatesCount; f++ {
-			tx, hc, err := leaf.values[off].lastUpdateBetween(nil, uint64(i+1), uint64(f+1))
+			_, tx, hc, err := leaf.values[off].lastUpdateBetween(nil, uint64(i+1), uint64(f+1))
 			require.NoError(t, err)
-			require.Equal(t, uint64(f), hc)
+			require.Equal(t, uint64(f+1), hc)
 			require.Equal(t, uint64(f+1), tx)
 		}
 	}

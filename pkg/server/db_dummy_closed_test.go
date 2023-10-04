@@ -170,7 +170,7 @@ func TestDummyClosedDatabase(t *testing.T) {
 	err = cdb.Truncate(0)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
-	_, err = cdb.CreateCollection(context.Background(), nil)
+	_, err = cdb.CreateCollection(context.Background(), "admin", nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
 	_, err = cdb.GetCollection(context.Background(), nil)
@@ -179,22 +179,28 @@ func TestDummyClosedDatabase(t *testing.T) {
 	_, err = cdb.GetCollections(context.Background(), nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
-	_, err = cdb.UpdateCollection(context.Background(), nil)
+	_, err = cdb.UpdateCollection(context.Background(), "admin", nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
-	_, err = cdb.DeleteCollection(context.Background(), nil)
+	_, err = cdb.DeleteCollection(context.Background(), "admin", nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
-	_, err = cdb.CreateIndex(context.Background(), nil)
+	_, err = cdb.AddField(context.Background(), "admin", nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
-	_, err = cdb.DeleteIndex(context.Background(), nil)
+	_, err = cdb.RemoveField(context.Background(), "admin", nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
-	_, err = cdb.InsertDocuments(context.Background(), nil)
+	_, err = cdb.CreateIndex(context.Background(), "admin", nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
-	_, err = cdb.ReplaceDocuments(context.Background(), nil)
+	_, err = cdb.DeleteIndex(context.Background(), "admin", nil)
+	require.ErrorIs(t, err, store.ErrAlreadyClosed)
+
+	_, err = cdb.InsertDocuments(context.Background(), "admin", nil)
+	require.ErrorIs(t, err, store.ErrAlreadyClosed)
+
+	_, err = cdb.ReplaceDocuments(context.Background(), "admin", nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
 	_, err = cdb.AuditDocument(context.Background(), nil)
@@ -209,7 +215,7 @@ func TestDummyClosedDatabase(t *testing.T) {
 	_, err = cdb.ProofDocument(context.Background(), nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
-	_, err = cdb.DeleteDocuments(context.Background(), nil)
+	_, err = cdb.DeleteDocuments(context.Background(), "admin", nil)
 	require.ErrorIs(t, err, store.ErrAlreadyClosed)
 
 	err = cdb.Close()

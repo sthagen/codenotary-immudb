@@ -30,6 +30,7 @@ import (
 
 var reservedWords = map[string]int{
 	"CREATE":         CREATE,
+	"DROP":           DROP,
 	"USE":            USE,
 	"DATABASE":       DATABASE,
 	"SNAPSHOT":       SNAPSHOT,
@@ -101,6 +102,7 @@ var types = map[string]SQLValueType{
 	"INTEGER":   IntegerType,
 	"BOOLEAN":   BooleanType,
 	"VARCHAR":   VarcharType,
+	"UUID":      UUIDType,
 	"BLOB":      BLOBType,
 	"TIMESTAMP": TimestampType,
 	"FLOAT":     Float64Type,
