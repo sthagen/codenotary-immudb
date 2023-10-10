@@ -1243,6 +1243,9 @@ func TestAlterTableDropColumn(t *testing.T) {
 			require.NoError(t, err)
 		})
 
+		_, _, err = engine.Exec(context.Background(), nil, "DROP INDEX ON table1(id)", nil)
+		require.ErrorIs(t, err, ErrIllegalArguments)
+
 		t.Run("fail to drop indexed from table that does not exist", func(t *testing.T) {
 			_, _, err = engine.Exec(context.Background(), nil, "ALTER TABLE table2 DROP COLUMN active", nil)
 			require.ErrorIs(t, err, ErrTableDoesNotExist)
@@ -5562,6 +5565,65 @@ func TestTemporalQueries(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, row)
 		require.Equal(t, int64(rowCount), row.ValuesBySelector["(table1.c)"].RawValue())
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+}
+
+func TestHistoricalQueries(t *testing.T) {
+	engine := setupCommonTest(t)
+
+	_, _, err := engine.Exec(context.Background(), nil, "CREATE TABLE table1(id INTEGER, title VARCHAR[50], _rev INTEGER, PRIMARY KEY id)", nil)
+	require.ErrorIs(t, err, ErrReservedWord)
+
+	_, _, err = engine.Exec(context.Background(), nil, "CREATE TABLE table1(id INTEGER, title VARCHAR[50], PRIMARY KEY id)", nil)
+	require.NoError(t, err)
+
+	_, _, err = engine.Exec(context.Background(), nil, "CREATE INDEX ON table1(title)", nil)
+	require.NoError(t, err)
+
+	rowCount := 10
+
+	for i := 1; i <= rowCount; i++ {
+		_, txs, err := engine.Exec(context.Background(), nil, "UPSERT INTO table1(id, title) VALUES (1, @title)", map[string]interface{}{"title": fmt.Sprintf("title%d", i)})
+		require.NoError(t, err)
+		require.Len(t, txs, 1)
+	}
+
+	t.Run("querying historical data should return data from older to newer revisions", func(t *testing.T) {
+		r, err := engine.Query(context.Background(), nil, "SELECT _rev, title FROM (HISTORY OF table1)", nil)
+		require.NoError(t, err)
+
+		for i := 1; i <= rowCount; i++ {
+			row, err := r.Read(context.Background())
+			require.NoError(t, err)
+			require.NotNil(t, row)
+			require.Equal(t, int64(i), row.ValuesByPosition[0].RawValue())
+			require.Equal(t, fmt.Sprintf("title%d", i), row.ValuesByPosition[1].RawValue())
+		}
+
+		_, err = r.Read(context.Background())
+		require.ErrorIs(t, err, ErrNoMoreRows)
+
+		err = r.Close()
+		require.NoError(t, err)
+	})
+
+	t.Run("querying historical data in desc order should return data from newer to older revisions", func(t *testing.T) {
+		r, err := engine.Query(context.Background(), nil, "SELECT _rev, title FROM (HISTORY OF table1) order by id desc", nil)
+		require.NoError(t, err)
+
+		for i := rowCount; i > 0; i-- {
+			row, err := r.Read(context.Background())
+			require.NoError(t, err)
+			require.NotNil(t, row)
+			require.Equal(t, int64(i), row.ValuesByPosition[0].RawValue())
+			require.Equal(t, fmt.Sprintf("title%d", i), row.ValuesByPosition[1].RawValue())
+		}
+
+		_, err = r.Read(context.Background())
+		require.ErrorIs(t, err, ErrNoMoreRows)
 
 		err = r.Close()
 		require.NoError(t, err)

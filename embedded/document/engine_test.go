@@ -414,6 +414,24 @@ func TestGetDocument(t *testing.T) {
 	})
 	require.ErrorIs(t, err, ErrCollectionDoesNotExist)
 
+	_, _, err = engine.InsertDocument(context.Background(), "admin", collectionName, &structpb.Struct{
+		Fields: map[string]*structpb.Value{
+			DefaultDocumentIDField: structpb.NewStringValue("_docid"),
+			"country":              structpb.NewStringValue("wonderland"),
+			"pincode":              structpb.NewNumberValue(2),
+		},
+	})
+	require.ErrorIs(t, err, ErrIllegalArguments)
+
+	_, _, err = engine.InsertDocument(context.Background(), "admin", collectionName, &structpb.Struct{
+		Fields: map[string]*structpb.Value{
+			"country":         structpb.NewStringValue("wonderland"),
+			"pincode":         structpb.NewNumberValue(2),
+			DocumentBLOBField: structpb.NewStructValue(&structpb.Struct{}),
+		},
+	})
+	require.ErrorIs(t, err, ErrReservedName)
+
 	_, docID, err := engine.InsertDocument(context.Background(), "admin", collectionName, &structpb.Struct{
 		Fields: map[string]*structpb.Value{
 			"country": structpb.NewStringValue("wonderland"),
@@ -1534,6 +1552,22 @@ func TestCollectionUpdateWithDeletedIndex(t *testing.T) {
 			false,
 		)
 		require.ErrorIs(t, err, ErrFieldDoesNotExist)
+
+		err = engine.RemoveField(
+			context.Background(),
+			"admin",
+			"1invalidCollectionName",
+			"comment",
+		)
+		require.ErrorIs(t, err, ErrIllegalArguments)
+
+		err = engine.RemoveField(
+			context.Background(),
+			"admin",
+			collectionName,
+			"1invalidFieldName",
+		)
+		require.ErrorIs(t, err, ErrIllegalArguments)
 
 		err = engine.RemoveField(
 			context.Background(),

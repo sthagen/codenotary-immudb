@@ -50,6 +50,8 @@ const (
 	autoIncrementFlag byte = 1 << iota
 )
 
+const revCol = "_rev"
+
 type SQLValueType = string
 
 const (
@@ -2562,10 +2564,15 @@ func (stmt *SelectStmt) genScanSpecs(tx *SQLTx, params map[string]interface{}) (
 		return nil, ErrNoAvailableIndex
 	}
 
+	if tableRef.history && !sortingIndex.IsPrimary() {
+		return nil, fmt.Errorf("%w: historical queries are supported over primary index", ErrIllegalArguments)
+	}
+
 	return &ScanSpecs{
-		Index:         sortingIndex,
-		rangesByColID: rangesByColID,
-		DescOrder:     descOrder,
+		Index:          sortingIndex,
+		rangesByColID:  rangesByColID,
+		IncludeHistory: tableRef.history,
+		DescOrder:      descOrder,
 	}, nil
 }
 
@@ -2655,9 +2662,10 @@ func newTableRef(table string, as string) *tableRef {
 }
 
 type tableRef struct {
-	table  string
-	period period
-	as     string
+	table   string
+	history bool
+	period  period
+	as      string
 }
 
 type period struct {
@@ -3468,7 +3476,7 @@ func (bexp *CmpBoolExp) isConstant() bool {
 func (bexp *CmpBoolExp) selectorRanges(table *Table, asTable string, params map[string]interface{}, rangesByColID map[uint32]*typedValueRange) error {
 	matchingFunc := func(left, right ValueExp) (*ColSelector, ValueExp, bool) {
 		s, isSel := bexp.left.(*ColSelector)
-		if isSel && bexp.right.isConstant() {
+		if isSel && s.col != revCol && bexp.right.isConstant() {
 			return s, right, true
 		}
 		return nil, nil, false

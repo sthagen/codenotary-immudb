@@ -62,6 +62,9 @@ func TestFromEmptyCatalog(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "table1", table.Name())
 
+	_, err = table.newColumn(&ColSpec{colName: revCol, colType: IntegerType})
+	require.ErrorIs(t, err, ErrReservedWord)
+
 	_, err = table.newIndex(true, []uint32{1})
 	require.NoError(t, err)
 
@@ -279,6 +282,8 @@ func TestCatalogTableLength(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, totalTablesCount, tab.id)
 
+		_, err = tab.GetIndexByName("invalid_index")
+		require.ErrorIs(t, err, ErrIndexNotFound)
 	})
 
 	t.Run("cancelling a transaction should not increase table count", func(t *testing.T) {
