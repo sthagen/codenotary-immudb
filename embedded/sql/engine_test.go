@@ -988,19 +988,18 @@ func TestNowFunctionEvalsToTxTimestamp(t *testing.T) {
 
 		require.True(t, tx.Timestamp().After(currentTs))
 
-		for i := 0; i < 5; i++ {
+		rowCount := 10
+
+		for i := 0; i < rowCount; i++ {
 			_, _, err = engine.Exec(context.Background(), tx, "INSERT INTO tx_timestamp(ts) VALUES (NOW()), (NOW())", nil)
 			require.NoError(t, err)
 		}
 
-		_, _, err = engine.Exec(context.Background(), tx, "COMMIT;", nil)
-		require.NoError(t, err)
-
-		r, err := engine.Query(context.Background(), nil, "SELECT * FROM tx_timestamp WHERE ts = @ts", map[string]interface{}{"ts": tx.Timestamp()})
+		r, err := engine.Query(context.Background(), tx, "SELECT * FROM tx_timestamp WHERE ts = @ts", map[string]interface{}{"ts": tx.Timestamp()})
 		require.NoError(t, err)
 		defer r.Close()
 
-		for i := 0; i < 10; i++ {
+		for i := 0; i < rowCount*2; i++ {
 			row, err := r.Read(context.Background())
 			require.NoError(t, err)
 			require.EqualValues(t, tx.Timestamp(), row.ValuesBySelector[EncodeSelector("", "tx_timestamp", "ts")].RawValue())
@@ -1008,6 +1007,12 @@ func TestNowFunctionEvalsToTxTimestamp(t *testing.T) {
 
 		_, err = r.Read(context.Background())
 		require.ErrorIs(t, err, ErrNoMoreRows)
+
+		err = r.Close()
+		require.NoError(t, err)
+
+		_, _, err = engine.Exec(context.Background(), tx, "COMMIT;", nil)
+		require.NoError(t, err)
 
 		currentTs = tx.Timestamp()
 	}
