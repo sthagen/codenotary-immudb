@@ -17,12 +17,10 @@ limitations under the License.
 package server
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net"
 	"os"
-	"sync"
 	"testing"
 
 	"github.com/codenotary/immudb/embedded/logger"
@@ -49,8 +47,6 @@ func TestSession_QueriesMachine(t *testing.T) {
 				c2.Write([]byte("_"))
 				unsupported := make([]byte, 500)
 				c2.Read(unsupported)
-				ready4Query = make([]byte, len(bmessages.ReadyForQuery()))
-				c2.Read(ready4Query)
 				c2.Close()
 			},
 			out: nil,
@@ -83,8 +79,6 @@ func TestSession_QueriesMachine(t *testing.T) {
 				c2.Write(h.Msg('B', h.Join([][]byte{h.S("port"), h.S("wrong_st"), h.I16(1), h.I16(0), h.I16(1), h.I32(2), h.I16(1), h.I16(1), h.I16(1)})))
 				errst := make([]byte, 500)
 				c2.Read(errst)
-				ready4Query = make([]byte, len(bmessages.ReadyForQuery()))
-				c2.Read(ready4Query)
 				c2.Write(h.Msg('B', h.Join([][]byte{h.S("port"), h.S("st"), h.I16(1), h.I16(0), h.I16(1), h.I32(2), h.I16(1), h.I16(1), h.I16(1)})))
 				c2.Write(h.Msg('S', []byte{0}))
 				ready4Query = make([]byte, len(bmessages.ReadyForQuery()))
@@ -103,8 +97,6 @@ func TestSession_QueriesMachine(t *testing.T) {
 				c2.Write(h.Msg('P', h.Join([][]byte{h.S("st"), h.S("wrong statement"), h.I16(1), h.I32(0)})))
 				errst := make([]byte, 500)
 				c2.Read(errst)
-				ready4Query = make([]byte, len(bmessages.ReadyForQuery()))
-				c2.Read(ready4Query)
 				// Terminate message
 				c2.Write(h.Msg('X', []byte{0}))
 
@@ -123,8 +115,6 @@ func TestSession_QueriesMachine(t *testing.T) {
 				c2.Write(h.Msg('P', h.Join([][]byte{h.S("st"), h.S("set test"), h.I16(1), h.I32(0)})))
 				errst := make([]byte, 500)
 				c2.Read(errst)
-				ready4Query = make([]byte, len(bmessages.ReadyForQuery()))
-				c2.Read(ready4Query)
 				// Terminate message
 				c2.Write(h.Msg('X', []byte{0}))
 
@@ -323,7 +313,7 @@ func TestSession_QueriesMachine(t *testing.T) {
 			},
 			out: nil,
 			portals: map[string]*portal{
-				"port": &portal{
+				"port": {
 					Statement: &statement{
 						SQLStatement: "test",
 					},
@@ -404,7 +394,6 @@ func TestSession_QueriesMachine(t *testing.T) {
 			s := session{
 				log:        logger.NewSimpleLogger("test", os.Stdout),
 				mr:         mr,
-				Mutex:      sync.Mutex{},
 				statements: make(map[string]*statement),
 				portals:    make(map[string]*portal),
 			}
@@ -417,7 +406,7 @@ func TestSession_QueriesMachine(t *testing.T) {
 			}
 			go tt.in(c2)
 
-			err := s.QueriesMachine(context.Background())
+			err := s.QueryMachine()
 
 			require.Equal(t, tt.out, err)
 		})

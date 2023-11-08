@@ -29,13 +29,11 @@ var ErrDBNotprovided = errors.New("database name not provided")
 var ErrUsernameNotprovided = errors.New("user name not provided")
 var ErrPwNotprovided = errors.New("password not provided")
 var ErrDBNotExists = errors.New("selected db doesn't exists")
-var ErrUsernameNotFound = errors.New("user not found")
+var ErrInvalidUsernameOrPassword = errors.New("invalid user name or password")
 var ErrExpectedQueryMessage = errors.New("expected query message")
-var ErrUseDBStatementNotSupported = errors.New("SQL statement not supported. Please use `UseDatabase` operation instead")
-var ErrCreateDBStatementNotSupported = errors.New("SQL statement not supported. Please use `CreateDatabase` operation instead")
+var ErrUseDBStatementNotSupported = errors.New("SQL statement not supported")
 var ErrSSLNotSupported = errors.New("SSL not supported")
 var ErrMaxStmtNumberExceeded = errors.New("maximum number of statements in a single query exceeded")
-var ErrNoStatementFound = errors.New("no statement found")
 var ErrMessageCannotBeHandledInternally = errors.New("message cannot be handled internally")
 var ErrMaxParamsNumberExceeded = errors.New("number of parameters exceeded the maximum limit")
 var ErrParametersValueSizeTooLarge = errors.New("provided parameters exceeded the maximum allowed size limit")
@@ -79,12 +77,6 @@ func MapPgError(err error) (er bm.ErrorResp) {
 			bm.Code(pgmeta.PgServerErrSyntaxError),
 			bm.Message(err.Error()),
 			bm.Hint("at the moment is possible to receive only 1 statement. Please split query or use a single statement"),
-		)
-	case errors.Is(err, ErrNoStatementFound):
-		er = bm.ErrorResponse(bm.Severity(pgmeta.PgSeverityError),
-			bm.Code(pgmeta.ProgramLimitExceeded),
-			bm.Message(err.Error()),
-			bm.Hint("provide at least one statement"),
 		)
 	case errors.Is(err, ErrParametersValueSizeTooLarge):
 		er = bm.ErrorResponse(bm.Severity(pgmeta.PgSeverityError),
