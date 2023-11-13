@@ -67,15 +67,17 @@ func setResult(l yyLexer, stmts []SQLStmt) {
     update *colUpdate
     updates []*colUpdate
     onConflict *OnConflictDo
+    permission Permission
 }
 
-%token CREATE DROP USE DATABASE SNAPSHOT HISTORY SINCE AFTER BEFORE UNTIL TX OF TIMESTAMP TABLE UNIQUE INDEX ON ALTER ADD RENAME TO COLUMN PRIMARY KEY
+%token CREATE DROP USE DATABASE USER WITH PASSWORD READ READWRITE ADMIN SNAPSHOT HISTORY SINCE AFTER BEFORE UNTIL TX OF TIMESTAMP
+%token TABLE UNIQUE INDEX ON ALTER ADD RENAME TO COLUMN PRIMARY KEY
 %token BEGIN TRANSACTION COMMIT ROLLBACK
 %token INSERT UPSERT INTO VALUES DELETE UPDATE SET CONFLICT DO NOTHING
 %token SELECT DISTINCT FROM JOIN HAVING WHERE GROUP BY LIMIT OFFSET ORDER ASC DESC AS UNION ALL
 %token NOT LIKE IF EXISTS IN IS
 %token AUTO_INCREMENT NULL CAST SCAST
-%token SHOW DATABASES TABLES
+%token SHOW DATABASES TABLES USERS
 %token <id> NPARAM
 %token <pparam> PPARAM
 %token <joinType> JOINTYPE
@@ -140,6 +142,7 @@ func setResult(l yyLexer, stmts []SQLStmt) {
 %type <update> update
 %type <updates> updates
 %type <onConflict> opt_on_conflict
+%type <permission> permission
 
 %start sql
 
@@ -255,6 +258,41 @@ ddlstmt:
     ALTER TABLE IDENTIFIER DROP COLUMN IDENTIFIER
     {
         $$ = &DropColumnStmt{table: $3, colName: $6}
+    }
+|
+    CREATE USER IDENTIFIER WITH PASSWORD VARCHAR permission
+    {
+        $$ = &CreateUserStmt{username: $3, password: $6, permission: $7}
+    }
+|
+    ALTER USER IDENTIFIER WITH PASSWORD VARCHAR permission
+    {
+        $$ = &AlterUserStmt{username: $3, password: $6, permission: $7}
+    }
+|
+    DROP USER IDENTIFIER
+    {
+        $$ = &DropUserStmt{username: $3}
+    }
+
+permission:
+    {
+        $$ = PermissionReadWrite
+    }
+|
+    READ
+    {
+        $$ = PermissionReadOnly
+    }
+|
+    READWRITE
+    {
+        $$ = PermissionReadWrite
+    }
+|
+    ADMIN
+    {
+        $$ = PermissionAdmin
     }
 
 opt_if_not_exists:
@@ -538,6 +576,20 @@ dqlstmt:
             ds: &FnDataSourceStmt{fnCall: &FnCall{fn: "tables"}},
         }
     }
+|
+    SHOW TABLE IDENTIFIER
+    {
+        $$ = &SelectStmt{
+            ds: &FnDataSourceStmt{fnCall: &FnCall{fn: "table", params: []ValueExp{&Varchar{val: $3}}}},
+        }
+    }
+|
+    SHOW USERS
+    {
+        $$ = &SelectStmt{
+            ds: &FnDataSourceStmt{fnCall: &FnCall{fn: "users"}},
+        }
+    }
 
 select_stmt: SELECT opt_distinct opt_selectors FROM ds opt_indexon opt_joins opt_where opt_groupby opt_having opt_orderby opt_limit opt_offset
     {
@@ -649,6 +701,16 @@ ds:
     TABLES '(' ')' opt_as
     {
         $$ = &FnDataSourceStmt{fnCall:  &FnCall{fn: "tables"}, as: $4}
+    }
+|
+    TABLE '(' IDENTIFIER ')'
+    {
+        $$ = &FnDataSourceStmt{fnCall:  &FnCall{fn: "table", params: []ValueExp{&Varchar{val: $3}}}}
+    }
+|
+    USERS '(' ')' opt_as
+    {
+        $$ = &FnDataSourceStmt{fnCall:  &FnCall{fn: "users"}, as: $4}
     }
 |
     fnCall opt_as

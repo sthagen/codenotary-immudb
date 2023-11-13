@@ -6043,6 +6043,26 @@ func TestMultiDBCatalogQueries(t *testing.T) {
 			require.NoError(t, err)
 		})
 
+		t.Run("show users", func(t *testing.T) {
+			r, err := engine.Query(context.Background(), nil, "SHOW USERS", nil)
+			require.NoError(t, err)
+
+			defer r.Close()
+
+			_, err = r.Read(context.Background())
+			require.ErrorIs(t, err, ErrNoMoreRows)
+		})
+
+		t.Run("list users", func(t *testing.T) {
+			r, err := engine.Query(context.Background(), nil, "SELECT * FROM USERS()", nil)
+			require.NoError(t, err)
+
+			defer r.Close()
+
+			_, err = r.Read(context.Background())
+			require.ErrorIs(t, err, ErrNoMoreRows)
+		})
+
 		t.Run("query databases using conditions with table and column aliasing", func(t *testing.T) {
 			r, err := engine.Query(context.Background(), nil, "SELECT dbs.name as dbname FROM DATABASES() as dbs WHERE name LIKE 'db*'", nil)
 			require.NoError(t, err)
@@ -6079,6 +6099,22 @@ func (h *multidbHandlerMock) CreateDatabase(ctx context.Context, db string, ifNo
 
 func (h *multidbHandlerMock) UseDatabase(ctx context.Context, db string) error {
 	return nil
+}
+
+func (h *multidbHandlerMock) ListUsers(ctx context.Context) ([]User, error) {
+	return nil, nil
+}
+
+func (h *multidbHandlerMock) CreateUser(ctx context.Context, username, password string, permission Permission) error {
+	return ErrNoSupported
+}
+
+func (h *multidbHandlerMock) AlterUser(ctx context.Context, username, password string, permission Permission) error {
+	return ErrNoSupported
+}
+
+func (h *multidbHandlerMock) DropUser(ctx context.Context, username string) error {
+	return ErrNoSupported
 }
 
 func (h *multidbHandlerMock) ExecPreparedStmts(

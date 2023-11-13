@@ -69,6 +69,14 @@ func IsNumericType(t SQLValueType) bool {
 	return t == IntegerType || t == Float64Type
 }
 
+type Permission = string
+
+const (
+	PermissionReadOnly  Permission = "READ"
+	PermissionReadWrite Permission = "READWRITE"
+	PermissionAdmin     Permission = "ADMIN"
+)
+
 type AggregateFn = string
 
 const (
@@ -119,6 +127,8 @@ const (
 	UUIDFnCall      string = "RANDOM_UUID"
 	DatabasesFnCall string = "DATABASES"
 	TablesFnCall    string = "TABLES"
+	TableFnCall     string = "TABLE"
+	UsersFnCall     string = "USERS"
 	ColumnsFnCall   string = "COLUMNS"
 	IndexesFnCall   string = "INDEXES"
 )
@@ -241,6 +251,70 @@ func (stmt *UseSnapshotStmt) inferParameters(ctx context.Context, tx *SQLTx, par
 
 func (stmt *UseSnapshotStmt) execAt(ctx context.Context, tx *SQLTx, params map[string]interface{}) (*SQLTx, error) {
 	return nil, ErrNoSupported
+}
+
+type CreateUserStmt struct {
+	username   string
+	password   string
+	permission Permission
+}
+
+func (stmt *CreateUserStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
+	return nil
+}
+
+func (stmt *CreateUserStmt) execAt(ctx context.Context, tx *SQLTx, params map[string]interface{}) (*SQLTx, error) {
+	if tx.IsExplicitCloseRequired() {
+		return nil, fmt.Errorf("%w: user creation can not be done within a transaction", ErrNonTransactionalStmt)
+	}
+
+	if tx.engine.multidbHandler == nil {
+		return nil, ErrUnspecifiedMultiDBHandler
+	}
+
+	return nil, tx.engine.multidbHandler.CreateUser(ctx, stmt.username, stmt.password, stmt.permission)
+}
+
+type AlterUserStmt struct {
+	username   string
+	password   string
+	permission Permission
+}
+
+func (stmt *AlterUserStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
+	return nil
+}
+
+func (stmt *AlterUserStmt) execAt(ctx context.Context, tx *SQLTx, params map[string]interface{}) (*SQLTx, error) {
+	if tx.IsExplicitCloseRequired() {
+		return nil, fmt.Errorf("%w: user modification can not be done within a transaction", ErrNonTransactionalStmt)
+	}
+
+	if tx.engine.multidbHandler == nil {
+		return nil, ErrUnspecifiedMultiDBHandler
+	}
+
+	return nil, tx.engine.multidbHandler.AlterUser(ctx, stmt.username, stmt.password, stmt.permission)
+}
+
+type DropUserStmt struct {
+	username string
+}
+
+func (stmt *DropUserStmt) inferParameters(ctx context.Context, tx *SQLTx, params map[string]SQLValueType) error {
+	return nil
+}
+
+func (stmt *DropUserStmt) execAt(ctx context.Context, tx *SQLTx, params map[string]interface{}) (*SQLTx, error) {
+	if tx.IsExplicitCloseRequired() {
+		return nil, fmt.Errorf("%w: user deletion can not be done within a transaction", ErrNonTransactionalStmt)
+	}
+
+	if tx.engine.multidbHandler == nil {
+		return nil, ErrUnspecifiedMultiDBHandler
+	}
+
+	return nil, tx.engine.multidbHandler.DropUser(ctx, stmt.username)
 }
 
 type CreateTableStmt struct {
@@ -3987,6 +4061,14 @@ func (stmt *FnDataSourceStmt) Alias() string {
 		{
 			return "tables"
 		}
+	case TableFnCall:
+		{
+			return "table"
+		}
+	case UsersFnCall:
+		{
+			return "users"
+		}
 	case ColumnsFnCall:
 		{
 			return "columns"
@@ -4014,6 +4096,14 @@ func (stmt *FnDataSourceStmt) Resolve(ctx context.Context, tx *SQLTx, params map
 	case TablesFnCall:
 		{
 			return stmt.resolveListTables(ctx, tx, params, scanSpecs)
+		}
+	case TableFnCall:
+		{
+			return stmt.resolveShowTable(ctx, tx, params, scanSpecs)
+		}
+	case UsersFnCall:
+		{
+			return stmt.resolveListUsers(ctx, tx, params, scanSpecs)
 		}
 	case ColumnsFnCall:
 		{
@@ -4076,6 +4166,143 @@ func (stmt *FnDataSourceStmt) resolveListTables(ctx context.Context, tx *SQLTx, 
 
 	for i, t := range tables {
 		values[i] = []ValueExp{&Varchar{val: t.name}}
+	}
+
+	return newValuesRowReader(tx, params, cols, stmt.Alias(), values)
+}
+
+func (stmt *FnDataSourceStmt) resolveShowTable(ctx context.Context, tx *SQLTx, params map[string]interface{}, _ *ScanSpecs) (rowReader RowReader, err error) {
+	cols := []ColDescriptor{
+		{
+			Column: "column_name",
+			Type:   VarcharType,
+		},
+		{
+			Column: "type_name",
+			Type:   VarcharType,
+		},
+		{
+			Column: "is_nullable",
+			Type:   BooleanType,
+		},
+		{
+			Column: "is_indexed",
+			Type:   VarcharType,
+		},
+		{
+			Column: "is_auto_increment",
+			Type:   BooleanType,
+		},
+		{
+			Column: "is_unique",
+			Type:   BooleanType,
+		},
+	}
+
+	tableName, _ := stmt.fnCall.params[0].reduce(tx, nil, "")
+	table, err := tx.catalog.GetTableByName(tableName.RawValue().(string))
+	if err != nil {
+		return nil, err
+	}
+
+	values := make([][]ValueExp, len(table.cols))
+
+	for i, c := range table.cols {
+		index := "NO"
+
+		indexed, err := table.IsIndexed(c.Name())
+		if err != nil {
+			return nil, err
+		}
+		if indexed {
+			index = "YES"
+		}
+
+		if table.PrimaryIndex().IncludesCol(c.ID()) {
+			index = "PRIMARY KEY"
+		}
+
+		var unique bool
+		for _, index := range table.GetIndexesByColID(c.ID()) {
+			if index.IsUnique() && len(index.Cols()) == 1 {
+				unique = true
+				break
+			}
+		}
+
+		var maxLen string
+
+		if c.MaxLen() > 0 && (c.Type() == VarcharType || c.Type() == BLOBType) {
+			maxLen = fmt.Sprintf("(%d)", c.MaxLen())
+		}
+
+		values[i] = []ValueExp{
+			&Varchar{val: c.colName},
+			&Varchar{val: c.Type() + maxLen},
+			&Bool{val: c.IsNullable()},
+			&Varchar{val: index},
+			&Bool{val: c.IsAutoIncremental()},
+			&Bool{val: unique},
+		}
+	}
+
+	return newValuesRowReader(tx, params, cols, stmt.Alias(), values)
+}
+
+func (stmt *FnDataSourceStmt) resolveListUsers(ctx context.Context, tx *SQLTx, params map[string]interface{}, _ *ScanSpecs) (rowReader RowReader, err error) {
+	if len(stmt.fnCall.params) > 0 {
+		return nil, fmt.Errorf("%w: function '%s' expect no parameters but %d were provided", ErrIllegalArguments, UsersFnCall, len(stmt.fnCall.params))
+	}
+
+	cols := make([]ColDescriptor, 2)
+	cols[0] = ColDescriptor{
+		Column: "name",
+		Type:   VarcharType,
+	}
+	cols[1] = ColDescriptor{
+		Column: "permission",
+		Type:   VarcharType,
+	}
+
+	var users []User
+
+	if tx.engine.multidbHandler == nil {
+		return nil, ErrUnspecifiedMultiDBHandler
+	} else {
+		users, err = tx.engine.multidbHandler.ListUsers(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	values := make([][]ValueExp, len(users))
+
+	for i, user := range users {
+		var perm string
+
+		switch user.Permission() {
+		case 1:
+			{
+				perm = "READ"
+			}
+		case 2:
+			{
+				perm = "READ/WRITE"
+			}
+		case 254:
+			{
+				perm = "ADMIN"
+			}
+		default:
+			{
+				perm = "SYSADMIN"
+			}
+		}
+
+		values[i] = []ValueExp{
+			&Varchar{val: user.Username()},
+			&Varchar{val: perm},
+		}
 	}
 
 	return newValuesRowReader(tx, params, cols, stmt.Alias(), values)

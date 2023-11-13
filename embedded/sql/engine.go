@@ -114,7 +114,16 @@ type MultiDBHandler interface {
 	ListDatabases(ctx context.Context) ([]string, error)
 	CreateDatabase(ctx context.Context, db string, ifNotExists bool) error
 	UseDatabase(ctx context.Context, db string) error
+	ListUsers(ctx context.Context) ([]User, error)
+	CreateUser(ctx context.Context, username, password string, permission Permission) error
+	AlterUser(ctx context.Context, username, password string, permission Permission) error
+	DropUser(ctx context.Context, username string) error
 	ExecPreparedStmts(ctx context.Context, opts *TxOptions, stmts []SQLStmt, params map[string]interface{}) (ntx *SQLTx, committedTxs []*SQLTx, err error)
+}
+
+type User interface {
+	Username() string
+	Permission() uint32
 }
 
 func NewEngine(st *store.ImmuStore, opts *Options) (*Engine, error) {

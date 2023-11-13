@@ -258,6 +258,107 @@ func TestImmuClient_SQL(t *testing.T) {
 	})
 }
 
+func TestImmuClient_SQL_UserStmts(t *testing.T) {
+	options := server.DefaultOptions().WithDir(t.TempDir())
+	bs := servertest.NewBufconnServer(options)
+
+	bs.Start()
+	defer bs.Stop()
+
+	client, err := bs.NewAuthenticatedClient(ic.DefaultOptions().WithDir(t.TempDir()))
+	require.NoError(t, err)
+	defer client.CloseSession(context.Background())
+
+	users, err := client.SQLQuery(context.Background(), "SHOW USERS", nil, true)
+	require.NoError(t, err)
+	require.Len(t, users.Rows, 1)
+
+	_, err = client.SQLExec(context.Background(), "CREATE USER user1 WITH PASSWORD 'user1Password!' READWRITE", nil)
+	require.NoError(t, err)
+
+	_, err = client.SQLExec(context.Background(), "CREATE USER user2 WITH PASSWORD 'user2Password!' READ", nil)
+	require.NoError(t, err)
+
+	_, err = client.SQLExec(context.Background(), "CREATE USER user3 WITH PASSWORD 'user3Password!' ADMIN", nil)
+	require.NoError(t, err)
+
+	users, err = client.SQLQuery(context.Background(), "SHOW USERS", nil, true)
+	require.NoError(t, err)
+	require.Len(t, users.Rows, 4)
+
+	user1Client := bs.NewClient(ic.DefaultOptions())
+
+	err = user1Client.OpenSession(
+		context.Background(),
+		[]byte("user1"),
+		[]byte("user1Password!"),
+		"defaultdb",
+	)
+	require.NoError(t, err)
+
+	err = user1Client.CloseSession(context.Background())
+	require.NoError(t, err)
+
+	_, err = client.SQLExec(context.Background(), "ALTER USER user1 WITH PASSWORD 'user1Password!!' READ", nil)
+	require.NoError(t, err)
+
+	err = user1Client.OpenSession(
+		context.Background(),
+		[]byte("user1"),
+		[]byte("user1Password!"),
+		"defaultdb",
+	)
+	require.ErrorContains(t, err, "invalid user name or password")
+
+	err = user1Client.OpenSession(
+		context.Background(),
+		[]byte("user1"),
+		[]byte("user1Password!!"),
+		"defaultdb",
+	)
+	require.NoError(t, err)
+
+	err = user1Client.CloseSession(context.Background())
+	require.NoError(t, err)
+
+	users, err = client.SQLQuery(context.Background(), "SHOW USERS", nil, true)
+	require.NoError(t, err)
+	require.Len(t, users.Rows, 4)
+
+	_, err = client.SQLExec(context.Background(), "DROP USER user1", nil)
+	require.NoError(t, err)
+
+	users, err = client.SQLQuery(context.Background(), "SHOW USERS", nil, true)
+	require.NoError(t, err)
+	require.Len(t, users.Rows, 3)
+
+	err = user1Client.OpenSession(
+		context.Background(),
+		[]byte("user1"),
+		[]byte("user1Password!!"),
+		"defaultdb",
+	)
+	require.ErrorContains(t, err, "user is not active")
+
+	_, err = client.SQLExec(context.Background(), "CREATE USER user2 WITH PASSWORD 'user2Password!' READWRITE", nil)
+	require.ErrorContains(t, err, "user already exists")
+
+	_, err = client.SQLExec(context.Background(), "ALTER USER user4 WITH PASSWORD 'user4Password!!' READWRITE", nil)
+	require.ErrorContains(t, err, "not found")
+
+	_, err = user1Client.SQLExec(context.Background(), "SHOW USERS", nil)
+	require.ErrorContains(t, err, "not connected")
+
+	_, err = user1Client.SQLExec(context.Background(), "CREATE USER user4 WITH PASSWORD 'user4Password!' READWRITE", nil)
+	require.ErrorContains(t, err, "not connected")
+
+	_, err = user1Client.SQLExec(context.Background(), "ALTER USER user4 WITH PASSWORD 'user4Password!!' READWRITE", nil)
+	require.ErrorContains(t, err, "not connected")
+
+	_, err = user1Client.SQLExec(context.Background(), "DROP USER user3", nil)
+	require.ErrorContains(t, err, "not connected")
+}
+
 func TestImmuClient_SQL_Errors(t *testing.T) {
 	options := server.DefaultOptions().WithDir(t.TempDir())
 	bs := servertest.NewBufconnServer(options)
