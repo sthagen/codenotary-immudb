@@ -31,6 +31,9 @@ import (
 	fm "github.com/codenotary/immudb/pkg/pgsql/server/fmessages"
 )
 
+const helpPrefix = "select relname, nspname, relkind from pg_catalog.pg_class c, pg_catalog.pg_namespace n where relkind in ('r', 'v', 'm', 'f', 'p') and nspname not in ('pg_catalog', 'information_schema', 'pg_toast', 'pg_temp_1') and n.oid = relnamespace order by nspname, relname"
+const tableHelpPrefix = "select n.nspname, c.relname, a.attname, a.atttypid, t.typname, a.attnum, a.attlen, a.atttypmod, a.attnotnull, c.relhasrules, c.relkind, c.oid, pg_get_expr(d.adbin, d.adrelid), case t.typtype when 'd' then t.typbasetype else 0 end, t.typtypmod, c.relhasoids, '', c.relhassubclass from (((pg_catalog.pg_class c inner join pg_catalog.pg_namespace n on n.oid = c.relnamespace and c.relname like '"
+
 func (s *session) QueryMachine() error {
 	var waitForSync = false
 
@@ -66,15 +69,13 @@ func (s *session) QueryMachine() error {
 		case fm.QueryMsg:
 			statements := v.GetStatements()
 
-			if statements == "select relname, nspname, relkind from pg_catalog.pg_class c, pg_catalog.pg_namespace n where relkind in ('r', 'v', 'm', 'f', 'p') and nspname not in ('pg_catalog', 'information_schema', 'pg_toast', 'pg_temp_1') and n.oid = relnamespace order by nspname, relname" {
+			if statements == helpPrefix {
 				statements = "show tables"
 			}
 
-			tableHelpPrefix := "select n.nspname, c.relname, a.attname, a.atttypid, t.typname, a.attnum, a.attlen, a.atttypmod, a.attnotnull, c.relhasrules, c.relkind, c.oid, pg_get_expr(d.adbin, d.adrelid), case t.typtype when 'd' then t.typbasetype else 0 end, t.typtypmod, c.relhasoids, '', c.relhassubclass from (((pg_catalog.pg_class c inner join pg_catalog.pg_namespace n on n.oid = c.relnamespace and c.relname like '"
-
 			if strings.HasPrefix(statements, tableHelpPrefix) {
 				tableName := strings.Split(strings.TrimPrefix(statements, tableHelpPrefix), "'")[0]
-				statements = fmt.Sprintf("select column_name, type_name, is_nullable from table(%s)", tableName)
+				statements = fmt.Sprintf("select column_name as tq, column_name as tow, column_name as tn, column_name as COLUMN_NAME, type_name as DATA_TYPE, type_name as TYPE_NAME, type_name as p, type_name as l, type_name as s, type_name as r, is_nullable as NULLABLE, column_name as rk, column_name as cd, type_name as SQL_DATA_TYPE, type_name as sts, column_name as coll, type_name as orp, is_nullable as IS_NULLABLE, type_name as dz, type_name as ft, type_name as iau, type_name as pn, column_name as toi, column_name as btd, column_name as tmo, column_name as tin from table(%s)", tableName)
 			}
 
 			err := s.fetchAndWriteResults(statements, nil, nil, extQueryMode)
@@ -253,11 +254,6 @@ func (s *session) QueryMachine() error {
 }
 
 func (s *session) fetchAndWriteResults(statements string, parameters []*schema.NamedParam, resultColumnFormatCodes []int16, extQueryMode bool) error {
-	if len(statements) == 0 {
-		_, err := s.writeMessage(bm.EmptyQueryResponse())
-		return err
-	}
-
 	if s.isInBlackList(statements) {
 		_, err := s.writeMessage(bm.CommandComplete([]byte("ok")))
 		return err
