@@ -18,7 +18,7 @@ jobs:
     name: Ensure immudb compiles with the oldest supported go version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-go@v3
+      - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.MIN_SUPPORTED_GO_VERSION }}
       - uses: actions/checkout@v3
@@ -30,7 +30,7 @@ jobs:
       JOB_NAME: ${{ github.job }}
       JOB_ID: ${{ github.run_id }}
     steps:
-      - uses: actions/setup-go@v3
+      - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
       - uses: actions/checkout@v3
@@ -51,7 +51,7 @@ jobs:
       outputs:
         matrix: ${{ steps.list-binaries.outputs.matrix }}
       steps:
-        - uses: actions/setup-go@v3
+        - uses: actions/setup-go@v5
           with:
             go-version: ${{ env.GO_VERSION }}
         - uses: actions/checkout@v3
@@ -61,7 +61,7 @@ jobs:
           run: |
             echo "matrix=$(ls dist | jq -R -s -c 'split("\n")[:-1] | {binary: .}')" >> $GITHUB_OUTPUT
         - name: Upload binary artifacts
-          uses: actions/upload-artifact@v3
+          uses: actions/upload-artifact@v4
           with:
             name: immudb-binaries
             path: dist
@@ -93,7 +93,7 @@ jobs:
             qemu-binfmt: true
     runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/download-artifact@v3
+    - uses: actions/download-artifact@v4
       with:
         name: immudb-binaries
         path: dist
@@ -149,7 +149,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Download binary artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: immudb-binaries
         path: dist
@@ -157,7 +157,7 @@ jobs:
       run: chmod +x dist/*linux-amd64
     - name: Run immudb in the background
       run: dist/immudb-*-linux-amd64 -d
-    - uses: actions/setup-go@v3
+    - uses: actions/setup-go@v5
       with:
         go-version: ${{ env.GO_VERSION }}
     - uses: actions/checkout@v3
@@ -206,7 +206,7 @@ jobs:
         JOB_ID: ${{ github.run_id }}
       steps:
         - name: Download binary artifacts
-          uses: actions/download-artifact@v3
+          uses: actions/download-artifact@v4
           with:
             name: immudb-binaries
             path: dist
@@ -299,7 +299,7 @@ jobs:
       - old-go
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-go@v3
+      - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
       - uses: actions/checkout@v3
