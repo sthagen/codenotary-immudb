@@ -17,7 +17,6 @@ limitations under the License.
 package schema
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/codenotary/immudb/embedded/sql"
@@ -33,7 +32,7 @@ func EncodeParams(params map[string]interface{}) ([]*NamedParam, error) {
 
 	i := 0
 	for n, v := range params {
-		sqlVal, err := asSQLValue(v)
+		sqlVal, err := AsSQLValue(v)
 		if err != nil {
 			return nil, err
 		}
@@ -53,7 +52,7 @@ func NamedParamsFromProto(protoParams []*NamedParam) map[string]interface{} {
 	return params
 }
 
-func asSQLValue(v interface{}) (*SQLValue, error) {
+func AsSQLValue(v interface{}) (*SQLValue, error) {
 	if v == nil {
 		return &SQLValue{Value: &SQLValue_Null{}}, nil
 	}
@@ -157,44 +156,4 @@ func TypedValueToRowValue(tv sql.TypedValue) *SQLValue {
 		return &SQLValue{Value: &SQLValue_S{S: tv.String()}}
 	}
 	return nil
-}
-
-func SQLPrivilegeToProto(p sql.SQLPrivilege) (SQLPrivilege, error) {
-	switch p {
-	case sql.SQLPrivilegeSelect:
-		return SQLPrivilege_SELECT, nil
-	case sql.SQLPrivilegeCreate:
-		return SQLPrivilege_CREATE, nil
-	case sql.SQLPrivilegeInsert:
-		return SQLPrivilege_INSERT, nil
-	case sql.SQLPrivilegeUpdate:
-		return SQLPrivilege_UPDATE, nil
-	case sql.SQLPrivilegeDelete:
-		return SQLPrivilege_DELETE, nil
-	case sql.SQLPrivilegeDrop:
-		return SQLPrivilege_DROP, nil
-	case sql.SQLPrivilegeAlter:
-		return SQLPrivilege_ALTER, nil
-	}
-	return SQLPrivilege_UNKNOWN, fmt.Errorf("invalid privilege")
-}
-
-func SQLPrivilegeFromProto(p SQLPrivilege) sql.SQLPrivilege {
-	switch p {
-	case SQLPrivilege_SELECT:
-		return sql.SQLPrivilegeSelect
-	case SQLPrivilege_CREATE:
-		return sql.SQLPrivilegeCreate
-	case SQLPrivilege_INSERT:
-		return sql.SQLPrivilegeInsert
-	case SQLPrivilege_UPDATE:
-		return sql.SQLPrivilegeUpdate
-	case SQLPrivilege_DELETE:
-		return sql.SQLPrivilegeDelete
-	case SQLPrivilege_DROP:
-		return sql.SQLPrivilegeDrop
-	case SQLPrivilege_ALTER:
-		return sql.SQLPrivilegeAlter
-	}
-	return ""
 }
