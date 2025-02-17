@@ -92,12 +92,14 @@ var (
 		Help: "The highest id of indexed transaction",
 	}, []string{
 		"db",
+		"index",
 	})
 	metricsLastCommittedTrx = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "immudb_last_committed_trx_id",
 		Help: "The highest id of committed transaction",
 	}, []string{
 		"db",
+		"index",
 	})
 )
 
@@ -179,8 +181,9 @@ func newIndexer(path string, store *ImmuStore, opts *Options) (*indexer, error) 
 	}
 
 	dbName := filepath.Base(store.path)
-	indexer.metricsLastIndexedTrx = metricsLastIndexedTrxId.WithLabelValues(dbName)
-	indexer.metricsLastCommittedTrx = metricsLastCommittedTrx.WithLabelValues(dbName)
+	idxName := filepath.Base(path)
+	indexer.metricsLastIndexedTrx = metricsLastIndexedTrxId.WithLabelValues(dbName, idxName)
+	indexer.metricsLastCommittedTrx = metricsLastCommittedTrx.WithLabelValues(dbName, idxName)
 
 	return indexer, nil
 }
@@ -498,7 +501,7 @@ func (idx *indexer) handleWriteStalling(err error) error {
 	if err := idx.store.FlushIndexes(0, false); err != nil {
 		return err
 	}
-
+	// NOSONAR   (rand is fine here)
 	sleepTime := writeStallingSleepDurationMin + time.Duration(rand.Intn(int(writeStallingSleepDurationMax-writeStallingSleepDurationMin+1)))
 	time.Sleep(sleepTime)
 	return nil
