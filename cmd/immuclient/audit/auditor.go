@@ -116,6 +116,11 @@ func (cAgent *auditAgent) InitAgent() (AuditAgent, error) {
 		}
 	}
 
+	auditCacheDir := filepath.Join(os.TempDir(), "auditor")
+	if err := os.MkdirAll(auditCacheDir, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create audit cache directory: %w", err)
+	}
+
 	cAgent.ImmuAudit, err = auditor.DefaultAuditor(time.Duration(cAgent.cycleFrequency)*time.Second,
 		fmt.Sprintf("%s:%v", options().Address, options().Port),
 		cliOpts.DialOptions,
@@ -131,7 +136,7 @@ func (cAgent *auditAgent) InitAgent() (AuditAgent, error) {
 		},
 		cAgent.immuc.GetServiceClient(),
 		cAgent.uuidProvider,
-		cache.NewHistoryFileCache(filepath.Join(os.TempDir(), "auditor")),
+		cache.NewHistoryFileCache(auditCacheDir),
 		cAgent.metrics.updateMetrics,
 		cAgent.logger,
 		&auditMonitoringHTTPAddr)

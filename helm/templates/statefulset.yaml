@@ -26,6 +26,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       volumes:
@@ -90,7 +91,16 @@ spec:
             {{- end }}
           {{- end }}
           resources:
+            {{- if .Values.resources }}
             {{- toYaml .Values.resources | nindent 12 }}
+            {{- else }}
+            limits:
+              memory: "512Mi"
+              ephemeral-storage: "1Gi"
+            requests:
+              memory: "256Mi"
+              ephemeral-storage: "512Mi"
+            {{- end }}
           volumeMounts:
           - mountPath: /var/lib/immudb
             name: immudb-storage

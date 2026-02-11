@@ -23,6 +23,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -531,6 +532,10 @@ func (r *RemoteStorageAppendable) OpenInitialAppendable(opts *multiapp.Options, 
 			return nil, 0, ErrInvalidLocalStorage
 		}
 
+		if id < 0 || id > int64(math.MaxInt) {
+			return nil, 0, fmt.Errorf("chunk id %d out of range", id)
+		}
+
 		for len(chunkInfos) <= int(id) {
 			chunkInfos = append(chunkInfos, chunkInfo{state: chunkState_Invalid})
 		}
@@ -554,6 +559,10 @@ func (r *RemoteStorageAppendable) OpenInitialAppendable(opts *multiapp.Options, 
 		// Sanity check
 		if r.appendableName(id) != entry.Name {
 			return nil, 0, ErrInvalidRemoteStorage
+		}
+
+		if id < 0 || id > int64(math.MaxInt) {
+			return nil, 0, fmt.Errorf("chunk id %d out of range", id)
 		}
 
 		for len(chunkInfos) <= int(id) {

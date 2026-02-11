@@ -1,4 +1,4 @@
-FROM golang:1.18 as build
+FROM golang:1.24 as build
 ARG BUILD_ARCH=amd64
 WORKDIR /src
 COPY go.mod go.sum /src/
@@ -42,7 +42,7 @@ RUN addgroup --system --gid $IMMU_GID immu && \
     mkdir -p "$IMMUDB_HOME" && \
     mkdir -p "$IMMUDB_DIR" && \
     chown -R immu:immu "$IMMUDB_HOME" "$IMMUDB_DIR" && \
-    chmod -R 777 "$IMMUDB_HOME" "$IMMUDB_DIR" && \
+    chmod -R 755 "$IMMUDB_HOME" "$IMMUDB_DIR" && \
     chmod +x /usr/sbin/immudb /usr/local/bin/immuadmin
 
 EXPOSE 3322

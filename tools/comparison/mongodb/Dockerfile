@@ -2,7 +2,7 @@ FROM mongo
 
 WORKDIR /
 
-ADD . .
+COPY . .
 
 ENTRYPOINT ["/run.sh"]
 

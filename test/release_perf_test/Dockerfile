@@ -1,4 +1,4 @@
-FROM golang:1.18 as builder
+FROM golang:1.24 as builder
 WORKDIR /src/immudb
 COPY go.mod go.sum /src/immudb
 RUN go mod download -x

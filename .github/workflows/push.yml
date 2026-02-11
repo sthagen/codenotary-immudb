@@ -1,8 +1,8 @@
 name: pushCI
 
 env:
-  GO_VERSION: "1.18"
-  MIN_SUPPORTED_GO_VERSION: "1.17"
+  GO_VERSION: "1.24"
+  MIN_SUPPORTED_GO_VERSION: "1.24"
 
 on:
   push:
@@ -190,7 +190,7 @@ jobs:
     uses: ./.github/workflows/performance.yml
     secrets: inherit
     with:
-      go-version: "1.19" # we need a post 1.19, to limit memory usage
+      go-version: "1.24"
 
   notarize-binaries:
       name: Notarize binaries
