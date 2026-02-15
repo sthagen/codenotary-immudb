@@ -3,10 +3,6 @@ name: Performance tests
 on:
   workflow_dispatch:
   workflow_call:
-    inputs:
-      go-version:
-        required: true
-        type: string
   schedule:
     - cron: '0 0 * * *'
 
@@ -47,10 +43,10 @@ jobs:
       INFLUX_HOST: ${{ secrets.INFLUX_HOST }}
       INFLUX_TOKEN: ${{ secrets.INFLUX_TOKEN }}
     steps:
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ inputs.go-version }}
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
       - run: go build -o perf-test-suite ./test/performance-test-suite/cmd/perf-test/
       - name: Run performance tests
         id: performance
