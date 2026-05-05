@@ -894,19 +894,26 @@ func (s *ImmuServer) ServerInfo(ctx context.Context, req *schema.ServerInfoReque
 }
 
 func (s *ImmuServer) numTransactions() (uint64, error) {
+	// Snapshot the DB handles under the lock, then release before calling
+	// CurrentState on each. CurrentState reads tx state and must not block
+	// dbList mutations (CreateDatabase, etc.).
 	s.dbListMutex.Lock()
-	defer s.dbListMutex.Unlock()
-
-	var count uint64
+	dbs := make([]database.DB, 0, s.dbList.Length())
 	for i := 0; i < s.dbList.Length(); i++ {
 		db, err := s.dbList.GetByIndex(i)
 		if err == database.ErrDatabaseNotExists {
 			continue
 		}
 		if err != nil {
+			s.dbListMutex.Unlock()
 			return 0, err
 		}
+		dbs = append(dbs, db)
+	}
+	s.dbListMutex.Unlock()
 
+	var count uint64
+	for _, db := range dbs {
 		state, err := db.CurrentState()
 		if err != nil {
 			return 0, err
@@ -917,20 +924,25 @@ func (s *ImmuServer) numTransactions() (uint64, error) {
 }
 
 func (s *ImmuServer) totalDBSize() (int64, error) {
+	// Snapshot the DB names under the lock, then drop it before doing the
+	// recursive directory walk, which can take hundreds of ms on large DBs.
 	s.dbListMutex.Lock()
-	defer s.dbListMutex.Unlock()
-
-	var size int64
+	dbNames := make([]string, 0, s.dbList.Length())
 	for i := 0; i < s.dbList.Length(); i++ {
 		db, err := s.dbList.GetByIndex(i)
 		if err == database.ErrDatabaseNotExists {
 			continue
 		}
 		if err != nil {
+			s.dbListMutex.Unlock()
 			return -1, err
 		}
+		dbNames = append(dbNames, db.GetName())
+	}
+	s.dbListMutex.Unlock()
 
-		dbName := db.GetName()
+	var size int64
+	for _, dbName := range dbNames {
 		dbSize, err := dirSize(filepath.Join(s.Options.Dir, dbName))
 		if err != nil {
 			return -1, err
@@ -1531,20 +1543,27 @@ func (s *ImmuServer) DatabaseListV2(ctx context.Context, req *schema.DatabaseLis
 			return nil, err
 		}
 
-		state, err := db.CurrentState()
-		if err != nil {
-			return nil, err
+		info := &schema.DatabaseInfo{
+			Name:      dbName,
+			Settings:  dbOpts.databaseNullableSettings(),
+			Loaded:    !db.IsClosed(),
+			DiskSize:  uint64(size),
+			CreatedAt: uint64(dbOpts.CreatedAt.Unix()),
+			CreatedBy: dbOpts.CreatedBy,
 		}
 
-		info := &schema.DatabaseInfo{
-			Name:            db.GetName(),
-			Settings:        dbOpts.databaseNullableSettings(),
-			Loaded:          !db.IsClosed(),
-			DiskSize:        uint64(size),
-			NumTransactions: state.TxId,
-			CreatedAt:       uint64(dbOpts.CreatedAt.Unix()),
-			CreatedBy:       dbOpts.CreatedBy,
+		// Only fetch state for loaded databases — a closed/unloadable DB
+		// would return store.ErrAlreadyClosed and abort the entire listing
+		// (issue #1997).
+		if info.Loaded {
+			state, err := db.CurrentState()
+			if err == nil {
+				info.NumTransactions = state.TxId
+			} else {
+				s.Logger.Warningf("unable to get state for database '%s': %v", dbName, err)
+			}
 		}
+
 		resp.Databases = append(resp.Databases, info)
 	}
 	return resp, nil
