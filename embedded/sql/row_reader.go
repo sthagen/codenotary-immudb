@@ -650,6 +650,21 @@ func (r *rawRowReader) CountAllWithKeyFilter(ctx context.Context, where ValueExp
 	valuesBySelector := make(map[string]TypedValue, len(index.cols))
 	row := &Row{ValuesBySelector: valuesBySelector}
 
+	// Substitute params once: substitute is non-mutating (stmt.go:6755-6759,
+	// per issue #1153) and the resulting AST is reusable across reduce calls,
+	// so per-row substitution would only churn allocations.
+	cond, err := where.substitute(r.params)
+	if err != nil {
+		return 0, fmt.Errorf("%w: when evaluating WHERE clause", err)
+	}
+
+	// Encoded selector strings are pure functions of (alias, colName); cache
+	// them by index-column position to avoid per-row string concatenation.
+	selectors := make([]string, len(index.cols))
+	for i, col := range index.cols {
+		selectors[i] = EncodeSelector("", r.tableAlias, col.colName)
+	}
+
 	var n int64
 	for {
 		var (
@@ -679,35 +694,24 @@ func (r *rawRowReader) CountAllWithKeyFilter(ctx context.Context, where ValueExp
 			delete(valuesBySelector, k)
 		}
 
-		for _, col := range index.cols {
+		for i, col := range index.cols {
 			val, consumed, derr := DecodeValueFromKey(mkey[off:], col.colType, col.MaxLen())
 			if derr != nil {
 				return 0, derr
 			}
 			off += consumed
 
-			sel := EncodeSelector("", r.tableAlias, col.colName)
-			valuesBySelector[sel] = val
+			valuesBySelector[selectors[i]] = val
 		}
 
-		cond, err := where.substitute(r.params)
+		match, isNull, err := reduceBoolValueExp(r.tx, row, r.tableAlias, cond)
 		if err != nil {
 			return 0, fmt.Errorf("%w: when evaluating WHERE clause", err)
 		}
-
-		res, err := cond.reduce(r.tx, row, r.tableAlias)
-		if err != nil {
-			return 0, fmt.Errorf("%w: when evaluating WHERE clause", err)
-		}
-
-		if nv, isNull := res.(*NullValue); isNull && nv.Type() == BooleanType {
+		if isNull {
 			continue
 		}
-		bv, isBool := res.(*Bool)
-		if !isBool {
-			return 0, fmt.Errorf("%w: expected '%s' in WHERE clause, but '%s' was provided", ErrInvalidCondition, BooleanType, res.Type())
-		}
-		if bv.val {
+		if match {
 			n++
 		}
 	}
