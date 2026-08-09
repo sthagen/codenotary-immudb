@@ -30,11 +30,11 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Test
         run: make test
@@ -95,11 +95,11 @@ jobs:
     name: Run Gosec Security Scanner
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
-      - uses: actions/checkout@v6
-      - uses: securego/gosec@v2.17.0
+      - uses: actions/checkout@v7
+      - uses: securego/gosec@v2.28.0
         with:
           args: -fmt=json -out=results-$JOB_ID.json -no-fail ./...
 
@@ -107,16 +107,31 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: |
           export PATH=$PATH:$(go env GOPATH)/bin
           set -o pipefail
-          ./ext-tools/go-acc ./... --covermode=atomic --ignore test,immuclient,immuadmin,helper,fs,cmdtest,sservice,version,tools,webconsole,protomodel,schema,swagger || true
+
+          # Record the test run's exit status rather than discarding it.
+          # This used to end in `|| true`, which meant a failing or panicking
+          # package was swallowed and whatever partial coverage.txt existed was
+          # uploaded anyway — surfacing a genuine test failure as nothing more
+          # than a slightly lower coverage percentage.
+          acc_status=0
+          ./ext-tools/go-acc ./... --covermode=atomic --ignore test,immuclient,immuadmin,helper,fs,cmdtest,sservice,version,tools,webconsole,protomodel,schema,swagger || acc_status=$?
+
+          # Still publish whatever was measured, so a failed run is not also a
+          # blind spot, then fail the job below.
           cat coverage.txt | grep -v "test" | grep -v "schema" | grep -v "protomodel" | grep -v "swagger" | grep -v "webserver.go" | grep -v "immuclient" | grep -v "immuadmin" | grep -v "helper" | grep -v "fs" | grep -v "cmdtest" | grep -v "sservice" | grep -v "version" | grep -v "tools" | grep -v "webconsole" > coverage.out
           ./ext-tools/goveralls -coverprofile=coverage.out -service=gh-ci
+
+          if [ "$acc_status" -ne 0 ]; then
+            echo "::error::go-acc exited ${acc_status}: the test run failed, so the coverage figure above was computed from a partial profile"
+            exit "$acc_status"
+          fi
         env:
           COVERALLS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -151,10 +166,10 @@ jobs:
     name: Performance Test Suite (${{ matrix.target.name }})
     runs-on: ${{ matrix.target.runs-on }}
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: go build -o perf-test-suite ./test/performance-test-suite/cmd/perf-test/
       - run: ./perf-test-suite > perf-test-results.json
       - name: Upload test results

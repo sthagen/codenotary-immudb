@@ -37,7 +37,7 @@ immudb is a database with built-in cryptographic proof and verification. It trac
 
 Traditional database transactions and logs are mutable, and therefore there is no way to know for sure if your data has been compromised. immudb is immutable. You can add new versions of existing records, but never change or delete records. This lets you store critical data without fear of it being tampered.
 
-Data stored in immudb is cryptographically coherent and verifiable. Unlike blockchains, immudb can handle millions of transactions per second, and can be used both as a lightweight service or embedded in your application as a library. immudb runs everywhere, on an IoT device, your notebook, a server, on-premise or in the cloud.
+Data stored in immudb is cryptographically coherent and verifiable. Unlike blockchains, immudb can handle millions of transactions per second, and can be used both as a lightweight service or embedded in your application as a library. immudb runs everywhere, on an IoT device, your notebook, a server, on-premise or in the cloud. For running immudb fully in-process as a Go library — no server, no container — see the [embedding guide](docs/EMBEDDING.md).
 
 
 When used as a relational data database, it supports both transactions and blobs, so there are no limits to the use cases. Developers and organizations use immudb to secure and tamper-evident log data, sensor data, sensitive data, transactions, software build recipes, rule-base data, artifacts and even video streams. [Examples of organizations using immudb today.](https://www.immudb.io)
@@ -473,6 +473,10 @@ We have SDKs available for the following programming languages:
 3. .net [immudb4net](https://github.com/codenotary/immudb4net)
 4. Python [immudb-py](https://github.com/codenotary/immudb-py)
 5. Node.js [immudb-node](https://github.com/codenotary/immudb-node)
+
+> **Note on Rust:** There is no official Rust SDK. The [`immudb` crate on crates.io](https://crates.io/crates/immudb) is an unofficial, third-party package and is not maintained by us. Rust users have two supported options:
+> - **SQL:** immudb speaks the PostgreSQL wire protocol, so standard Postgres clients such as [`tokio-postgres`](https://crates.io/crates/tokio-postgres) / [`postgres`](https://crates.io/crates/postgres) work directly — no immudb-specific crate required.
+> - **gRPC (key-value, verified reads/writes):** generate a client from our protobuf definitions (`pkg/api/schema/schema.proto` and `pkg/api/proto/*.proto`) using [`tonic`](https://crates.io/crates/tonic) and [`prost`](https://crates.io/crates/prost).
 
 To get started with development, there is a [quickstart in our documentation](https://docs.immudb.io/master/immudb.html): or pick a basic running sample from [immudb-client-examples](https://github.com/codenotary/immudb-client-examples).
 

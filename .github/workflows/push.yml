@@ -18,10 +18,10 @@ jobs:
     name: Ensure immudb compiles with the oldest supported go version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.MIN_SUPPORTED_GO_VERSION }}
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: make all
 
   gosec:
@@ -30,12 +30,12 @@ jobs:
       JOB_NAME: ${{ github.job }}
       JOB_ID: ${{ github.run_id }}
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@v2.17.0
+        uses: securego/gosec@v2.28.0
         with:
           args: -fmt=json -out=results-$JOB_ID.json -no-fail ./...
 
@@ -51,10 +51,10 @@ jobs:
       outputs:
         matrix: ${{ steps.list-binaries.outputs.matrix }}
       steps:
-        - uses: actions/setup-go@v6
+        - uses: actions/setup-go@v7
           with:
             go-version: ${{ env.GO_VERSION }}
-        - uses: actions/checkout@v6
+        - uses: actions/checkout@v7
         - name: Build binaries
           run: WEBCONSOLE=default SWAGGER=true make dist
         - id: list-binaries
@@ -157,10 +157,10 @@ jobs:
       run: chmod +x dist/*linux-amd64
     - name: Run immudb in the background
       run: dist/immudb-*-linux-amd64 -d
-    - uses: actions/setup-go@v6
+    - uses: actions/setup-go@v7
       with:
         go-version: ${{ env.GO_VERSION }}
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - name: Run KV stress test
       run: |
         go run ./tools/testing/stress_tool_test_kv/ \
@@ -229,10 +229,10 @@ jobs:
         ALMA_VERSION: almalinux-8-minimal
         PLATFORMS: linux/amd64,linux/arm64
       steps:
-        - uses: actions/checkout@v6
+        - uses: actions/checkout@v7
 
         - name: Set up QEMU
-          uses: docker/setup-qemu-action@v3
+          uses: docker/setup-qemu-action@v4
 
         - name: Set up Docker Buildx
           uses: docker/setup-buildx-action@v3
@@ -291,10 +291,10 @@ jobs:
       - old-go
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: |
           # Spawn minio docker container in the background
           docker run -d -t -p 9000:9000 --name minio \
@@ -310,11 +310,27 @@ jobs:
 
           export PATH=$PATH:$(go env GOPATH)/bin
           set -o pipefail
-          ./ext-tools/go-acc ./... --covermode=atomic --ignore test,immuclient,immuadmin,helper,fs,cmdtest,sservice,version,tools,webconsole,protomodel,schema,swagger  --tags minio || true
+
+          # Record the test run's exit status rather than discarding it.
+          # This used to end in `|| true`, which meant a failing or panicking
+          # package was swallowed and whatever partial coverage.txt existed was
+          # uploaded anyway — surfacing a genuine test failure as nothing more
+          # than a slightly lower coverage percentage.
+          acc_status=0
+          ./ext-tools/go-acc ./... --covermode=atomic --ignore test,immuclient,immuadmin,helper,fs,cmdtest,sservice,version,tools,webconsole,protomodel,schema,swagger  --tags minio || acc_status=$?
+
+          # Still publish whatever was measured, so a failed run is not also a
+          # blind spot.
           cat coverage.txt | grep -v "test" | grep -v "schema" | grep -v "protomodel" | grep -v "swagger" | grep -v "webserver.go" | grep -v "immuclient" | grep -v "immuadmin" | grep -v "helper" | grep -v "fs" | grep -v "cmdtest" | grep -v "sservice" | grep -v "version" | grep -v "tools" | grep -v "webconsole" > coverage.out
           ./ext-tools/goveralls -coverprofile=coverage.out -service=gh-ci
 
-          # Stop minio
+          # Stop minio. This runs before the failure check below so the
+          # container is always torn down, even when the test run failed.
           docker rm -f minio
+
+          if [ "$acc_status" -ne 0 ]; then
+            echo "::error::go-acc exited ${acc_status}: the test run failed, so the coverage figure above was computed from a partial profile"
+            exit "$acc_status"
+          fi
         env:
           COVERALLS_TOKEN: ${{ secrets.GITHUB_TOKEN }}

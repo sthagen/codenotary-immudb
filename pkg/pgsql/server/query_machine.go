@@ -174,10 +174,20 @@ func (s *session) QueryMachine() error {
 					s.HandleError(pserr.ErrMaxStmtNumberExceeded)
 					continue
 				}
-				if paramCols, resCols, err = s.inferParamAndResultCols(stmts[0]); err != nil {
-					waitForSync = extQueryMode
-					s.HandleError(err)
-					continue
+
+				// Since 1.11.0 the grammar accepts empty/comment-only input
+				// and ParseSQL returns zero statements without an error
+				// (see issue #2100). Parse of an empty query string is valid
+				// in the extended protocol: skip inference (no params, no
+				// result columns) and register the statement; a later
+				// Execute re-parses it in fetchAndWriteResults and answers
+				// with EmptyQueryResponse.
+				if len(stmts) > 0 {
+					if paramCols, resCols, err = s.inferParamAndResultCols(stmts[0]); err != nil {
+						waitForSync = extQueryMode
+						s.HandleError(err)
+						continue
+					}
 				}
 			}
 
@@ -1192,7 +1202,13 @@ func (s *session) exec(st sql.SQLStmt, namedParams []*schema.NamedParam, resultC
 	}
 
 	ntx, _, err := s.db.SQLExecPrepared(s.ctx, tx, []sql.SQLStmt{st}, params)
-	s.tx = ntx
+
+	// Same orphaning hazard as the session transaction path: a statement rejected
+	// before execution returns no transaction while leaving the ongoing one open,
+	// so replacing the reference would leak its snapshots.
+	if ntx != nil || tx == nil || tx.Closed() {
+		s.tx = ntx
+	}
 
 	return err
 }

@@ -43,8 +43,8 @@ jobs:
       INFLUX_HOST: ${{ secrets.INFLUX_HOST }}
       INFLUX_TOKEN: ${{ secrets.INFLUX_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
       - run: go build -o perf-test-suite ./test/performance-test-suite/cmd/perf-test/
@@ -95,7 +95,7 @@ jobs:
           exit 0
       - name: Upload perf-delta report
         if: always() && hashFiles('perf-delta.md') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Perf-delta Report (${{ matrix.target.name }})
           path: perf-delta.md
@@ -135,7 +135,7 @@ jobs:
     env:
       PERF_TEST_AWS_REGION: ${{ secrets.PERF_TEST_AWS_REGION }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download test results
         if: "${{ env.PERF_TEST_AWS_REGION }}"
