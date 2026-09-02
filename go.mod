@@ -9,15 +9,15 @@ require (
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang/protobuf v1.5.4
 	github.com/google/uuid v1.6.0
-	github.com/grpc-ecosystem/go-grpc-middleware v1.3.0
+	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
 	github.com/grpc-ecosystem/grpc-gateway v1.16.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
 	github.com/influxdata/influxdb-client-go/v2 v2.13.0
 	github.com/jackc/pgx/v5 v5.9.2
-	github.com/jaswdr/faker v1.16.0
+	github.com/jaswdr/faker v1.19.1
 	github.com/lib/pq v1.10.9
-	github.com/mattn/goveralls v0.0.11
+	github.com/mattn/goveralls v0.0.12
 	github.com/o1egl/paseto v1.0.0
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/ory/go-acc v0.2.8
